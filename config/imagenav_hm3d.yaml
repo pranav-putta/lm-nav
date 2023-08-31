@@ -2,8 +2,20 @@
 
 defaults:
   - /benchmark/nav/imagenav/imagenav_base
+  - /habitat_baselines: habitat_baselines_rl_config_base
   - /habitat/dataset/imagenav: hm3d
+  - /habitat_baselines/rl/policy/obs_transforms:
+    - resize_shortest_edge_base
   - _self_
+
+habitat_baselines:
+  num_environments: 2
+  rl:
+    policy:
+      obs_transforms:
+        resize_shortest_edge:
+          size: 120
+          trans_keys: [rgb, depth, imagegoal]
 
 habitat:
   environment:
