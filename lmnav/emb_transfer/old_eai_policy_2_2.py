@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from gym import spaces
 from habitat import logger
+from habitat.config import Config
 from habitat.core.simulator import DepthSensor
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_baselines.rl.ddppo.policy.resnet_policy import ResNetEncoder
@@ -13,10 +14,6 @@ from habitat_baselines.rl.ddppo.policy import resnet
 from habitat_baselines.rl.ppo import Net, Policy, NetPolicy
 from torch import nn as nn
 from torchvision import transforms as T
-from habitat_baselines.rl.models.rnn_state_encoder import (
-    build_pack_info_from_dones,
-    build_rnn_build_seq_info,
-)
 
 from lmnav.emb_transfer.sensors import ImageGoalRotationSensor
 from lmnav.emb_transfer.transforms import get_transform
@@ -93,8 +90,8 @@ class EAINet(Net):
         rnn_input_size += hidden_size
 
         # goal embedding
-        if 'imagegoal' in observation_space.spaces:
-            imagegoalrotation_sensor_shape = observation_space.spaces['imagegoal'].shape
+        if ImageGoalRotationSensor.cls_uuid in observation_space.spaces:
+            imagegoalrotation_sensor_shape = observation_space.spaces[ImageGoalRotationSensor.cls_uuid].shape
             imagegoalrotation_sensor_shape = (
                 int(imagegoalrotation_sensor_shape[0] * scale_obs),
                 int(imagegoalrotation_sensor_shape[1] * scale_obs),
@@ -187,7 +184,7 @@ class EAINet(Net):
                 for p in self.depth_encoder.backbone.parameters():
                     p.requires_grad = False
 
-                    # save configuration
+        # save configuration
         self._hidden_size = hidden_size
 
         self.train()
@@ -204,11 +201,14 @@ class EAINet(Net):
     def num_recurrent_layers(self):
         return self.state_encoder.num_recurrent_layers
 
-    def perception_embedding_size(self) -> int:
-        return self.visual_encoder.output_size
-    
-    def recurrent_hidden_size(self) -> int:
-        return self._hidden_size
+    def scale_observations(self, observations):
+        observations['rgb'] = self.rgb_scaler(observations['rgb'].permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        if ImageGoalRotationSensor.cls_uuid in observations:
+            observations[ImageGoalRotationSensor.cls_uuid] = self.imagegoalrotation_scaler(
+                observations[ImageGoalRotationSensor.cls_uuid].permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        if 'depth' in observations:
+            observations['depth'] = self.depth_scaler(observations['depth'].permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        return observations
 
     def forward(
             self,
@@ -218,6 +218,7 @@ class EAINet(Net):
             masks,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         x = []
+        # observations = self.scale_observations(observations)
 
         # number of environments
         N = rnn_hidden_states.size(0)
@@ -230,8 +231,8 @@ class EAINet(Net):
         x.append(rgb)
 
         # goal embedding
-        if 'imagegoal' in observations:
-            goal = observations['imagegoal']
+        if ImageGoalRotationSensor.cls_uuid in observations:
+            goal = observations[ImageGoalRotationSensor.cls_uuid]
             goal = self.goal_transform(goal, N)
             goal = self.goal_visual_encoder(goal)
             goal = self.goal_visual_fc(goal)
@@ -240,29 +241,28 @@ class EAINet(Net):
             # goal = self.visual_fc(goal)
             x.append(goal)
 
-        if 'depth' in observations:
-            depth = observations['depth']
-            depth = self.depth_encoder({'depth': depth})
-            depth = self.depth_fc(depth)
-            x.append(depth)
+            if 'depth' in observations:
+                depth = observations['depth']
+                depth = self.depth_encoder({'depth': depth})
+                depth = self.depth_fc(depth)
+                x.append(depth)
+            # previous action embedding
+            prev_actions = prev_actions.squeeze(-1)
+            start_token = torch.zeros_like(prev_actions)
+            prev_actions = self.prev_action_embedding(
+                torch.where(masks.view(-1), prev_actions + 1, start_token)
+            )
+            x.append(prev_actions)
 
-        # previous action embedding
-        prev_actions = prev_actions.squeeze(-1)
-        start_token = torch.zeros_like(prev_actions)
-        prev_actions = self.prev_action_embedding(
-            torch.where(masks.view(-1), prev_actions + 1, start_token)
-        )
-        x.append(prev_actions)
+            # state encoder
+            out = torch.cat(x, dim=1)
+            out, rnn_hidden_states = self.state_encoder(out, rnn_hidden_states, masks)
 
-        # state encoder
-        out = torch.cat(x, dim=1)
-        out, rnn_hidden_states = self.state_encoder(out, rnn_hidden_states, masks)
-
-        return out, rnn_hidden_states, None
+        return out, rnn_hidden_states
 
 
 @baseline_registry.register_policy
-class OldEAIPolicy(NetPolicy):
+class EAIPolicy(NetPolicy):
     def __init__(
             self,
             observation_space: spaces.Dict,
@@ -309,64 +309,33 @@ class OldEAIPolicy(NetPolicy):
                 avgpooled_image=avgpooled_image,
                 augmentations_name=augmentations_name,
                 drop_path_rate=drop_path_rate,
-                scale_obs=kwargs['scale_obs'],
+                #scale_obs=kwargs['scale_obs'],
             ),
-            action_space=action_space,
-            # dim_actions=action_space.n,  # for action distribution
+            dim_actions=action_space.n,  # for action distribution
         )
 
     @classmethod
-    def from_config(cls,
-                    config,
-                    observation_space: spaces.Dict,
-                    action_space,
-                    orig_action_space):
+    def from_config(cls, config: Config, observation_space: spaces.Dict, action_space):
         return cls(
             observation_space=observation_space,
             action_space=action_space,
-            backbone='vit_small_patch16',
-            resnet_baseplanes=32,
-            vit_use_fc_norm=False,
-            vit_global_pool=False,
-            vit_use_cls=False,
-            vit_mask_ratio=None,
-            hidden_size=512,
-            rnn_type='GRU',
-            num_recurrent_layers=2,
-            use_augmentations=False,
-            use_augmentations_test_time=False,
-            randomize_augmentations_over_envs=False,
-            pretrained_encoder="/srv/flash1/rramrakhya6/summer_2022/mae-for-eai/data/visual_encoders/mae_vit_small_decoder_large_HGPS_RE10K_100.pth",
-            freeze_backbone=True,
-            run_type='eval',
-            avgpooled_image=False,
-            augmentations_name='jitter+shift',
-            drop_path_rate=0,
-            scale_obs=1
-        )
-
-    @staticmethod
-    def hardcoded(cls, obs_space, action_space):
-        return cls(
-            observation_space=obs_space,
-            action_space=action_space,
-            backbone='vit_small_patch16',
-            resnet_baseplanes=32,
-            vit_use_fc_norm=False,
-            vit_global_pool=False,
-            vit_use_cls=False,
-            vit_mask_ratio=None,
-            hidden_size=512,
-            rnn_type='GRU',
-            num_recurrent_layers=2,
-            use_augmentations=False,
-            use_augmentations_test_time=False,
-            randomize_augmentations_over_envs=False,
-            pretrained_encoder="/srv/flash1/rramrakhya6/summer_2022/mae-for-eai/data/visual_encoders/mae_vit_small_decoder_large_HGPS_RE10K_100.pth",
-            freeze_backbone=True,
-            run_type='eval',
-            avgpooled_image=False,
-            augmentations_name='jitter+shift',
-            drop_path_rate=0,
-            scale_obs=1
+            backbone=config.RL.POLICY.backbone,
+            resnet_baseplanes=config.RL.POLICY.resnet_baseplanes,
+            vit_use_fc_norm=config.RL.POLICY.vit_use_fc_norm,
+            vit_global_pool=config.RL.POLICY.vit_global_pool,
+            vit_use_cls=config.RL.POLICY.vit_use_cls,
+            vit_mask_ratio=config.RL.POLICY.vit_mask_ratio,
+            hidden_size=config.RL.POLICY.hidden_size,
+            rnn_type=config.RL.POLICY.rnn_type,
+            num_recurrent_layers=config.RL.POLICY.num_recurrent_layers,
+            use_augmentations=config.RL.POLICY.use_augmentations,
+            use_augmentations_test_time=config.RL.POLICY.use_augmentations_test_time,
+            randomize_augmentations_over_envs=config.RL.POLICY.randomize_augmentations_over_envs,
+            pretrained_encoder=config.RL.POLICY.pretrained_encoder,
+            freeze_backbone=config.RL.POLICY.freeze_backbone,
+            run_type=config.RUN_TYPE,
+            avgpooled_image=config.RL.POLICY.avgpooled_image,
+            augmentations_name=config.RL.POLICY.augmentations_name,
+            drop_path_rate=config.RL.POLICY.drop_path_rate,
+        #    scale_obs=config.RL.POLICY.scale_obs
         )

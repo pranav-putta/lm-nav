@@ -21,9 +21,8 @@ from habitat.utils.visualizations.utils import (
 )
 from habitat.utils.visualizations import maps
 
-from aj3.emb_transfer.models.resnet_gn import ResNet
-from aj3.emb_transfer.models.vit import VisionTransformer
-from aj3.emb_transfer.models.beit import Beit
+from lmnav.emb_transfer.models.resnet_gn import ResNet
+from lmnav.emb_transfer.models.vit import VisionTransformer
 
 
 def load_encoder(encoder, path):
