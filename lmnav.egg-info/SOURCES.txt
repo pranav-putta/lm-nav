@@ -1,6 +1,7 @@
 setup.cfg
 setup.py
 lmnav/__init__.py
+lmnav/data_gen.py
 lmnav.egg-info/PKG-INFO
 lmnav.egg-info/SOURCES.txt
 lmnav.egg-info/dependency_links.txt
