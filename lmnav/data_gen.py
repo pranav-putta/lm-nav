@@ -97,7 +97,11 @@ def _construct_state_tensors(num_environments, device):
     return rnn_hx, prev_actions, not_done_masks 
     
     
-def collect_episodes(envs, teacher, obs_transform, device, deterministic=False, N=None):
+def collect_episodes(envs, teacher, obs_transform, device,
+                     deterministic=False, filter_fn=None, N=None):
+    if filter_fn is None:
+        filter_fn = lambda _: True
+        
     device = torch.device(device)
     num_envs = envs.num_envs
     step = 0
@@ -112,7 +116,6 @@ def collect_episodes(envs, teacher, obs_transform, device, deterministic=False, 
     observations = envs.reset()
 
     while (N is None) or (len(dataset) < N):
-        print(step)
         # roll out a step
         batch = batch_obs(observations, device)
         batch = apply_obs_transforms_batch(batch, obs_transform)
@@ -136,7 +139,7 @@ def collect_episodes(envs, teacher, obs_transform, device, deterministic=False, 
     
         # check if any episodes finished and archive it into dataset
         for i, done in enumerate(dones):
-            if done:
+            if done and filter_fn(episodes[i]):
                 dataset.append(episodes[i])
                 episodes[i] = []
     
