@@ -8,6 +8,13 @@ defaults:
     - resize_shortest_edge_base 
   - _self_
 
+bc:
+  teacher_ckpt: "models/uLHP.300.pth" 
+  dtg_threshold: 1.0
+  epochs: 1000
+  batch_size: 2
+  lr: 1e-4
+
 habitat_baselines:
   num_environments: 2
   rl:

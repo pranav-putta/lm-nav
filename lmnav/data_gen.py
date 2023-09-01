@@ -1,8 +1,5 @@
 import os
-
-import gym
-from habitat_baselines.common import env_spec
-import numpy as np
+import multiprocessing as mp
 
 import habitat
 import habitat.gym
@@ -85,8 +82,22 @@ def _setup_teacher(teacher_ckpt, obs_space, action_space):
     state_dict = ckpt_dict['state_dict']
     state_dict = {k[len('actor_critic.'):]: v for k, v in state_dict.items()}
 
-    teacher.load_state_dict(state_dict)
+    teacher.load_state_dict(state_dict, strict=False)
     return teacher
+
+def _initialize(config):
+    os.environ["MAGNUM_LOG"] = "quiet"
+    os.environ["HABITAT_SIM_LOG"] = "quiet"
+
+    os.chdir('/srv/flash1/pputta7/projects/lm-nav')
+    
+    envs, env_spec = _init_envs(config)
+    obs_transform, env_spec = _create_obs_transforms(config, env_spec)
+
+    teacher = _setup_teacher(config.bc.teacher_ckpt, env_spec.observation_space, env_spec.action_space)
+    teacher.compile()
+
+    return envs, teacher, obs_transform
 
 
 def _construct_state_tensors(num_environments, device):
@@ -97,15 +108,17 @@ def _construct_state_tensors(num_environments, device):
     return rnn_hx, prev_actions, not_done_masks 
     
     
-def collect_episodes(envs, teacher, obs_transform, device,
-                     deterministic=False, filter_fn=None, N=None):
+def collect_episodes(config, device, dataset_queue,
+                     deterministic=False, filter_fn=None):
+    
+    envs, teacher, obs_transform = _initialize(config)
+    
     if filter_fn is None:
-        filter_fn = lambda _: True
+        filter_fn = lambda *_: True
         
     device = torch.device(device)
     num_envs = envs.num_envs
     step = 0
-    dataset = []
     episodes = [[] for _ in range(num_envs)]
 
     rnn_hx, prev_actions, not_done_masks = _construct_state_tensors(num_envs, device)
@@ -115,7 +128,7 @@ def collect_episodes(envs, teacher, obs_transform, device,
     
     observations = envs.reset()
 
-    while (N is None) or (len(dataset) < N):
+    while True:
         # roll out a step
         batch = batch_obs(observations, device)
         batch = apply_obs_transforms_batch(batch, obs_transform)
@@ -130,17 +143,21 @@ def collect_episodes(envs, teacher, obs_transform, device,
         rnn_hx = policy_result.rnn_hidden_states
     
         step_data = [a.item() for a in policy_result.env_actions.cpu()]
+        
         outputs = envs.step(step_data)
         next_observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)]
     
         # insert episode into list
         for i, episode in enumerate(episodes):
-            episode.append((observations[i], rewards_l[i], infos[i]))
-    
+            episode.append({'observation': observations[i],
+                            'reward': rewards_l[i],
+                            'info': infos[i]})
+
+        
         # check if any episodes finished and archive it into dataset
         for i, done in enumerate(dones):
-            if done and filter_fn(episodes[i]):
-                dataset.append(episodes[i])
+            if done and filter_fn(config, episodes[i]):
+                dataset_queue.put(episodes[i])
                 episodes[i] = []
     
                 # reset state tensors
@@ -151,5 +168,25 @@ def collect_episodes(envs, teacher, obs_transform, device,
         observations = next_observations
         step += 1
 
-    return dataset
 
+def filter_fn(config, episode):
+    dtg_threshold = config.bc.dtg_threshold
+    return episode[-1]['info']['distance_to_goal'] <= dtg_threshold
+
+def start_data_gen_process(device, config, deterministic=False):
+    """
+    This function constructs a multiprocessing server to collect data and returns a queue which can be called to retrieve
+    """
+    ctx = mp.get_context('spawn')
+    q = ctx.Queue()
+
+    p = ctx.Process(target=collect_episodes, args=(config, device, 
+                                                   q, deterministic, filter_fn))
+    p.start()
+    return p, q
+    
+
+    
+
+    
+    
