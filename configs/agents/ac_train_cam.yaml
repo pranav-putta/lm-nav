@@ -1,7 +1,0 @@
-heights: [ 0.61 ]
-radii: [ 0.18 ]
-step_sizes: [ 0.2 ]
-turn_incs: [ 30 ]
-camera_tilt: [ 0 ]
-camera_fov: [ 55 ]
-depth_fov: [ 55 ]

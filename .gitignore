@@ -2,6 +2,8 @@
 *.DS_Store
 **/*.ipynb_checkpoints
 **/*.pth
+*.mp4
 
 models/
 videos/
+
