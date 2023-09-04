@@ -210,15 +210,15 @@ class LinNavLLAMA(Blip2Base):
     def forward(self, batch):
         """
         batch = {
-            'rgb': tensor.Tensor[b, c, t + 1, h, w] ; where the first image is the goal image
-            'actions': tensor.Tensor[b, t, 1]
-        }
+            'rgbs': torch.Tensor[B, T, C, H, W]
+            'goals': torch.Tensor[B, 1, C, H, W]
+            'actions': torch.Tensor[B, T]
+            }
         """
         
         im_patch_token_id = self.IMAGE_PATCH_TOKEN_ID
         
-
-        
+               
         
 
     @classmethod
