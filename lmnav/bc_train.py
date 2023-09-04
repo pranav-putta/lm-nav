@@ -9,6 +9,7 @@ from habitat.config import read_write
 from habitat_baselines.rl.ddppo.ddp_utils import (init_distrib_slurm, get_distrib_size, rank0_only)
 
 import torch
+import torch.distributed
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -40,7 +41,9 @@ class BCTrainer:
 
         if self.is_distributed:
             # initialize slurm distributed controller
-            local_rank, tcp_store = init_distrib_slurm(self.config.habitat_baselines.rl.ddppo.distrib_backend)
+            backend = self.config.habitat_baselines.rl.ddppo.distrib_backend
+            print(f"Starting distributed controller using {backend}")
+            local_rank, tcp_store = init_distrib_slurm(backend)
             self.rank = local_rank
 
             if rank0_only():
@@ -93,27 +96,31 @@ class BCTrainer:
         agent = model.to(self.device)
         
         print(f"Setting up DDP on GPU {self.rank}")
-        import pdb
-        pdb.set_trace()
         agent = DDP(agent, device_ids=[self.rank])
 
         num_params = sum([param.numel() for param in agent.parameters()])
         num_trainable_params = sum([param.numel() for param in agent.parameters() if param.requires_grad])
         
         print(f"Done setting up student! Total params: {num_params}. Trainable Params: {num_trainable_params}")
+        
+        params_with_gradients = [name for name, param in model.named_parameters() if param.requires_grad]
+        print("Params with gradients")
+        from pprint import pprint
+        pprint(params_with_gradients)
+
         return agent
 
     
     def train_epoch(self, epoch):
-        num_samples = 100 
+        num_samples = 2
         max_state_length = 20
         num_bc_epochs = 4
-        min_episodes = 2
-        max_episodes = 1000
+        min_episodes = 10
+        max_episodes = 20
+        num_grad_accums = 4
 
         # accumulate data from the data queue; ideally the queue should already be filled
-        while self.data_conn.poll() or len(self.dataset) < min_episodes:
-            self.dataset.append(self.data_conn.recv())
+        self.dataset += [(self.data_conn.recv()) for _ in range(min_episodes)]
         
         if len(self.dataset) > max_episodes:
             self.dataset = self.dataset[len(self.dataset) - max_episodes:]
@@ -121,33 +128,71 @@ class BCTrainer:
         print(f"Running behavior cloning over dataset of size: {len(self.dataset)}")
         rgbs, goals, actions = extract_inputs_from_dataset(self.dataset)
 
+        total_loss = 0
+
         for bc_epoch in range(num_bc_epochs):
-            rgbs_t, goals_t, actions_t = sample_subsequences(num_samples, max_state_length, rgbs, goals, actions)
-            rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
-            print("Shapes:", rgbs_t.shape, goals_t.shape, actions_t.shape)
-
             
-            self.optim.zero_grad()
+            for i in range(num_grad_accums):
+                rgbs_t, goals_t, actions_t = sample_subsequences(num_samples, max_state_length, rgbs, goals, actions)
+                rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
+                
+                if i < num_grad_accums - 1:
+                    with self.agent.no_sync():
+                        outputs = self.agent(rgbs_t, goals_t, actions_t)
+                        loss = outputs.loss
+                        total_loss += loss.item()
+                        loss.backward()
+                else:
+                    outputs = self.agent(rgbs_t, goals_t, actions_t)
+                    loss = outputs.loss
+                    loss.backward()
+                    self.optim.step()
+                    self.optim.zero_grad()
             
-            outputs = self.agent(rgbs_t, goals_t, actions_t)
-            print(outputs.loss)
-
-            loss = outputs.loss
-            loss.backward()
-
-            self.optim.step()
+                rgbs_t.to('cpu')
+                goals_t.to('cpu')
             
-        print(f"Process {self.rank} finished with epoch {epoch}")
-        print()
+        avg_loss = total_loss / (num_bc_epochs * num_grad_accums)
+
+        print(f"Process {self.rank} epoch {epoch}. Average Loss: {avg_loss}")
+
+        return {
+            'loss': avg_loss,
+            'epoch': epoch
+        }
         
         
+    def _all_reduce(self, t):
+        if not self.is_distributed:
+            return t
+
+        orig_device = t.device
+        t = t.to(self.device)
+        torch.distributed.all_reduce(t)
+
+        return t.to(device=orig_device)
+        
+
     def train(self):
         self.initialize_train()
 
         epochs, batch_size = self.config.bc.epochs, self.config.bc.batch_size
 
         for epoch in range(epochs):
-            self.train_epoch(epoch)
+            stats = self.train_epoch(epoch)
+            stats_keys = sorted(stats.keys())
+            stats = torch.tensor([stats[key] for key in stats_keys],
+                                 device='cpu',
+                                 dtype=torch.float32)
+            stats = self._all_reduce(stats)
+            stats /= torch.distributed.get_world_size()
+
+            stats = { k: stats[i] for i, k in enumerate(stats_keys) }
+
+            if rank0_only():
+                # set stats to writer
+                pass
+            
             
 
 def main():

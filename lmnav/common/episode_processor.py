@@ -28,6 +28,7 @@ def apply_transforms_inputs(vis_processor, rgbs, goals, actions):
     goals, rgbs = imgs[:, :, 0:1], imgs[:, :, 1:]
 
     # process actions into tokens
+    actions = actions.tolist()
     actions = [[idx2class[act] for act in acts_t] for acts_t in actions]
 
     return rgbs, goals, actions

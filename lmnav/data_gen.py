@@ -110,7 +110,7 @@ def _construct_state_tensors(num_environments, device):
 def collect_episodes(config, device, child_conn,
                      deterministic=False, filter_fn=None):
     
-    print("Starting data collection process")
+    print(f"Starting data collection process on device {device}")
     
     envs, teacher, obs_transform = _initialize(config)
     

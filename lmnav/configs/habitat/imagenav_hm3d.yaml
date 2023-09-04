@@ -13,10 +13,10 @@ bc:
   dtg_threshold: 1.0
   epochs: 1000
   batch_size: 2
-  lr: 1e-4
+  lr: 2.5e-5
 
 habitat_baselines:
-  num_environments: 2
+  num_environments: 8
   rl:
     policy:
       name: PointNavResNetPolicy
@@ -24,6 +24,10 @@ habitat_baselines:
         resize_shortest_edge:
           size: 120
           trans_keys: [rgb, depth, imagegoal]
+
+    ddppo:
+      distrib_backend: "NCCL" 
+        
 habitat:
   environment:
     max_episode_steps: 500

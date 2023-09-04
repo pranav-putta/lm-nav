@@ -222,7 +222,6 @@ class LinNavLLAMA(Blip2Base):
         prompt_embd = [embd.repeat(B, 1, 1) for embd in prompt_embd]
         
         actions_embd = einops.rearrange(actions_embd, 'b t h -> b t 1 h')
-        print(rgbs_embd.shape, actions_embd.shape)
         s_a_embds = torch.cat([rgbs_embd, actions_embd], dim=2)
         s_a_embds = s_a_embds.view(B, T * (Q + 1), H)
 
@@ -232,10 +231,10 @@ class LinNavLLAMA(Blip2Base):
         embds = torch.cat(embds, dim=1)
 
         # construct targets
-        prompt_tgts = torch.ones(B, prompt_embd[0].shape[1] + goals_embd.shape[1] + prompt_embd[1].shape[1]).fill_(-100).to('cuda')
+        prompt_tgts = torch.ones(B, prompt_embd[0].shape[1] + goals_embd.shape[1] + prompt_embd[1].shape[1]).fill_(-100).to(self.device)
         rgb_tgts = torch.ones(B, T, Q).fill_(-100).to(self.device)
         act_tgts = action_tkns_t.permute(0, 2, 1)
-        s_a_tgts = torch.cat([rgb_tgts, act_tgts], dim=2).view(B, T * (Q + 1))
+        s_a_tgts = torch.cat([rgb_tgts, act_tgts], dim=2).view(B, T * (Q + 1)).to(self.device)
 
         tgts = torch.cat([prompt_tgts, s_a_tgts], dim=1).long().to(self.device) 
         
