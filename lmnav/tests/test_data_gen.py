@@ -20,17 +20,15 @@ class TestEpisodeProcessor(unittest.TestCase):
     def test_data_gen_process(self):
         B, T = 2, 10
         C, H, W = 3, 480, 640
-        process, queue = start_data_gen_process(self.device, self.config, deterministic=False)
+        process, conn = start_data_gen_process(self.device, self.config, deterministic=False)
 
-        dataset = [queue.get() for _ in range(1)]
+        dataset = [conn.recv() for _ in range(1)]
         
-        queue.close()
-        queue.join_thread()
+        conn.send("EXIT")
+        conn.close()
+        process.close()
  
-        process.terminate()
-        process.join()
-       
-        print("Collected 2 episodes!")
+        print("Collected episodes!")
         print("Extracting dataset....")
 
         rgbs, goals, actions = extract_inputs_from_dataset(dataset)
@@ -39,6 +37,8 @@ class TestEpisodeProcessor(unittest.TestCase):
         self.assertTrue(rgbs_t.shape == (B, T, C, H, W))
         self.assertTrue(goals_t.shape == (B, 1, C, H, W))
         self.assertTrue(actions_t.shape == (B, T))
+
+        print("Final shape:", rgbs_t.shape)
 
 
  

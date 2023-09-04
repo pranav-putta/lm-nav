@@ -107,8 +107,10 @@ def _construct_state_tensors(num_environments, device):
     return rnn_hx, prev_actions, not_done_masks 
     
     
-def collect_episodes(config, device, dataset_queue,
+def collect_episodes(config, device, child_conn,
                      deterministic=False, filter_fn=None):
+    
+    print("Starting data collection process")
     
     envs, teacher, obs_transform = _initialize(config)
     
@@ -128,6 +130,13 @@ def collect_episodes(config, device, dataset_queue,
     observations = envs.reset()
 
     while True:
+        if child_conn.poll():
+            cmd = child_conn.recv()
+            if cmd == 'EXIT':
+                print("Ending dataset collection process...")
+                child_conn.close()
+                break
+            
         # roll out a step
         batch = batch_obs(observations, device)
         batch = apply_obs_transforms_batch(batch, obs_transform)
@@ -157,7 +166,7 @@ def collect_episodes(config, device, dataset_queue,
         # check if any episodes finished and archive it into dataset
         for i, done in enumerate(dones):
             if done and filter_fn(config, episodes[i]):
-                dataset_queue.put(episodes[i])
+                child_conn.send(episodes[i])
                 episodes[i] = []
     
                 # reset state tensors
@@ -179,12 +188,12 @@ def start_data_gen_process(device, config, deterministic=False):
     This function constructs a multiprocessing server to collect data and returns a queue which can be called to retrieve
     """
     ctx = mp.get_context('spawn')
-    q = ctx.Queue()
+    parent_conn, child_conn = ctx.Pipe()
 
     p = ctx.Process(target=collect_episodes, args=(config, device, 
-                                                   q, deterministic, filter_fn))
+                                                   child_conn, deterministic, filter_fn))
     p.start()
-    return p, q
+    return p, parent_conn 
     
 
     
