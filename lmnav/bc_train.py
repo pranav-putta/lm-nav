@@ -1,6 +1,8 @@
 import numpy as np
 import random
 
+from collections import namedtuple
+
 import habitat
 from habitat import logger
 from habitat.config import read_write
@@ -15,20 +17,26 @@ import multiprocessing as mp
 from typing import Any
 
 from lmnav.data_gen import start_data_gen_process
+from lmnav.common.config import Config as NavLLAMAConfig
+from lmnav.models import *
+from lmnav.processors import *
+from lmnav.common.registry import registry as llama_registry
+from lmnav.common.episode_processor import apply_transforms_inputs, extract_inputs_from_dataset, sample_subsequences
+
 
 class BCTrainer:
     data_process: Any 
-    data_queue: mp.Queue
+    data_conn: Any
     
     
     def initialize_train(self):
         """
         Initializes distributed controller for DDP, starts data generator process
         """
-        self.config = habitat.get_config("config/imagenav_hm3d.yaml")
+        self.config = habitat.get_config("lmnav/configs/habitat/imagenav_hm3d.yaml")
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        self.is_distributed = get_distrib_size()[2] > 1
+        self.is_distributed = get_distrib_size()[2] > 1 or True
 
         if self.is_distributed:
             # initialize slurm distributed controller
@@ -55,7 +63,7 @@ class BCTrainer:
             self.device = f"cuda:{local_rank}"
             
         # start data generator process
-        self.data_process, self.data_queue = start_data_gen_process(self.device, self.config, deterministic=False)
+        self.data_process, self.data_conn = start_data_gen_process(self.device, self.config, deterministic=False)
 
         # set up student
         self.agent = self.setup_student()
@@ -63,31 +71,72 @@ class BCTrainer:
         # set up optimizer
         optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
         self.optim = torch.optim.Adam(params=optim_params, lr=self.config.bc.lr)
+        self.dataset = []
 
 
     def setup_student(self):
-        # TODO: set this up actually lol
-        agent = nn.Linear(100, 1)
-        agent = agent.to(self.device)
+        cfg_path = "/srv/flash1/pputta7/projects/lm-nav/exp_configs/lin_nav_llama_train.yaml"
+        
+        Args = namedtuple("Args", "cfg_path, model_type, gpu_id, options")
+        args = Args(cfg_path, "llama_v2", 0, [])
+
+        cfg = NavLLAMAConfig(args)
+
+        model_config = cfg.model_cfg
+        model_cls = llama_registry.get_model_class(model_config.arch)
+        model = model_cls.from_config(model_config).to(self.device)
+        model.train()
+
+        vis_processor_cfg = cfg.config.preprocess.vis_processor.train
+        self.vis_processor = llama_registry.get_processor_class(vis_processor_cfg.name).from_config(vis_processor_cfg)
+
+        agent = model.to(self.device)
+        
+        print(f"Setting up DDP on GPU {self.rank}")
+        import pdb
+        pdb.set_trace()
         agent = DDP(agent, device_ids=[self.rank])
+
+        num_params = sum([param.numel() for param in agent.parameters()])
+        num_trainable_params = sum([param.numel() for param in agent.parameters() if param.requires_grad])
+        
+        print(f"Done setting up student! Total params: {num_params}. Trainable Params: {num_trainable_params}")
         return agent
 
     
     def train_epoch(self, epoch):
-        batch_size = self.config.bc.batch_size 
+        num_samples = 100 
+        max_state_length = 20
+        num_bc_epochs = 4
+        min_episodes = 2
+        max_episodes = 1000
 
         # accumulate data from the data queue; ideally the queue should already be filled
-        data = [self.data_queue.get() for _ in range(batch_size)]
+        while self.data_conn.poll() or len(self.dataset) < min_episodes:
+            self.dataset.append(self.data_conn.recv())
+        
+        if len(self.dataset) > max_episodes:
+            self.dataset = self.dataset[len(self.dataset) - max_episodes:]
 
-        loss_fn = nn.MSELoss()
-        X = torch.ones((10, 100), device=self.device)
-        Y = torch.ones((10, 1), device=self.device)
+        print(f"Running behavior cloning over dataset of size: {len(self.dataset)}")
+        rgbs, goals, actions = extract_inputs_from_dataset(self.dataset)
 
-        self.optim.zero_grad()
-        outputs = self.agent(X)
-        loss = loss_fn(outputs, Y).backward()
-        self.optim.step()
+        for bc_epoch in range(num_bc_epochs):
+            rgbs_t, goals_t, actions_t = sample_subsequences(num_samples, max_state_length, rgbs, goals, actions)
+            rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
+            print("Shapes:", rgbs_t.shape, goals_t.shape, actions_t.shape)
 
+            
+            self.optim.zero_grad()
+            
+            outputs = self.agent(rgbs_t, goals_t, actions_t)
+            print(outputs.loss)
+
+            loss = outputs.loss
+            loss.backward()
+
+            self.optim.step()
+            
         print(f"Process {self.rank} finished with epoch {epoch}")
         print()
         

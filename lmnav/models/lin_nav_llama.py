@@ -207,7 +207,42 @@ class LinNavLLAMA(Blip2Base):
         return action_embds
 
 
-    def forward(self, batch):
+    def prompt1_wrap(self, prompt, rgbs, goals, actions):
+        rgbs_embd, rgbs_attn = self.embed_visual(rgbs)
+        goals_embd, goals_attn = self.embed_visual(goals)
+        action_tkns_t = self.tokenize_actions(actions)
+        actions_embd = self.embed_actions(action_tkns_t)
+
+        
+        B, T, Q, H = rgbs_embd.shape
+     
+        prompt_segs = prompt.split("{}")
+        prompt_tkns = [self.llama_tokenizer(seg, return_tensors='pt', add_special_tokens=(i == 0)) for i, seg in enumerate(prompt_segs) if len(seg)]
+        prompt_embd = [self.llama_model.model.embed_tokens(tkns.input_ids.to(self.device)) for tkns in prompt_tkns]
+        prompt_embd = [embd.repeat(B, 1, 1) for embd in prompt_embd]
+        
+        actions_embd = einops.rearrange(actions_embd, 'b t h -> b t 1 h')
+        print(rgbs_embd.shape, actions_embd.shape)
+        s_a_embds = torch.cat([rgbs_embd, actions_embd], dim=2)
+        s_a_embds = s_a_embds.view(B, T * (Q + 1), H)
+
+        goals_embd = goals_embd.squeeze(1)
+
+        embds = [prompt_embd[0], goals_embd, prompt_embd[1], s_a_embds]
+        embds = torch.cat(embds, dim=1)
+
+        # construct targets
+        prompt_tgts = torch.ones(B, prompt_embd[0].shape[1] + goals_embd.shape[1] + prompt_embd[1].shape[1]).fill_(-100).to('cuda')
+        rgb_tgts = torch.ones(B, T, Q).fill_(-100).to(self.device)
+        act_tgts = action_tkns_t.permute(0, 2, 1)
+        s_a_tgts = torch.cat([rgb_tgts, act_tgts], dim=2).view(B, T * (Q + 1))
+
+        tgts = torch.cat([prompt_tgts, s_a_tgts], dim=1).long().to(self.device) 
+        
+        return embds, tgts
+
+
+    def forward(self, rgbs_t, goals_t, actions_t):
         """
         batch = {
             'rgbs': torch.Tensor[B, T, C, H, W]
@@ -217,8 +252,19 @@ class LinNavLLAMA(Blip2Base):
         """
         
         im_patch_token_id = self.IMAGE_PATCH_TOKEN_ID
+        prompt1 = "You are a navigational agent tasked with exploring an indoor environment to find a goal image. \
+           You can choose to move { left, right, forward, stop } at every step. The goal image is {}. \
+           After every image, choose the best action. {}"
         
-               
+        embd, tgts = self.prompt1_wrap(prompt1, rgbs_t, goals_t, actions_t)
+        embd = embd.to(self.device)
+        tgts = tgts.to(self.device)
+
+        outputs = self.llama_model(inputs_embeds=embd,
+                                    labels=tgts,
+                                    return_dict=True)
+        
+        return outputs
         
 
     @classmethod
