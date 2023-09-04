@@ -95,7 +95,6 @@ def _initialize(config):
     obs_transform, env_spec = _create_obs_transforms(config, env_spec)
 
     teacher = _setup_teacher(config.bc.teacher_ckpt, env_spec.observation_space, env_spec.action_space)
-    teacher.compile()
 
     return envs, teacher, obs_transform
 
@@ -168,12 +167,12 @@ def collect_episodes(config, device, dataset_queue,
     
         observations = next_observations
         step += 1
-        print(step)
 
 
 def filter_fn(config, episode):
     dtg_threshold = config.bc.dtg_threshold
     return episode[-1]['info']['distance_to_goal'] <= dtg_threshold
+
 
 def start_data_gen_process(device, config, deterministic=False):
     """

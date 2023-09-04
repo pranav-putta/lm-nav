@@ -39,7 +39,7 @@ def extract_inputs_from_dataset(dataset):
 
     rgbs = [[torch.from_numpy(state['observation']['rgb']) for state in episode] for episode in dataset]
     rgbs = [torch.stack(rgb_e) for rgb_e in rgbs]
-    rgbs = [einops.rearrange(rgb_t, 't h w c -> c t h w') for rgb_t in rgbs]
+    rgbs = [einops.rearrange(rgb_t, 't h w c -> t c h w') for rgb_t in rgbs]
 
     actions = [torch.tensor([state['action'] for state in episode]) for episode in dataset]
     
@@ -53,8 +53,10 @@ def sample_subsequences(B, T, rgbs, goals, actions):
     actions: list[torch.Tensor[T]] -> torch.Tensor[B, T]
     """
 
-    episode_lens = [ep_rgb.shape[0] for ep_rgb in rgbs]
+    episode_lens = [int(ep_rgb.shape[0]) for ep_rgb in rgbs]
     n_episodes = len(rgbs)
+
+    T = min(min(episode_lens), T)
 
     rgbs_t, goals_t, actions_t = [], [], []
     
@@ -63,8 +65,7 @@ def sample_subsequences(B, T, rgbs, goals, actions):
     while len(rgbs_t) < B:
         # TODO; maybe don't construct tensors here
         i = random.choices(range(n_episodes), weights=episode_lens, k=1)[0]
-        length = episode_lens[i]
-        if length < T:
+        if episode_lens[i] < T:
             continue
         slices = random.sample(sliding_windows[i], 1)
 

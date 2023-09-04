@@ -9,7 +9,7 @@ defaults:
   - _self_
 
 bc:
-  teacher_ckpt: "models/uLHP.300.pth" 
+  teacher_ckpt: "ckpts/uLHP.300.pth" 
   dtg_threshold: 1.0
   epochs: 1000
   batch_size: 2
