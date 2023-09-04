@@ -128,6 +128,8 @@ def collect_episodes(config, device, child_conn,
     teacher.eval()
     
     observations = envs.reset()
+    total_episodes = 0
+    num_succ_episodes = 0
 
     while True:
         if child_conn.poll():
@@ -165,11 +167,25 @@ def collect_episodes(config, device, child_conn,
         
         # check if any episodes finished and archive it into dataset
         for i, done in enumerate(dones):
-            if done and filter_fn(config, episodes[i]):
-                child_conn.send(episodes[i])
-                episodes[i] = []
-    
+            if done:
+                
+                total_episodes += 1
+                
+                if filter_fn(config, episodes[i]):
+                    num_succ_episodes += 1
+                    
+                    # log episode stats
+                    episode_stats = {
+                        'generator_step': step,
+                        'generator_episode_num': num_succ_episodes,
+                        'generator_episode_len': len(episodes[i]),
+                        'generator_running_accuracy': num_succ_episodes / total_episodes
+                    }
+                    
+                    child_conn.send((episode_stats, episodes[i]))
+                    
                 # reset state tensors
+                episodes[i] = []
                 rnn_hx[i] = torch.zeros(rnn_hx.shape[1:])
                 prev_actions[i] = torch.zeros(prev_actions.shape[1:])
                 not_done_masks[i] = torch.ones(not_done_masks.shape[1:])

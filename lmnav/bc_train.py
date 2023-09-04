@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import random
 
@@ -16,6 +17,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import multiprocessing as mp
 
 from typing import Any
+from lmnav.common.writer import get_writer
 
 from lmnav.data_gen import start_data_gen_process
 from lmnav.common.config import Config as NavLLAMAConfig
@@ -28,13 +30,19 @@ from lmnav.common.episode_processor import apply_transforms_inputs, extract_inpu
 class BCTrainer:
     data_process: Any 
     data_conn: Any
+
     
+    def __init__(self, cfg_path):
+        self.cfg_path = cfg_path
+        self.config = habitat.get_config(self.cfg_path)
+
+        self.writer = get_writer(self.config) 
+        
     
     def initialize_train(self):
         """
         Initializes distributed controller for DDP, starts data generator process
         """
-        self.config = habitat.get_config("lmnav/configs/habitat/imagenav_hm3d.yaml")
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         self.is_distributed = get_distrib_size()[2] > 1 or True
@@ -120,7 +128,11 @@ class BCTrainer:
         num_grad_accums = 4
 
         # accumulate data from the data queue; ideally the queue should already be filled
-        self.dataset += [(self.data_conn.recv()) for _ in range(min_episodes)]
+        start_episode_wait = time.time()
+        episode_stats, episodes = zip(*[self.data_conn.recv() for _ in range(min_episodes)])
+        avg_generator_stats = { k: sum([stats[k] for stats in episode_stats]) / len(episode_stats) for k in episode_stats[0].keys() } 
+        self.dataset += episodes        
+        end_episode_wait = time.time()
         
         if len(self.dataset) > max_episodes:
             self.dataset = self.dataset[len(self.dataset) - max_episodes:]
@@ -131,7 +143,6 @@ class BCTrainer:
         total_loss = 0
 
         for bc_epoch in range(num_bc_epochs):
-            
             for i in range(num_grad_accums):
                 rgbs_t, goals_t, actions_t = sample_subsequences(num_samples, max_state_length, rgbs, goals, actions)
                 rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
@@ -158,7 +169,9 @@ class BCTrainer:
 
         return {
             'loss': avg_loss,
-            'epoch': epoch
+            'epoch': epoch,
+            'episode_wait': (end_episode_wait - start_episode_wait),
+            **avg_generator_stats
         }
         
         
@@ -187,16 +200,16 @@ class BCTrainer:
             stats = self._all_reduce(stats)
             stats /= torch.distributed.get_world_size()
 
-            stats = { k: stats[i] for i, k in enumerate(stats_keys) }
+            stats = { k: stats[i].item() for i, k in enumerate(stats_keys) }
 
             if rank0_only():
-                # set stats to writer
-                pass
+                self.writer.write(stats)
             
             
 
 def main():
-    trainer = BCTrainer()
+    cfg_path = "lmnav/configs/habitat/imagenav_hm3d.yaml"
+    trainer = BCTrainer(cfg_path)
     trainer.train()
 
 if __name__ == "__main__":
