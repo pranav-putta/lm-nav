@@ -26,6 +26,8 @@ class TestEpisodeProcessor(unittest.TestCase):
         
         conn.send("EXIT")
         conn.close()
+
+        process.join()
         process.close()
  
         print("Collected episodes!")
