@@ -151,7 +151,8 @@ def collect_episodes(config, device, dataset_queue,
         for i, episode in enumerate(episodes):
             episode.append({'observation': observations[i],
                             'reward': rewards_l[i],
-                            'info': infos[i]})
+                            'info': infos[i],
+                            'action': step_data[i]})
 
         
         # check if any episodes finished and archive it into dataset
@@ -167,6 +168,7 @@ def collect_episodes(config, device, dataset_queue,
     
         observations = next_observations
         step += 1
+        print(step)
 
 
 def filter_fn(config, episode):

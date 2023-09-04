@@ -4,6 +4,6 @@
 **/*.pth
 *.mp4
 
-models/
+ckpts/
 videos/
 

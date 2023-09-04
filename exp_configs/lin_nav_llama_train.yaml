@@ -1,5 +1,5 @@
 model:
-  arch: nav_llama
+  arch: lin_nav_llama
   model_type: pretrain_vicuna
   freeze_vit: True
   freeze_qformer: True
