@@ -1,4 +1,5 @@
 import time
+from pprint import pprint
 from habitat_baselines.utils.common import batch_obs
 from habitat_sim.utils.datasets_download import argparse
 import numpy as np
@@ -104,8 +105,7 @@ class BCTrainer:
             
         # start data generator process
         print(f"Now starting gen process on {self.rank}")
-        self.data_generator = start_data_gen_process(self.device, self.config, deterministic=False)()
-        next(self.data_generator)
+        self.data_process, self.data_conn = start_data_gen_process(self.device, self.config, deterministic=False)
         
       
         # set up student
@@ -120,12 +120,7 @@ class BCTrainer:
         if rank0_only(): 
             self.writer = get_writer(self.config) 
 
-        from time import sleep
-        torch.distributed.barrier()
-        print("stopping ", self.device)
-        sleep(5000)
- 
-
+            
 
     def setup_student(self):
         cfg_path = "/srv/flash1/pputta7/projects/lm-nav/exp_configs/lin_nav_llama_train.yaml"
@@ -155,9 +150,9 @@ class BCTrainer:
         print(f"Done setting up student! Total params: {num_params}. Trainable Params: {num_trainable_params}")
         
         params_with_gradients = [name for name, param in model.named_parameters() if param.requires_grad]
-        print("Params with gradients")
-        from pprint import pprint
-        pprint(params_with_gradients)
+        if rank0_only():
+            print("Params with gradients")
+            pprint(params_with_gradients)
 
         return agent
 
@@ -165,14 +160,14 @@ class BCTrainer:
     def train_epoch(self, epoch):
         num_samples = 2
         max_state_length = 20
-        num_bc_epochs = 4
+        num_bc_epochs = 10
         min_episodes = 5
         max_episodes = 20
-        num_grad_accums = 4
+        num_grad_accums = 6
 
         # accumulate data from the data queue; ideally the queue should already be filled
         start_episode_wait = time.time()
-        episode_stats, episodes = zip(*[next(self.data_generator) for _ in range(min_episodes)])
+        episode_stats, episodes = zip(*[self.data_conn.recv() for _ in range(min_episodes)])
         avg_generator_stats = { k: sum([stats[k] for stats in episode_stats]) / len(episode_stats) for k in episode_stats[0].keys() } 
         self.dataset += episodes        
         end_episode_wait = time.time()
@@ -207,7 +202,6 @@ class BCTrainer:
             
         avg_loss = total_loss / (num_bc_epochs * num_grad_accums)
 
-
         return {
             'loss': avg_loss,
             'epoch': epoch,
@@ -234,6 +228,7 @@ class BCTrainer:
 
         for epoch in range(epochs):
             stats = self.train_epoch(epoch)
+            torch.distributed.barrier()
             stats_keys = sorted(stats.keys())
             stats = torch.tensor([stats[key] for key in stats_keys],
                                  device='cpu',

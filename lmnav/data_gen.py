@@ -1,4 +1,3 @@
-from functools import partial
 import os
 import copy
 import multiprocessing as mp
@@ -110,12 +109,12 @@ def _construct_state_tensors(num_environments, device):
     return rnn_hx, prev_actions, not_done_masks 
     
     
-def collect_episodes(config, device, deterministic=False, filter_fn=None):
+def collect_episodes(config, device, child_conn,
+                     deterministic=False, filter_fn=None):
     
     print(f"Starting data collection process on device {device}")
-   
     envs, teacher, obs_transform = _initialize(config)
-   
+    
     if filter_fn is None:
         filter_fn = lambda *_: True
         
@@ -129,13 +128,20 @@ def collect_episodes(config, device, deterministic=False, filter_fn=None):
     teacher = teacher.to(device)
     teacher = teacher.eval()
 
+    for param in teacher.parameters():
+        param.requires_grad = False
+
     observations = envs.reset()
     total_episodes = 0
     num_succ_episodes = 0
 
-    yield True
-
     while True:
+        if child_conn.poll():
+            cmd = child_conn.recv()
+            if cmd == 'EXIT':
+                print("Ending dataset collection process...")
+                child_conn.close()
+                break
             
         # roll out a step
         batch = batch_obs(observations, device)
@@ -180,7 +186,7 @@ def collect_episodes(config, device, deterministic=False, filter_fn=None):
                         'generator_running_accuracy': num_succ_episodes / total_episodes
                     }
                     
-                    yield (episode_stats, episodes[i])
+                    child_conn.send((episode_stats, episodes[i]))
                     
                 # reset state tensors
                 episodes[i] = []
@@ -190,6 +196,9 @@ def collect_episodes(config, device, deterministic=False, filter_fn=None):
     
         observations = next_observations
         step += 1
+
+        for key in batch.keys():
+            batch[key] = batch[key].to('cpu')
 
 
 def filter_fn(config, episode):
@@ -201,8 +210,13 @@ def start_data_gen_process(device, config, deterministic=False):
     """
     This function constructs a multiprocessing server to collect data and returns a queue which can be called to retrieve
     """
-    f = partial(collect_episodes, config, device, deterministic, filter_fn)
-    return f
+    ctx = mp.get_context('forkserver')
+    parent_conn, child_conn = ctx.Pipe()
+
+    p = ctx.Process(target=collect_episodes, args=(config, device, child_conn, deterministic, filter_fn))
+    p.start()
+    return p, parent_conn 
+    return None, None
     
 
     

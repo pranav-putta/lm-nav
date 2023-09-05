@@ -10,9 +10,9 @@ defaults:
 
 bc:
   teacher_ckpt: "ckpts/uLHP.300.pth" 
-  writer: "console"
+  writer: "wb"
   dtg_threshold: 1.0
-  epochs: 1000
+  epochs: 10000
   batch_size: 2
   lr: 2.5e-5
   ckpt_freq: 100
@@ -20,7 +20,7 @@ bc:
   mode: 'train'
 
 habitat_baselines:
-  num_environments: 10
+  num_environments: 16
   wb:
     project_name: "lmnav"
     run_name: "lmnav_imagenav"

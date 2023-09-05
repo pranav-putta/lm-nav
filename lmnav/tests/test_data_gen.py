@@ -15,15 +15,15 @@ class TestEpisodeProcessor(unittest.TestCase):
     
     def setUp(self):
         self.device = 'cuda:0'
-        self.config = habitat.get_config("./lmnav/configs/habitat/imagenav_hm3d.yaml")
+        self.config = habitat.get_config("./lmnav/configs/habitat/train_imagenav_hm3d.yaml")
 
     def test_data_gen_process(self):
         B, T = 2, 10
         C, H, W = 3, 480, 640
         process, conn = start_data_gen_process(self.device, self.config, deterministic=False)
 
-        dataset = [conn.recv() for _ in range(1)]
-        
+        episode_stats, dataset = zip(*[conn.recv() for _ in range(1)])
+       
         conn.send("EXIT")
         conn.close()
 
