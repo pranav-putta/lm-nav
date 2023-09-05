@@ -1,7 +1,11 @@
 import time
+
 from pprint import pprint
-from habitat_baselines.utils.common import batch_obs
+from habitat.utils.visualizations.utils import observations_to_image
+from habitat_baselines.utils.common import batch_obs, generate_video
 from habitat_sim.utils.datasets_download import argparse
+from habitat_baselines.utils.info_dict import extract_scalars_from_info
+
 import numpy as np
 import random
 
@@ -11,6 +15,7 @@ import habitat
 from habitat import logger
 from habitat.config import read_write
 from habitat_baselines.rl.ddppo.ddp_utils import (init_distrib_slurm, get_distrib_size, rank0_only)
+from omegaconf import OmegaConf
 
 import torch
 import torch.nn.functional as F
@@ -110,7 +115,8 @@ class BCTrainer:
       
         # set up student
         self.agent = self.setup_student()
-        os.makedirs(self.config.bc.ckpt_folder, exist_ok=True)
+        os.makedirs(self.config.bc.exp_folder, exist_ok=True)
+        os.makedirs(os.path.join(self.config.bc.exp_folder, 'ckpts'), exist_ok=True)
 
         # set up optimizer
         optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
@@ -221,6 +227,28 @@ class BCTrainer:
         return t.to(device=orig_device)
         
 
+    def save_checkpoint(self, epoch):
+        # only save parameters that have been updated
+        param_grad_dict = {
+            k: v.requires_grad for k, v in self.agent.named_parameters()
+        }
+
+        state_dict = self.agent.state_dict()
+        for k in list(state_dict.keys()):
+            if k in param_grad_dict.keys() and not param_grad_dict[k]:
+                del state_dict[k]
+
+        save_obj = {
+            "model": state_dict,
+            "optimizer": self.optim.state_dict(),
+            "config": OmegaConf.to_container(self.config),
+            "epoch": epoch
+        }
+        ckpt_num = epoch // self.config.bc.ckpt_freq
+        ckpt_folder = os.path.join(self.config.bc.exp_folder, 'ckpt')
+        torch.save(save_obj,  os.path.join(ckpt_folder, f'ckpt.{ckpt_num}.pth')) 
+
+        
     def train(self):
         self.initialize_train()
 
@@ -242,9 +270,8 @@ class BCTrainer:
                 self.writer.write(stats)
 
                 if epoch % self.config.bc.ckpt_freq == 0:
-                    ckpt_num = epoch // self.config.bc.ckpt_freq
-                    torch.save(self.agent.state_dict(), os.path.join(self.config.bc.ckpt_folder, f'ckpt.{ckpt_num}.pth')) 
-                    
+                    self.save_checkpoint(epoch)
+                   
 
                     
     def pad_sequences(self, seqs, dim):
@@ -256,15 +283,23 @@ class BCTrainer:
 
     def eval_checkpoint(self, ckpt_path):
         N_episodes = 100
-        T = 15
-        # load checkpoint
+        T = 20
         
         # start evaluation
         print(f"Starting evaluation of checkpoint {ckpt_path}")
-
         num_episodes_done = 0
         envs, env_spec = _init_envs(self.config)
         self.initialize_eval()
+
+        # load checkpoint
+        print(f"Loading model from checkpoint")
+        ckpt_state_dict = torch.load(os.path.join(self.config.bc.exp_folder, ckpt_path))
+        ckpt_state_dict = { k[len('module.'):]:v for k, v in ckpt_state_dict.items() }
+        self.agent.load_state_dict(ckpt_state_dict)
+
+        # turn of all gradients
+        for param in self.agent.parameters():
+            param.requires_grad = False
 
         past_kv = [None for _ in range(envs.num_envs)]
         observations = envs.reset()
@@ -279,6 +314,7 @@ class BCTrainer:
         
         tokens = self.agent.llama_tokenizer('stop forward left right', add_special_tokens=False, return_tensors='pt') 
         tokens = tokens.input_ids.to(self.device).squeeze()
+
         
         while num_episodes_done < N_episodes:
             batch = batch_obs(observations, self.device)
@@ -326,11 +362,37 @@ class BCTrainer:
             for i, done in enumerate(dones):
                 if done:
                     stats['total_episodes'] += 1
+                    
                     if episodes[i][-1]['info']['distance_to_goal'] < self.config.bc.dtg_threshold:
                         stats['successful_episodes'] += 1
 
                     self.writer.write(stats)
+
+                    if self.config.bc.eval.save_videos:
+                        vid_folder = os.path.join(self.config.bc.exp_folder, 'videos')
+                        os.makedirs(vid_folder, exist_ok=True)
                         
+                        obs_infos = [(step['observation'], step['info']) for step in episodes[i]]
+                        observations, infos = zip(*obs_infos)
+                        
+                        frames = [observations_to_image(obs, info) for obs, info in obs_infos]
+                        disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
+
+                        os.makedirs(os.path.join(self.config.bc.exp_folder, 'videos'), exist_ok=True)
+                        
+                        generate_video(
+                            video_option=['disk'],
+                            video_dir=vid_folder,
+                            images=frames,
+                            episode_id={stats['total_episodes']},
+                            checkpoint_idx=300,
+                            metrics=extract_scalars_from_info(disp_info),
+                            fps=self.config.habitat_baselines.video_fps,
+                            tb_writer=None,
+                            keys_to_include_in_name=self.config.habitat_baselines.eval_keys_to_include_in_name
+                        )
+                    episodes[i] = []
+
             observations = next_observations
                
 
@@ -352,7 +414,7 @@ def main():
     if trainer.config.bc.mode == 'train':
         trainer.train()
     else:
-        trainer.eval_checkpoint(None)
+        trainer.eval_checkpoint(trainer.config.bc.eval.ckpt)
     # trainer.train()
 
 if __name__ == "__main__":

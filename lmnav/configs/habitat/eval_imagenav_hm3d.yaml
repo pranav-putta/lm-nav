@@ -16,11 +16,14 @@ bc:
   batch_size: 2
   lr: 2.5e-5
   ckpt_freq: 100
-  ckpt_folder: "experiments/lmnav_imagenav/"
+  exp_folder: "experiments/lmnav_imagenav/"
   mode: 'eval'
+  eval:
+    ckpt: 'ckpt.0.pth'
+    save_videos: True
 
 habitat_baselines:
-  num_environments: 1
+  num_environments: 2
   wb:
     project_name: "lmnav"
     run_name: "lmnav_imagenav"
@@ -39,7 +42,7 @@ habitat_baselines:
         
 habitat:
   environment:
-    max_episode_steps: 500
+    max_episode_steps: 80
   simulator:
     turn_angle: 30
     agents:
@@ -51,6 +54,8 @@ habitat:
           depth_sensor:
             width: 640
             height: 480
+    habitat_sim_v0:
+      allow_sliding: false
   dataset:
     content_scenes: ['00744-1S7LAXRdDqK']
 
