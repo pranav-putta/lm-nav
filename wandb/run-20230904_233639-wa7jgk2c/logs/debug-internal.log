@@ -1,0 +1,165 @@
+2023-09-04 23:36:39,267 INFO    StreamThr :2876564 [internal.py:wandb_internal():86] W&B internal server running at pid: 2876564, started at: 2023-09-04 23:36:39.266645
+2023-09-04 23:36:39,269 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status
+2023-09-04 23:36:39,273 INFO    WriterThread:2876564 [datastore.py:open_for_write():85] open: /coc/testnvme/pputta7/projects/lm-nav/wandb/run-20230904_233639-wa7jgk2c/run-wa7jgk2c.wandb
+2023-09-04 23:36:39,274 DEBUG   SenderThread:2876564 [sender.py:send():379] send: header
+2023-09-04 23:36:39,437 DEBUG   SenderThread:2876564 [sender.py:send():379] send: run
+2023-09-04 23:36:39,675 INFO    SenderThread:2876564 [dir_watcher.py:__init__():211] watching files in: /coc/testnvme/pputta7/projects/lm-nav/wandb/run-20230904_233639-wa7jgk2c/files
+2023-09-04 23:36:39,675 INFO    SenderThread:2876564 [sender.py:_start_run_threads():1121] run started: wa7jgk2c with start time 1693884999.267449
+2023-09-04 23:36:39,675 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: summary_record
+2023-09-04 23:36:39,677 INFO    SenderThread:2876564 [sender.py:_save_file():1375] saving file wandb-summary.json with policy end
+2023-09-04 23:36:39,681 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: check_version
+2023-09-04 23:36:39,681 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: check_version
+2023-09-04 23:36:39,775 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: run_start
+2023-09-04 23:36:39,782 DEBUG   HandlerThread:2876564 [system_info.py:__init__():31] System info init
+2023-09-04 23:36:39,782 DEBUG   HandlerThread:2876564 [system_info.py:__init__():46] System info init done
+2023-09-04 23:36:39,782 INFO    HandlerThread:2876564 [system_monitor.py:start():181] Starting system monitor
+2023-09-04 23:36:39,782 INFO    SystemMonitor:2876564 [system_monitor.py:_start():145] Starting system asset monitoring threads
+2023-09-04 23:36:39,783 INFO    HandlerThread:2876564 [system_monitor.py:probe():201] Collecting system info
+2023-09-04 23:36:39,784 INFO    SystemMonitor:2876564 [interfaces.py:start():190] Started cpu monitoring
+2023-09-04 23:36:39,785 INFO    SystemMonitor:2876564 [interfaces.py:start():190] Started disk monitoring
+2023-09-04 23:36:39,785 INFO    SystemMonitor:2876564 [interfaces.py:start():190] Started gpu monitoring
+2023-09-04 23:36:39,786 INFO    SystemMonitor:2876564 [interfaces.py:start():190] Started memory monitoring
+2023-09-04 23:36:39,788 INFO    SystemMonitor:2876564 [interfaces.py:start():190] Started network monitoring
+2023-09-04 23:36:39,847 DEBUG   HandlerThread:2876564 [system_info.py:probe():195] Probing system
+2023-09-04 23:36:39,856 DEBUG   HandlerThread:2876564 [system_info.py:_probe_git():180] Probing git
+2023-09-04 23:36:39,873 DEBUG   HandlerThread:2876564 [system_info.py:_probe_git():188] Probing git done
+2023-09-04 23:36:39,873 DEBUG   HandlerThread:2876564 [system_info.py:probe():240] Probing system done
+2023-09-04 23:36:39,873 DEBUG   HandlerThread:2876564 [system_monitor.py:probe():210] {'os': 'Linux-5.4.0-150-generic-x86_64-with-glibc2.31', 'python': '3.9.17', 'heartbeatAt': '2023-09-05T03:36:39.847574', 'startedAt': '2023-09-05T03:36:39.256409', 'docker': None, 'cuda': None, 'args': ('lmnav/configs/habitat/train_imagenav_hm3d.yaml',), 'state': 'running', 'program': '/coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py', 'codePath': 'lmnav/bc_train.py', 'git': {'remote': 'https://github.com/pranav-putta/lm-nav.git', 'commit': '22306bddbb32088acbcd10f9da5faa5f858a79e4'}, 'email': 'pranav.putta22@gmail.com', 'root': '/coc/testnvme/pputta7/projects/lm-nav', 'host': 'clippy', 'username': 'pputta7', 'executable': '/coc/testnvme/pputta7/mambaforge/envs/lmnav/bin/python', 'cpu_count': 64, 'cpu_count_logical': 128, 'cpu_freq': {'current': 1949.2912421874998, 'min': 1500.0, 'max': 2350.0}, 'cpu_freq_per_core': [{'current': 1800.358, 'min': 1500.0, 'max': 2350.0}, {'current': 1799.75, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.785, 'min': 1500.0, 'max': 2350.0}, {'current': 1779.162, 'min': 1500.0, 'max': 2350.0}, {'current': 1795.571, 'min': 1500.0, 'max': 2350.0}, {'current': 1799.583, 'min': 1500.0, 'max': 2350.0}, {'current': 1797.409, 'min': 1500.0, 'max': 2350.0}, {'current': 1796.565, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.345, 'min': 1500.0, 'max': 2350.0}, {'current': 1797.179, 'min': 1500.0, 'max': 2350.0}, {'current': 1799.269, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.407, 'min': 1500.0, 'max': 2350.0}, {'current': 1720.631, 'min': 1500.0, 'max': 2350.0}, {'current': 1720.917, 'min': 1500.0, 'max': 2350.0}, {'current': 2596.439, 'min': 1500.0, 'max': 2350.0}, {'current': 1724.257, 'min': 1500.0, 'max': 2350.0}, {'current': 1799.021, 'min': 1500.0, 'max': 2350.0}, {'current': 1797.415, 'min': 1500.0, 'max': 2350.0}, {'current': 1696.591, 'min': 1500.0, 'max': 2350.0}, {'current': 1799.029, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.59, 'min': 1500.0, 'max': 2350.0}, {'current': 1797.651, 'min': 1500.0, 'max': 2350.0}, {'current': 1793.94, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.784, 'min': 1500.0, 'max': 2350.0}, {'current': 1800.591, 'min': 1500.0, 'max': 2350.0}, {'current': 1781.995, 'min': 1500.0, 'max': 2350.0}, {'current': 1785.913, 'min': 1500.0, 'max': 2350.0}, {'current': 1778.557, 'min': 1500.0, 'max': 2350.0}, {'current': 1626.115, 'min': 1500.0, 'max': 2350.0}, {'current': 1614.236, 'min': 1500.0, 'max': 2350.0}, {'current': 1610.993, 'min': 1500.0, 'max': 2350.0}, {'current': 1795.501, 'min': 1500.0, 'max': 2350.0}, {'current': 1733.013, 'min': 1500.0, 'max': 2350.0}, {'current': 1615.994, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.956, 'min': 1500.0, 'max': 2350.0}, {'current': 1795.88, 'min': 1500.0, 'max': 2350.0}, {'current': 1795.807, 'min': 1500.0, 'max': 2350.0}, {'current': 1797.191, 'min': 1500.0, 'max': 2350.0}, {'current': 1795.116, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.132, 'min': 1500.0, 'max': 2350.0}, {'current': 1796.203, 'min': 1500.0, 'max': 2350.0}, {'current': 1797.167, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.416, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.867, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.696, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.907, 'min': 1500.0, 'max': 2350.0}, {'current': 1796.048, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.264, 'min': 1500.0, 'max': 2350.0}, {'current': 3352.391, 'min': 1500.0, 'max': 2350.0}, {'current': 1673.837, 'min': 1500.0, 'max': 2350.0}, {'current': 1674.516, 'min': 1500.0, 'max': 2350.0}, {'current': 1671.661, 'min': 1500.0, 'max': 2350.0}, {'current': 1676.258, 'min': 1500.0, 'max': 2350.0}, {'current': 1673.796, 'min': 1500.0, 'max': 2350.0}, {'current': 1674.542, 'min': 1500.0, 'max': 2350.0}, {'current': 2901.156, 'min': 1500.0, 'max': 2350.0}, {'current': 1799.986, 'min': 1500.0, 'max': 2350.0}, {'current': 1779.313, 'min': 1500.0, 'max': 2350.0}, {'current': 1621.043, 'min': 1500.0, 'max': 2350.0}, {'current': 1797.602, 'min': 1500.0, 'max': 2350.0}, {'current': 3328.972, 'min': 1500.0, 'max': 2350.0}, {'current': 1670.618, 'min': 1500.0, 'max': 2350.0}, {'current': 1671.868, 'min': 1500.0, 'max': 2350.0}, {'current': 1674.161, 'min': 1500.0, 'max': 2350.0}, {'current': 1647.84, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.636, 'min': 1500.0, 'max': 2350.0}, {'current': 1653.968, 'min': 1500.0, 'max': 2350.0}, {'current': 1522.366, 'min': 1500.0, 'max': 2350.0}, {'current': 1657.839, 'min': 1500.0, 'max': 2350.0}, {'current': 1657.191, 'min': 1500.0, 'max': 2350.0}, {'current': 1787.661, 'min': 1500.0, 'max': 2350.0}, {'current': 1660.399, 'min': 1500.0, 'max': 2350.0}, {'current': 1646.085, 'min': 1500.0, 'max': 2350.0}, {'current': 1637.781, 'min': 1500.0, 'max': 2350.0}, {'current': 1655.979, 'min': 1500.0, 'max': 2350.0}, {'current': 1660.496, 'min': 1500.0, 'max': 2350.0}, {'current': 1664.642, 'min': 1500.0, 'max': 2350.0}, {'current': 1667.306, 'min': 1500.0, 'max': 2350.0}, {'current': 2290.379, 'min': 1500.0, 'max': 2350.0}, {'current': 1797.315, 'min': 1500.0, 'max': 2350.0}, {'current': 2064.668, 'min': 1500.0, 'max': 2350.0}, {'current': 2015.587, 'min': 1500.0, 'max': 2350.0}, {'current': 3356.076, 'min': 1500.0, 'max': 2350.0}, {'current': 2027.088, 'min': 1500.0, 'max': 2350.0}, {'current': 2155.155, 'min': 1500.0, 'max': 2350.0}, {'current': 2102.861, 'min': 1500.0, 'max': 2350.0}, {'current': 2097.331, 'min': 1500.0, 'max': 2350.0}, {'current': 2303.806, 'min': 1500.0, 'max': 2350.0}, {'current': 2384.41, 'min': 1500.0, 'max': 2350.0}, {'current': 2287.873, 'min': 1500.0, 'max': 2350.0}, {'current': 2263.567, 'min': 1500.0, 'max': 2350.0}, {'current': 1741.653, 'min': 1500.0, 'max': 2350.0}, {'current': 1795.917, 'min': 1500.0, 'max': 2350.0}, {'current': 1799.687, 'min': 1500.0, 'max': 2350.0}, {'current': 1799.385, 'min': 1500.0, 'max': 2350.0}, {'current': 1797.449, 'min': 1500.0, 'max': 2350.0}, {'current': 2328.033, 'min': 1500.0, 'max': 2350.0}, {'current': 2279.242, 'min': 1500.0, 'max': 2350.0}, {'current': 2273.621, 'min': 1500.0, 'max': 2350.0}, {'current': 2293.223, 'min': 1500.0, 'max': 2350.0}, {'current': 2293.602, 'min': 1500.0, 'max': 2350.0}, {'current': 2257.157, 'min': 1500.0, 'max': 2350.0}, {'current': 2267.761, 'min': 1500.0, 'max': 2350.0}, {'current': 2260.276, 'min': 1500.0, 'max': 2350.0}, {'current': 1793.904, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.323, 'min': 1500.0, 'max': 2350.0}, {'current': 1801.25, 'min': 1500.0, 'max': 2350.0}, {'current': 1801.038, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.766, 'min': 1500.0, 'max': 2350.0}, {'current': 1798.368, 'min': 1500.0, 'max': 2350.0}, {'current': 1799.243, 'min': 1500.0, 'max': 2350.0}, {'current': 1796.87, 'min': 1500.0, 'max': 2350.0}, {'current': 3348.361, 'min': 1500.0, 'max': 2350.0}, {'current': 1674.123, 'min': 1500.0, 'max': 2350.0}, {'current': 1672.724, 'min': 1500.0, 'max': 2350.0}, {'current': 2389.394, 'min': 1500.0, 'max': 2350.0}, {'current': 1673.531, 'min': 1500.0, 'max': 2350.0}, {'current': 1672.227, 'min': 1500.0, 'max': 2350.0}, {'current': 1670.388, 'min': 1500.0, 'max': 2350.0}, {'current': 3341.059, 'min': 1500.0, 'max': 2350.0}, {'current': 1801.804, 'min': 1500.0, 'max': 2350.0}, {'current': 1796.14, 'min': 1500.0, 'max': 2350.0}, {'current': 1799.196, 'min': 1500.0, 'max': 2350.0}, {'current': 1795.974, 'min': 1500.0, 'max': 2350.0}, {'current': 3350.7, 'min': 1500.0, 'max': 2350.0}, {'current': 1672.575, 'min': 1500.0, 'max': 2350.0}, {'current': 1674.014, 'min': 1500.0, 'max': 2350.0}, {'current': 1674.65, 'min': 1500.0, 'max': 2350.0}], 'disk': {'total': 879.0163383483887, 'used': 51.80024719238281}, 'gpu': 'NVIDIA A40', 'gpu_count': 8, 'gpu_devices': [{'name': 'NVIDIA A40', 'memory_total': 48305799168}, {'name': 'NVIDIA A40', 'memory_total': 48305799168}, {'name': 'NVIDIA A40', 'memory_total': 48305799168}, {'name': 'NVIDIA A40', 'memory_total': 48305799168}, {'name': 'NVIDIA A40', 'memory_total': 48305799168}, {'name': 'NVIDIA A40', 'memory_total': 48305799168}, {'name': 'NVIDIA A40', 'memory_total': 48305799168}, {'name': 'NVIDIA A40', 'memory_total': 48305799168}], 'memory': {'total': 503.7443733215332}}
+2023-09-04 23:36:39,873 INFO    HandlerThread:2876564 [system_monitor.py:probe():211] Finished collecting system info
+2023-09-04 23:36:39,873 INFO    HandlerThread:2876564 [system_monitor.py:probe():214] Publishing system info
+2023-09-04 23:36:39,873 DEBUG   HandlerThread:2876564 [system_info.py:_save_pip():51] Saving list of pip packages installed into the current environment
+2023-09-04 23:36:39,875 DEBUG   HandlerThread:2876564 [system_info.py:_save_pip():67] Saving pip packages done
+2023-09-04 23:36:39,875 DEBUG   HandlerThread:2876564 [system_info.py:_save_conda():74] Saving list of conda packages installed into the current environment
+2023-09-04 23:36:40,677 INFO    Thread-12 :2876564 [dir_watcher.py:_on_file_created():271] file/dir created: /coc/testnvme/pputta7/projects/lm-nav/wandb/run-20230904_233639-wa7jgk2c/files/requirements.txt
+2023-09-04 23:36:40,678 INFO    Thread-12 :2876564 [dir_watcher.py:_on_file_created():271] file/dir created: /coc/testnvme/pputta7/projects/lm-nav/wandb/run-20230904_233639-wa7jgk2c/files/wandb-summary.json
+2023-09-04 23:36:40,678 INFO    Thread-12 :2876564 [dir_watcher.py:_on_file_created():271] file/dir created: /coc/testnvme/pputta7/projects/lm-nav/wandb/run-20230904_233639-wa7jgk2c/files/conda-environment.yaml
+2023-09-04 23:36:46,258 DEBUG   HandlerThread:2876564 [system_info.py:_save_conda():86] Saving conda packages done
+2023-09-04 23:36:46,261 INFO    HandlerThread:2876564 [system_monitor.py:probe():216] Finished publishing system info
+2023-09-04 23:36:46,271 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:36:46,271 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: keepalive
+2023-09-04 23:36:46,271 DEBUG   SenderThread:2876564 [sender.py:send():379] send: files
+2023-09-04 23:36:46,271 INFO    SenderThread:2876564 [sender.py:_save_file():1375] saving file wandb-metadata.json with policy now
+2023-09-04 23:36:46,278 DEBUG   SenderThread:2876564 [sender.py:send():379] send: telemetry
+2023-09-04 23:36:46,279 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:36:46,279 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:36:46,596 INFO    wandb-upload_0:2876564 [upload_job.py:push():131] Uploaded file /tmp/tmp33a1b6npwandb/ts0oh8ro-wandb-metadata.json
+2023-09-04 23:36:46,683 INFO    Thread-12 :2876564 [dir_watcher.py:_on_file_modified():288] file/dir modified: /coc/testnvme/pputta7/projects/lm-nav/wandb/run-20230904_233639-wa7jgk2c/files/conda-environment.yaml
+2023-09-04 23:36:46,683 INFO    Thread-12 :2876564 [dir_watcher.py:_on_file_created():271] file/dir created: /coc/testnvme/pputta7/projects/lm-nav/wandb/run-20230904_233639-wa7jgk2c/files/wandb-metadata.json
+2023-09-04 23:36:50,356 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:36:55,357 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:00,358 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:01,277 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:37:01,278 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:37:05,430 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:10,435 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:12,704 INFO    Thread-12 :2876564 [dir_watcher.py:_on_file_modified():288] file/dir modified: /coc/testnvme/pputta7/projects/lm-nav/wandb/run-20230904_233639-wa7jgk2c/files/config.yaml
+2023-09-04 23:37:16,277 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:37:16,278 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:37:17,385 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:22,386 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:27,386 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:31,277 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:37:31,278 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:37:33,342 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:38,343 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:39,788 DEBUG   SystemMonitor:2876564 [system_monitor.py:_start():159] Starting system metrics aggregation loop
+2023-09-04 23:37:39,791 DEBUG   SenderThread:2876564 [sender.py:send():379] send: stats
+2023-09-04 23:37:43,793 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:46,277 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:37:46,278 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:37:49,354 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:54,355 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:37:59,355 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:38:01,277 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:38:01,278 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:38:04,369 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:38:09,370 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:38:09,794 DEBUG   SenderThread:2876564 [sender.py:send():379] send: stats
+2023-09-04 23:38:14,796 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:38:16,277 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:38:16,278 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:38:20,380 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:38:25,381 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:38:30,382 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:38:31,279 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:38:31,279 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:38:35,398 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:38:39,797 DEBUG   SenderThread:2876564 [sender.py:send():379] send: stats
+2023-09-04 23:38:40,798 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:38:45,800 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:38:46,279 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:38:46,279 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:38:51,429 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:38:56,430 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:39:01,280 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:39:01,281 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:39:02,429 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:39:07,430 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:39:09,800 DEBUG   SenderThread:2876564 [sender.py:send():379] send: stats
+2023-09-04 23:39:12,802 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:39:16,279 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:39:16,280 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:39:18,433 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:39:23,434 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:39:28,435 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:39:31,279 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:39:31,280 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:39:34,332 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:39:39,333 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:39:39,801 DEBUG   SenderThread:2876564 [sender.py:send():379] send: stats
+2023-09-04 23:39:44,803 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:39:46,280 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:39:46,280 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:39:50,437 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:39:55,438 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:00,439 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:01,279 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:40:01,280 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:40:06,425 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:09,804 DEBUG   SenderThread:2876564 [sender.py:send():379] send: stats
+2023-09-04 23:40:11,806 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:16,281 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:40:16,281 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:40:17,359 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:22,361 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:27,362 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:31,280 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:40:31,281 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:40:33,360 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:38,361 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:39,806 DEBUG   SenderThread:2876564 [sender.py:send():379] send: stats
+2023-09-04 23:40:43,807 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:46,280 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:40:46,281 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:40:49,393 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:54,393 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:40:59,395 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:41:01,280 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:41:01,281 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:41:04,437 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:41:09,438 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:41:09,808 DEBUG   SenderThread:2876564 [sender.py:send():379] send: stats
+2023-09-04 23:41:14,810 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:41:16,281 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:41:16,282 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:41:20,385 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:41:25,386 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:41:30,387 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:41:31,281 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:41:31,282 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:41:36,344 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:41:39,810 DEBUG   SenderThread:2876564 [sender.py:send():379] send: stats
+2023-09-04 23:41:41,812 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:41:46,282 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:41:46,282 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:41:47,429 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:41:52,430 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:41:57,431 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:42:01,281 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:42:01,283 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status
+2023-09-04 23:42:03,372 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:42:08,373 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:42:09,814 DEBUG   SenderThread:2876564 [sender.py:send():379] send: stats
+2023-09-04 23:42:13,816 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: status_report
+2023-09-04 23:42:16,281 DEBUG   HandlerThread:2876564 [handler.py:handle_request():144] handle_request: stop_status
+2023-09-04 23:42:16,282 DEBUG   SenderThread:2876564 [sender.py:send_request():406] send_request: stop_status

@@ -1,5 +1,7 @@
 import os
+import copy
 import multiprocessing as mp
+from time import sleep
 
 import habitat
 import habitat.gym
@@ -48,15 +50,16 @@ os.environ["HABITAT_SIM_LOG"] = "quiet"
 os.chdir('/srv/flash1/pputta7/projects/lm-nav')
 
 
+
 def _init_envs(config=None, is_eval: bool = False):
     env_factory = hydra.utils.instantiate(config.habitat_baselines.vector_env_factory)
+    print(f"Initializing environment: {config.habitat.simulator.habitat_sim_v0.gpu_device_id}")
     envs = env_factory.construct_envs(
             config,
             workers_ignore_signals=is_slurm_batch_job(),
             enforce_scenes_greater_eq_environments=is_eval,
             is_first_rank=(
-                not torch.distributed.is_initialized()
-                or torch.distributed.get_rank() == 0
+            config.habitat.simulator.habitat_sim_v0.gpu_device_id == 0 
             ),
         )
     _env_spec = EnvironmentSpec(
@@ -76,9 +79,8 @@ def _create_obs_transforms(config, env_spec):
 
 def _setup_teacher(teacher_ckpt, obs_space, action_space):
     teacher = OldEAIPolicy.hardcoded(OldEAIPolicy, obs_space, action_space)
-    torch.set_grad_enabled(False)
 
-    ckpt_dict = torch.load(teacher_ckpt)
+    ckpt_dict = torch.load(teacher_ckpt, map_location='cpu')
     state_dict = ckpt_dict['state_dict']
     state_dict = {k[len('actor_critic.'):]: v for k, v in state_dict.items()}
 
@@ -107,10 +109,12 @@ def _construct_state_tensors(num_environments, device):
     return rnn_hx, prev_actions, not_done_masks 
     
     
-def collect_episodes(config, device, child_conn,
+def collect_episodes(config, device, env_vars, child_conn,
                      deterministic=False, filter_fn=None):
     
     print(f"Starting data collection process on device {device}")
+    for key, value in env_vars.items():
+        os.environ[key] = value
     
     envs, teacher, obs_transform = _initialize(config)
     
@@ -124,9 +128,9 @@ def collect_episodes(config, device, child_conn,
 
     rnn_hx, prev_actions, not_done_masks = _construct_state_tensors(num_envs, device)
 
-    teacher.to(device)
-    teacher.eval()
-    
+    teacher = teacher.to(device)
+    teacher = teacher.eval()
+
     observations = envs.reset()
     total_episodes = 0
     num_succ_episodes = 0
@@ -203,13 +207,16 @@ def start_data_gen_process(device, config, deterministic=False):
     """
     This function constructs a multiprocessing server to collect data and returns a queue which can be called to retrieve
     """
-    ctx = mp.get_context('spawn')
+    env_vars = {k: v for k, v in os.environ.items()}    
+    ctx = mp.get_context('forkserver')
     parent_conn, child_conn = ctx.Pipe()
 
-    p = ctx.Process(target=collect_episodes, args=(config, device, 
+    # collect_episodes(config, device, env_vars, child_conn, deterministic, filter_fn)
+    p = ctx.Process(target=collect_episodes, args=(config, device, env_vars,
                                                    child_conn, deterministic, filter_fn))
     p.start()
     return p, parent_conn 
+    return None, None
     
 
     

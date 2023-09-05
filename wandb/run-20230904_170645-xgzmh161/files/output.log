@@ -1,0 +1,35 @@
+Traceback (most recent call last):
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py", line 324, in <module>
+    self.writer.write(stats)
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py", line 318, in main
+    for i, done in enumerate(dones):
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py", line 221, in train
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py", line 179, in train_epoch
+    if i < num_grad_accums - 1:
+  File "/coc/testnvme/pputta7/mambaforge/envs/lmnav/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/coc/testnvme/pputta7/mambaforge/envs/lmnav/lib/python3.9/site-packages/torch/nn/parallel/distributed.py", line 1156, in forward
+    output = self._run_ddp_forward(*inputs, **kwargs)
+  File "/coc/testnvme/pputta7/mambaforge/envs/lmnav/lib/python3.9/site-packages/torch/nn/parallel/distributed.py", line 1110, in _run_ddp_forward
+    return module_to_run(*inputs[0], **kwargs[0])  # type: ignore[index]
+  File "/coc/testnvme/pputta7/mambaforge/envs/lmnav/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/models/lin_nav_llama.py", line 262, in forward
+    outputs = self.llama_model(inputs_embeds=embd,
+  File "/coc/testnvme/pputta7/mambaforge/envs/lmnav/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/models/modeling_llama.py", line 676, in forward
+    outputs = self.model(
+  File "/coc/testnvme/pputta7/mambaforge/envs/lmnav/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/models/modeling_llama.py", line 565, in forward
+    layer_outputs = decoder_layer(
+  File "/coc/testnvme/pputta7/mambaforge/envs/lmnav/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/models/modeling_llama.py", line 275, in forward
+    hidden_states, self_attn_weights, present_key_value = self.self_attn(
+  File "/coc/testnvme/pputta7/mambaforge/envs/lmnav/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/models/modeling_llama.py", line 214, in forward
+    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 70.00 MiB (GPU 0; 44.39 GiB total capacity; 31.10 GiB already allocated; 53.88 MiB free; 31.80 GiB reserved in total by PyTorch) If reserved memory is >> allocated memory try setting max_split_size_mb to avoid fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF

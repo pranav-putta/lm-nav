@@ -1,0 +1,83 @@
+
+Loading VIT
+Loading VIT Done
+Loading Q-Former
+Using pad_token, but it is not set yet.
+
+Loading checkpoint shards: 100%|████████████████████████████████████████████████████████| 2/2 [00:01<00:00,  1.63it/s]
+Done setting up student! Total params: 7832625024. Trainable Params: 3149824
+Params with gradients
+['llama_proj.weight', 'llama_proj.bias']
+> /coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py(297)eval_checkpoint()
+->
+292  	            rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
+293  	            outputs = self.agent(rgbs_t, goals_t, actions_t)
+294  	
+295  	            act_pos_delta = [33 * (max_len - l) + 1 for l in lens]
+296  	            logits = outputs.logits
+297  ->	
+298  	            import pdb
+299  	            pdb.set_trace()
+300  	            act_logits = logits[:, [-d for d in act_pos_delta]]
+301  	
+302  	            # project onto the action space
+torch.Size([1, 123, 32000])
+[1]
+[1]
+303  	            actions = []
+304  	            for i in range(len(partial_episodes)):
+305  	                act_logits = logits[i, -act_pos_delta[i], tokens]
+306  	                act_logits = F.softmax(act_logits)
+307  	                actions.append(act_logits.argmax().item())
+308  	
+309  	            outputs = envs.step(actions)
+310  	            next_observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)]
+311  	
+312  	            for i in range(len(episodes)):
+313  	                episodes[i][-1] = {
+torch.Size([1, 123, 32000])
+torch.Size([1, 1, 32000])
+--Call--
+> /coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py(297)<listcomp>()
+->
+292  	            rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
+293  	            outputs = self.agent(rgbs_t, goals_t, actions_t)
+294  	
+295  	            act_pos_delta = [33 * (max_len - l) + 1 for l in lens]
+296  	            logits = outputs.logits
+297  ->	
+298  	            import pdb
+299  	            pdb.set_trace()
+300  	            act_logits = logits[:, [-d for d in act_pos_delta]]
+301  	
+302  	            # project onto the action space
+*** NameError: name 'act_logits' is not defined
+> /coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py(297)<listcomp>()
+->
+*** NameError: name 'act_logits' is not defined
+292  	            rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
+293  	            outputs = self.agent(rgbs_t, goals_t, actions_t)
+294  	
+295  	            act_pos_delta = [33 * (max_len - l) + 1 for l in lens]
+296  	            logits = outputs.logits
+297  ->	
+298  	            import pdb
+299  	            pdb.set_trace()
+300  	            act_logits = logits[:, [-d for d in act_pos_delta]]
+301  	
+302  	            # project onto the action space
+> /coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py(297)<listcomp>()
+->
+*** NameError: name 'act_logits' is not defined
+Traceback (most recent call last):
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py", line 351, in <module>
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py", line 347, in main
+    trainer.train()
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py", line 297, in eval_checkpoint
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py", line 297, in <listcomp>
+  File "/coc/testnvme/pputta7/projects/lm-nav/lmnav/bc_train.py", line 297, in <listcomp>
+  File "/coc/testnvme/pputta7/mambaforge/envs/lmnav/lib/python3.9/bdb.py", line 88, in trace_dispatch
+    return self.dispatch_line(frame)
+  File "/coc/testnvme/pputta7/mambaforge/envs/lmnav/lib/python3.9/bdb.py", line 113, in dispatch_line
+    if self.quitting: raise BdbQuit
+bdb.BdbQuit

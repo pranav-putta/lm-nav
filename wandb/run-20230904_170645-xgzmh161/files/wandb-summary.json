@@ -1,0 +1,1 @@
+{"episode_wait": 41.82527160644531, "epoch": 8.0, "generator_episode_len": 80.8499984741211, "generator_episode_num": 43.0, "generator_running_accuracy": 0.708831787109375, "generator_step": 876.7999877929688, "loss": 7.1015625, "_timestamp": 1693862308.3279464, "_runtime": 702.5209894180298, "_step": 8, "_wandb": {"runtime": 792}}

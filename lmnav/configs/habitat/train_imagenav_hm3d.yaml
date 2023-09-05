@@ -1,0 +1,56 @@
+# @package _global_
+
+defaults:
+  - /benchmark/nav/imagenav/imagenav_base
+  - /habitat_baselines: habitat_baselines_rl_config_base
+  - /habitat/dataset/imagenav: hm3d
+  - /habitat_baselines/rl/policy/obs_transforms:
+    - resize_shortest_edge_base 
+  - _self_
+
+bc:
+  teacher_ckpt: "ckpts/uLHP.300.pth" 
+  writer: "wb"
+  dtg_threshold: 1.0
+  epochs: 1000
+  batch_size: 2
+  lr: 2.5e-5
+  ckpt_freq: 100
+  ckpt_folder: "experiments/lmnav_imagenav/"
+  mode: 'train'
+
+habitat_baselines:
+  num_environments: 10
+  wb:
+    project_name: "lmnav"
+    run_name: "lmnav_imagenav"
+    group: "train"
+      
+  rl:
+    policy:
+      name: PointNavResNetPolicy
+      obs_transforms:
+        resize_shortest_edge:
+          size: 120
+          trans_keys: [rgb, depth, imagegoal]
+
+    ddppo:
+      distrib_backend: "NCCL" 
+        
+habitat:
+  environment:
+    max_episode_steps: 500
+  simulator:
+    turn_angle: 30
+    agents:
+      main_agent:
+        sim_sensors:
+          rgb_sensor:
+            width: 640
+            height: 480
+          depth_sensor:
+            width: 640
+            height: 480
+  dataset:
+    content_scenes: ['00744-1S7LAXRdDqK']
+

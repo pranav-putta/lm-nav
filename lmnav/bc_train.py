@@ -1,4 +1,6 @@
 import time
+from habitat_baselines.utils.common import batch_obs
+from habitat_sim.utils.datasets_download import argparse
 import numpy as np
 import random
 
@@ -10,6 +12,8 @@ from habitat.config import read_write
 from habitat_baselines.rl.ddppo.ddp_utils import (init_distrib_slurm, get_distrib_size, rank0_only)
 
 import torch
+import torch.nn.functional as F
+import os
 import torch.distributed
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -19,12 +23,19 @@ import multiprocessing as mp
 from typing import Any
 from lmnav.common.writer import get_writer
 
-from lmnav.data_gen import start_data_gen_process
+from lmnav.data_gen import start_data_gen_process, _init_envs
 from lmnav.common.config import Config as NavLLAMAConfig
 from lmnav.models import *
 from lmnav.processors import *
 from lmnav.common.registry import registry as llama_registry
 from lmnav.common.episode_processor import apply_transforms_inputs, extract_inputs_from_dataset, sample_subsequences
+
+
+os.environ["MAGNUM_LOG"] = "quiet"
+os.environ["HABITAT_SIM_LOG"] = "quiet"
+
+os.chdir('/srv/flash1/pputta7/projects/lm-nav')
+
 
 
 class BCTrainer:
@@ -36,14 +47,28 @@ class BCTrainer:
         self.cfg_path = cfg_path
         self.config = habitat.get_config(self.cfg_path)
 
-        self.writer = get_writer(self.config) 
         
-    
+        
+    def initialize_eval(self):
+        """
+        Initializes controller for evaluation process.
+        NOTE: distributed eval is not set up here
+        """
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.rank = 0
+        self.is_distributed = False
+        
+        self.writer = get_writer(self.config) 
+
+        self.agent = self.setup_student()
+        self.agent.eval()
+
+        
     def initialize_train(self):
         """
         Initializes distributed controller for DDP, starts data generator process
         """
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.is_distributed = get_distrib_size()[2] > 1 or True
 
@@ -71,18 +96,23 @@ class BCTrainer:
             self.num_rollouts_done_store = torch.distributed.PrefixStore("rollout_tracker", tcp_store)
             self.num_rollouts_done_store.set("num_done", "0")
 
-            self.device = f"cuda:{local_rank}"
+            self.device = torch.device(f"cuda:{local_rank}")
             
         # start data generator process
+        print(f"Now starting gen process on {self.rank}")
         self.data_process, self.data_conn = start_data_gen_process(self.device, self.config, deterministic=False)
 
         # set up student
         self.agent = self.setup_student()
+        os.makedirs(self.config.bc.ckpt_folder, exist_ok=True)
 
         # set up optimizer
         optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
         self.optim = torch.optim.Adam(params=optim_params, lr=self.config.bc.lr)
         self.dataset = []
+        
+        if rank0_only(): 
+            self.writer = get_writer(self.config) 
 
 
     def setup_student(self):
@@ -103,8 +133,9 @@ class BCTrainer:
 
         agent = model.to(self.device)
         
-        print(f"Setting up DDP on GPU {self.rank}")
-        agent = DDP(agent, device_ids=[self.rank])
+        if self.is_distributed:
+            print(f"Setting up DDP on GPU {self.rank}")
+            agent = DDP(agent, device_ids=[self.rank])
 
         num_params = sum([param.numel() for param in agent.parameters()])
         num_trainable_params = sum([param.numel() for param in agent.parameters() if param.requires_grad])
@@ -123,7 +154,7 @@ class BCTrainer:
         num_samples = 2
         max_state_length = 20
         num_bc_epochs = 4
-        min_episodes = 10
+        min_episodes = 5
         max_episodes = 20
         num_grad_accums = 4
 
@@ -137,7 +168,6 @@ class BCTrainer:
         if len(self.dataset) > max_episodes:
             self.dataset = self.dataset[len(self.dataset) - max_episodes:]
 
-        print(f"Running behavior cloning over dataset of size: {len(self.dataset)}")
         rgbs, goals, actions = extract_inputs_from_dataset(self.dataset)
 
         total_loss = 0
@@ -165,7 +195,6 @@ class BCTrainer:
             
         avg_loss = total_loss / (num_bc_epochs * num_grad_accums)
 
-        print(f"Process {self.rank} epoch {epoch}. Average Loss: {avg_loss}")
 
         return {
             'loss': avg_loss,
@@ -204,13 +233,123 @@ class BCTrainer:
 
             if rank0_only():
                 self.writer.write(stats)
+
+                if epoch % self.config.bc.ckpt_freq == 0:
+                    ckpt_num = epoch // self.config.bc.ckpt_freq
+                    torch.save(self.agent.state_dict(), os.path.join(self.config.bc.ckpt_folder, f'ckpt.{ckpt_num}.pth')) 
+                    
+
+                    
+    def pad_sequences(self, seqs, dim):
+        p2d_partial = (0,) * ((len(seqs[0].shape) - dim - 1) * 2 + 1)
+        max_t = max([seq.shape[dim] for seq in seqs])
+        
+        padded_seqs = [F.pad(seq, p2d_partial + (max_t - seq.shape[dim],)) for seq in seqs]
+        return torch.stack(padded_seqs)
+
+    def eval_checkpoint(self, ckpt_path):
+        N_episodes = 100
+        T = 15
+        # load checkpoint
+        
+        # start evaluation
+        print(f"Starting evaluation of checkpoint {ckpt_path}")
+
+        num_episodes_done = 0
+        envs, env_spec = _init_envs(self.config)
+        self.initialize_eval()
+
+        past_kv = [None for _ in range(envs.num_envs)]
+        observations = envs.reset()
+
+        episodes = [[] for _ in range(envs.num_envs)]
+
+        stats = {
+            'total_episodes': 0,
+            'successful_episodes': 0 
+        }
+
+        
+        tokens = self.agent.llama_tokenizer('stop forward left right', add_special_tokens=False, return_tensors='pt') 
+        tokens = tokens.input_ids.to(self.device).squeeze()
+        
+        while num_episodes_done < N_episodes:
+            batch = batch_obs(observations, self.device)
+
+            for i in range(envs.num_envs):
+                episodes[i].append({
+                    'observation': observations[i],
+                    'action': 0
+                })
+                
+            partial_episodes = [e[-(T - 1):] for e in episodes][:2]
+
+            rgbs, goals, actions = extract_inputs_from_dataset(partial_episodes) 
+            rgbs_t = self.pad_sequences(rgbs, dim=0)
+            actions_t = self.pad_sequences(actions, dim=0)
+            goals_t = self.pad_sequences(goals, dim=0)
+            lens = [len(e) for e in partial_episodes]
+            max_len = max(lens)
+
+            rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
+            outputs = self.agent(rgbs_t, goals_t, actions_t)
+
+            act_pos_delta = [33 * (max_len - l) + 2 for l in lens]
+            logits = outputs.logits
+
+            import pdb
+
+            # project onto the action space
+            actions = []
+            for i in range(len(partial_episodes)):
+                pdb.set_trace()
+                act_logits = logits[i, -act_pos_delta[i], tokens]
+                act_logits = F.softmax(act_logits)
+                actions.append(act_logits.argmax().cpu().item())
+                
+            pdb.set_trace()
+            outputs = envs.step(actions)
+            next_observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)] 
+
+            for i in range(len(episodes)):
+                episodes[i][-1] = {
+                    'observation': observations[i],
+                    'reward': rewards_l[i],
+                    'info': infos[i],
+                    'action': actions[i]
+                }
             
-            
+            for i, done in enumerate(dones):
+                if done:
+                    stats['total_episodes'] += 1
+                    if episodes[i][-1]['info']['distance_to_goal'] < self.config.bc.dtg_threshold:
+                        stats['successful_episodes'] += 1
+
+                    self.writer.write(stats)
+                        
+            observations = next_observations
+               
+
 
 def main():
-    cfg_path = "lmnav/configs/habitat/imagenav_hm3d.yaml"
+    parser = argparse.ArgumentParser(description="Example argparse for cfg_path")
+    
+    # Add the 'cfg_path' argument
+    parser.add_argument('cfg_path', type=str, help="Path to the configuration file")
+
+    # Parse the command-line arguments
+    args = parser.parse_args()
+
+    # Access the value of 'cfg_path' argument
+    cfg_path = args.cfg_path
+    
     trainer = BCTrainer(cfg_path)
-    trainer.train()
+
+    if trainer.config.bc.mode == 'train':
+        trainer.train()
+    else:
+        trainer.eval_checkpoint(None)
+    # trainer.train()
 
 if __name__ == "__main__":
     main()
