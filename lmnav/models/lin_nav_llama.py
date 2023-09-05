@@ -1,9 +1,12 @@
 import logging
 import random
 
+import torch.nn.functional as F
+
 import torch
 from torch.cuda.amp import autocast as autocast
 import torch.nn as nn
+from lmnav.common.episode_processor import apply_transforms_inputs, extract_inputs_from_dataset
 
 from lmnav.common.registry import registry
 from lmnav.models.blip2 import Blip2Base, disabled_train
@@ -264,7 +267,67 @@ class LinNavLLAMA(Blip2Base):
                                     return_dict=True)
         
         return outputs
+
+    def pad_sequences(self, seqs, dim):
+        p2d_partial = (0,) * ((len(seqs[0].shape) - dim - 1) * 2 + 1)
+        max_t = max([seq.shape[dim] for seq in seqs])
         
+        padded_seqs = [F.pad(seq, p2d_partial + (max_t - seq.shape[dim],)) for seq in seqs]
+        return torch.stack(padded_seqs)
+
+
+    def action_generator(self, num_envs, T, deterministic=False):
+        """
+            action generator function, takes in the next rgb, goal, and action 
+        """
+        
+        episodes = [ [] for _ in range(num_envs) ] 
+        
+        act_tkn_ids = self.llama_tokenizer('stop forward left right', add_special_tokens=False, return_tensors='pt') 
+        act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
+        
+        while True:
+            observations, episode_idxs_to_reset = yield
+            
+            for i, episode in enumerate(episodes):
+                if i in episode_idxs_to_reset:
+                    episode.clear()
+
+                episode.append({
+                                    'observation': observations[i],
+                                    'action': 0
+                                })
+
+            
+            partial_episodes = [e[-(T - 1):] for e in episodes]
+            rgbs, goals, actions = extract_inputs_from_dataset(partial_episodes)
+
+            rgbs_t = self.pad_sequences(rgbs, dim=0)
+            actions_t = self.pad_sequences(actions, dim=0)
+            goals_t = self.pad_sequences(goals, dim=0)
+            lens = [len(e) for e in partial_episodes]
+            max_len = max(lens)
+
+            rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
+            outputs = self(rgbs_t, goals_t, actions_t) 
+
+            act_pos_delta = [33 * (max_len - l) + 2 for l in lens]
+            logits = outputs.logits
+
+            # project onto the action space
+            actions = []
+            for i in range(len(partial_episodes)):
+                act_logits = logits[i, -act_pos_delta[i], act_tkn_ids]
+                act_logits = F.softmax(act_logits)
+
+                action = act_logits.argmax().cpu().item()
+                actions.append(action)
+
+                episodes[i][-1]['action'] = action
+
+            yield actions
+            
+       
 
     @classmethod
     def from_config(cls, cfg):

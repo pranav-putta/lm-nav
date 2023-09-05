@@ -21,7 +21,10 @@ import torch
 import torch.nn.functional as F
 import os
 import torch.distributed
+from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
+
+import multiprocessing as mp
 
 from typing import Any
 from lmnav.common.writer import get_writer
@@ -40,7 +43,8 @@ os.environ["HABITAT_SIM_LOG"] = "quiet"
 os.chdir('/srv/flash1/pputta7/projects/lm-nav')
 
 
-class BCTrainer:
+
+class PPOTrainer:
     data_process: Any 
     data_conn: Any
 
@@ -49,6 +53,7 @@ class BCTrainer:
         self.cfg_path = cfg_path
         self.config = habitat.get_config(self.cfg_path)
 
+        
         
     def initialize_eval(self):
         """
@@ -103,11 +108,6 @@ class BCTrainer:
             self.num_rollouts_done_store.set("num_done", "0")
 
             
-        # start data generator process
-        print(f"Now starting gen process on {self.rank}")
-        self.data_process, self.data_conn = start_data_gen_process(self.device, self.config, deterministic=False)
-        
-      
         # set up student
         self.agent = self.setup_student()
         os.makedirs(self.config.bc.exp_folder, exist_ok=True)
@@ -156,6 +156,10 @@ class BCTrainer:
             pprint(params_with_gradients)
 
         return agent
+
+
+    def collect_env_samples(self):
+        pass
 
     
     def train_epoch(self, epoch):
@@ -269,30 +273,12 @@ class BCTrainer:
                    
 
                     
-    def save_episode_video(self, episode, num_episodes):
-        vid_folder = os.path.join(self.config.bc.exp_folder, 'videos')
-        os.makedirs(vid_folder, exist_ok=True)
+    def pad_sequences(self, seqs, dim):
+        p2d_partial = (0,) * ((len(seqs[0].shape) - dim - 1) * 2 + 1)
+        max_t = max([seq.shape[dim] for seq in seqs])
         
-        obs_infos = [(step['observation'], step['info']) for step in episode]
-        _, infos = zip(*obs_infos)
-        
-        frames = [observations_to_image(obs, info) for obs, info in obs_infos]
-        disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
-
-        os.makedirs(os.path.join(self.config.bc.exp_folder, 'videos'), exist_ok=True)
-        
-        generate_video(
-            video_option=['disk'],
-            video_dir=vid_folder,
-            images=frames,
-            episode_id=num_episodes,
-            checkpoint_idx=300,
-            metrics=extract_scalars_from_info(disp_info),
-            fps=self.config.habitat_baselines.video_fps,
-            tb_writer=None,
-            keys_to_include_in_name=self.config.habitat_baselines.eval_keys_to_include_in_name
-        )
-
+        padded_seqs = [F.pad(seq, p2d_partial + (max_t - seq.shape[dim],)) for seq in seqs]
+        return torch.stack(padded_seqs)
 
     def eval_checkpoint(self, ckpt_path):
         N_episodes = 100
@@ -314,35 +300,63 @@ class BCTrainer:
         for param in self.agent.parameters():
             param.requires_grad = False
 
+        past_kv = [None for _ in range(envs.num_envs)]
         observations = envs.reset()
 
         episodes = [[] for _ in range(envs.num_envs)]
-        episode_idxs_to_reset = set()
 
         stats = {
             'total_episodes': 0,
             'successful_episodes': 0 
         }
 
-        actor = self.agent.action_generator(envs.num_envs, T, deterministic=True)
+        
+        tokens = self.agent.llama_tokenizer('stop forward left right', add_special_tokens=False, return_tensors='pt') 
+        tokens = tokens.input_ids.to(self.device).squeeze()
+
         
         while num_episodes_done < N_episodes:
-            
-            next(actor)
-            actions = actor.send(observations, episode_idxs_to_reset) 
-            episode_idxs_to_reset = set()
-                        
+            batch = batch_obs(observations, self.device)
+
+            for i in range(envs.num_envs):
+                episodes[i].append({
+                    'observation': observations[i],
+                    'action': 0
+                })
+                
+            partial_episodes = [e[-(T - 1):] for e in episodes][:2]
+
+            rgbs, goals, actions = extract_inputs_from_dataset(partial_episodes) 
+            rgbs_t = self.pad_sequences(rgbs, dim=0)
+            actions_t = self.pad_sequences(actions, dim=0)
+            goals_t = self.pad_sequences(goals, dim=0)
+            lens = [len(e) for e in partial_episodes]
+            max_len = max(lens)
+
+            rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
+            outputs = self.agent(rgbs_t, goals_t, actions_t)
+
+            act_pos_delta = [33 * (max_len - l) + 2 for l in lens]
+            logits = outputs.logits
+
+
+            # project onto the action space
+            actions = []
+            for i in range(len(partial_episodes)):
+                act_logits = logits[i, -act_pos_delta[i], tokens]
+                act_logits = F.softmax(act_logits)
+                actions.append(act_logits.argmax().cpu().item())
+                
             outputs = envs.step(actions)
             next_observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)] 
 
-            # add environment observation to episodes list
             for i in range(len(episodes)):
-                episodes[i].append({
+                episodes[i][-1] = {
                     'observation': observations[i],
                     'reward': rewards_l[i],
                     'info': infos[i],
                     'action': actions[i]
-                })
+                }
             
             for i, done in enumerate(dones):
                 if done:
@@ -352,11 +366,31 @@ class BCTrainer:
                         stats['successful_episodes'] += 1
 
                     self.writer.write(stats)
-                    if self.config.bc.eval.save_videos:
-                        self.save_episode_video(episodes[i], stats['total_episodes'])
 
-                    # this is to tell actor generator to clear this episode from history
-                    episode_idxs_to_reset.add(i)
+                    if self.config.bc.eval.save_videos:
+                        vid_folder = os.path.join(self.config.bc.exp_folder, 'videos')
+                        os.makedirs(vid_folder, exist_ok=True)
+                        
+                        obs_infos = [(step['observation'], step['info']) for step in episodes[i]]
+                        observations, infos = zip(*obs_infos)
+                        
+                        frames = [observations_to_image(obs, info) for obs, info in obs_infos]
+                        disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
+
+                        os.makedirs(os.path.join(self.config.bc.exp_folder, 'videos'), exist_ok=True)
+                        
+                        generate_video(
+                            video_option=['disk'],
+                            video_dir=vid_folder,
+                            images=frames,
+                            episode_id={stats['total_episodes']},
+                            checkpoint_idx=300,
+                            metrics=extract_scalars_from_info(disp_info),
+                            fps=self.config.habitat_baselines.video_fps,
+                            tb_writer=None,
+                            keys_to_include_in_name=self.config.habitat_baselines.eval_keys_to_include_in_name
+                        )
+                    episodes[i] = []
 
             observations = next_observations
                
