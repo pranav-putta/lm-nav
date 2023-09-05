@@ -66,7 +66,6 @@ class Blip2Base(BaseModel):
         visual_encoder = create_eva_vit_g(
             img_size, drop_path_rate, use_grad_checkpoint, precision
         )
-
         ln_vision = LayerNorm(visual_encoder.num_features)
         return visual_encoder, ln_vision
 

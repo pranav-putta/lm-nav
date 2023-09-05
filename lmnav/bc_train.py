@@ -70,13 +70,18 @@ class BCTrainer:
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        self.is_distributed = get_distrib_size()[2] > 1 or True
-
+        local_rank, world_rank, world_size = get_distrib_size()
+        self.is_distributed = world_size > 1
+        
         if self.is_distributed:
+            self.device = torch.device(f"cuda:{local_rank}")
+            torch.cuda.set_device(self.device)
+
             # initialize slurm distributed controller
             backend = self.config.habitat_baselines.rl.ddppo.distrib_backend
             print(f"Starting distributed controller using {backend}")
             local_rank, tcp_store = init_distrib_slurm(backend)
+            
             self.rank = local_rank
 
             if rank0_only():
@@ -96,12 +101,13 @@ class BCTrainer:
             self.num_rollouts_done_store = torch.distributed.PrefixStore("rollout_tracker", tcp_store)
             self.num_rollouts_done_store.set("num_done", "0")
 
-            self.device = torch.device(f"cuda:{local_rank}")
             
         # start data generator process
         print(f"Now starting gen process on {self.rank}")
-        self.data_process, self.data_conn = start_data_gen_process(self.device, self.config, deterministic=False)
-
+        self.data_generator = start_data_gen_process(self.device, self.config, deterministic=False)()
+        next(self.data_generator)
+        
+      
         # set up student
         self.agent = self.setup_student()
         os.makedirs(self.config.bc.ckpt_folder, exist_ok=True)
@@ -114,12 +120,18 @@ class BCTrainer:
         if rank0_only(): 
             self.writer = get_writer(self.config) 
 
+        from time import sleep
+        torch.distributed.barrier()
+        print("stopping ", self.device)
+        sleep(5000)
+ 
+
 
     def setup_student(self):
         cfg_path = "/srv/flash1/pputta7/projects/lm-nav/exp_configs/lin_nav_llama_train.yaml"
         
         Args = namedtuple("Args", "cfg_path, model_type, gpu_id, options")
-        args = Args(cfg_path, "llama_v2", 0, [])
+        args = Args(cfg_path, "llama_v2", self.rank, [])
 
         cfg = NavLLAMAConfig(args)
 
@@ -160,7 +172,7 @@ class BCTrainer:
 
         # accumulate data from the data queue; ideally the queue should already be filled
         start_episode_wait = time.time()
-        episode_stats, episodes = zip(*[self.data_conn.recv() for _ in range(min_episodes)])
+        episode_stats, episodes = zip(*[next(self.data_generator) for _ in range(min_episodes)])
         avg_generator_stats = { k: sum([stats[k] for stats in episode_stats]) / len(episode_stats) for k in episode_stats[0].keys() } 
         self.dataset += episodes        
         end_episode_wait = time.time()
@@ -297,17 +309,14 @@ class BCTrainer:
             act_pos_delta = [33 * (max_len - l) + 2 for l in lens]
             logits = outputs.logits
 
-            import pdb
 
             # project onto the action space
             actions = []
             for i in range(len(partial_episodes)):
-                pdb.set_trace()
                 act_logits = logits[i, -act_pos_delta[i], tokens]
                 act_logits = F.softmax(act_logits)
                 actions.append(act_logits.argmax().cpu().item())
                 
-            pdb.set_trace()
             outputs = envs.step(actions)
             next_observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)] 
 

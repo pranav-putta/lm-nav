@@ -10,7 +10,7 @@ defaults:
 
 bc:
   teacher_ckpt: "ckpts/uLHP.300.pth" 
-  writer: "wb"
+  writer: "console"
   dtg_threshold: 1.0
   epochs: 1000
   batch_size: 2
