@@ -18,6 +18,10 @@ bc:
   ckpt_freq: 100
   ckpt_folder: "experiments/lmnav_imagenav/"
   mode: 'train'
+  data_path: 'offline/'
+  max_trajectory_length: 20
+  bc_epochs: 10
+  grad_accums: 6
 
 habitat_baselines:
   num_environments: 16
