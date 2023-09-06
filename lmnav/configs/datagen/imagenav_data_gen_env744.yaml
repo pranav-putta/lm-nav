@@ -10,24 +10,22 @@ defaults:
 
 bc:
   teacher_ckpt: "ckpts/uLHP.300.pth" 
-  writer: "console"
+  writer: "wb"
   dtg_threshold: 1.0
-  epochs: 1000
-  batch_size: 2
-  lr: 2.5e-5
+  
+data_gen:
+  num_episodes: 100000
   ckpt_freq: 100
-  exp_folder: "experiments/lmnav_imagenav/"
+  exp_folder: "offline/"
   mode: 'eval'
-  eval:
-    ckpt: 'ckpt.0.pth'
-    save_videos: True
+    
 
 habitat_baselines:
-  num_environments: 2
+  num_environments: 20
   wb:
     project_name: "lmnav"
-    run_name: "lmnav_imagenav"
-    group: "train"
+    run_name: "lmnav imagenav env 744 datagen"
+    group: "datagen"
       
   rl:
     policy:
@@ -42,7 +40,7 @@ habitat_baselines:
         
 habitat:
   environment:
-    max_episode_steps: 80
+    max_episode_steps: 500
   simulator:
     turn_angle: 30
     agents:

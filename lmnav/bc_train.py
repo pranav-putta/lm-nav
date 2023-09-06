@@ -52,7 +52,6 @@ class BCTrainer:
     def __init__(self, cfg_path):
         self.cfg_path = cfg_path
         self.config = habitat.get_config(self.cfg_path)
-
         
         
     def initialize_eval(self):
@@ -415,7 +414,6 @@ def main():
         trainer.train()
     else:
         trainer.eval_checkpoint(trainer.config.bc.eval.ckpt)
-    # trainer.train()
 
 if __name__ == "__main__":
     main()

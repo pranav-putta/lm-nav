@@ -2,6 +2,7 @@ import os
 import copy
 import multiprocessing as mp
 from time import sleep
+import gc
 
 import habitat
 import habitat.gym
@@ -197,9 +198,12 @@ def collect_episodes(config, device, child_conn,
         observations = next_observations
         step += 1
 
-        for key in batch.keys():
-            batch[key] = batch[key].to('cpu')
+        gc.collect()
 
+
+        # for key in batch.keys():
+        #     batch[key] = batch[key].to('cpu')
+        
 
 def filter_fn(config, episode):
     dtg_threshold = config.bc.dtg_threshold
@@ -216,10 +220,4 @@ def start_data_gen_process(device, config, deterministic=False):
     p = ctx.Process(target=collect_episodes, args=(config, device, child_conn, deterministic, filter_fn))
     p.start()
     return p, parent_conn 
-    return None, None
-    
 
-    
-
-    
-    
