@@ -27,13 +27,21 @@ class OfflineDataGenerator:
         self.num_gpus = torch.cuda.device_count()
         self.buffer = []
         self.N = 0
-        self.latest_episode_stats = {}
+        self.latest_generator_stats = {}
         
-        self.writer = get_writer(self.config)
+        self.writer = get_writer(self.config, None)
         self.img_transform = transforms.Compose([transforms.Resize((224, 224), antialias=True)])
 
         
     def initialize_data_generator(self, gpu_id):
+        exp_folder = self.config.data_gen.exp_folder
+        os.makedirs(exp_folder, exist_ok=True)
+        max_buffer_len = self.config.data_gen.ckpt_freq
+        
+        # update N if there are already generated files in bfufer
+        files = os.listdir(exp_folder)
+        self.N = len(files) * max_buffer_len
+
         cfg = copy.deepcopy(self.config)        
 
         with read_write(cfg):
@@ -46,11 +54,11 @@ class OfflineDataGenerator:
         return cfg, process, conn
          
     
-    def reformat_episode(self, raw_episode):
+    def reformat_episode(self, episode_stats, raw_episode):
         episode = copy.deepcopy(raw_episode)
         info_keys_to_keep = set(['distance_to_goal', 'success', 'spl'])
         
-        new_episode = {}
+        new_episode = {**episode_stats}
         new_episode['rgb'] = torch.from_numpy(np.stack([step['observation']['rgb'] for step in episode]))
         new_episode['depth'] = torch.from_numpy(np.stack([step['observation']['depth'] for step in episode]).astype(np.float16))
         new_episode['imagegoal'] = torch.from_numpy(episode[0]['observation']['imagegoal'][None, :])
@@ -62,20 +70,6 @@ class OfflineDataGenerator:
         return new_episode
 
 
-    @staticmethod
-    def save_and_compress_data(data, datanum, exp_folder):
-        filepath = os.path.join(exp_folder, f'data.{datanum}.pth')
-        tarfilepath = os.path.join(exp_folder, f'data.{datanum}.tar.gz')
-        
-        torch.save(data, filepath)
-        with tarfile.open(tarfilepath, 'w:gz') as tar:
-            tar.add(filepath, arcname=os.path.basename(filepath))
-
-        os.remove(filepath)
-        
-        for i in range(len(data)):
-            del data[i]
-           
         
     def generate(self):
         print(f"Starting generation with {self.num_gpus} gpus")
@@ -83,30 +77,33 @@ class OfflineDataGenerator:
         max_buffer_len = self.config.data_gen.ckpt_freq
         exp_folder = self.config.data_gen.exp_folder
 
-        os.makedirs(exp_folder, exist_ok=True)
-        
         step = 0
         while self.N < self.config.data_gen.num_episodes:
             # TODO; update this to organize data by scene 
             for conn in self.conns:
-                while conn.poll(timeout=1):
-                    episode_stats, episode = conn.recv()
-                    self.latest_episode_stats = episode_stats
+                while conn.poll():
+                    generator_stats, episode_stats, episode = conn.recv()
+                    self.latest_generator_stats = generator_stats
 
                     # reformat episode
-                    formatted_episode = self.reformat_episode(episode)              
+                    formatted_episode = self.reformat_episode(episode_stats, episode)              
                     self.buffer.append(formatted_episode) 
 
                     del episode
 
                     
-            if len(self.buffer) >= max_buffer_len:
+            while len(self.buffer) >= max_buffer_len:
                 data = self.buffer[:max_buffer_len]
                 self.buffer = self.buffer[max_buffer_len:]
                 
                 # dump data into torch store
                 datanum = self.N // max_buffer_len
                 filepath = os.path.join(exp_folder, f'data.{datanum}.pth')
+
+                # in the special case where each file is only 1 episode, get rid of the list
+                if max_buffer_len == 1:
+                    data = data[0]
+                    
                 torch.save(data, filepath)
                
                 self.N += max_buffer_len
@@ -118,7 +115,7 @@ class OfflineDataGenerator:
             self.writer.write({'step': step, 
                                'num_episodes': self.N,
                                'buffer_len': len(self.buffer),
-                               **self.latest_episode_stats })
+                               **self.latest_generator_stats })
 
                 
        

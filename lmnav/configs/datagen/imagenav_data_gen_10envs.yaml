@@ -14,17 +14,17 @@ bc:
   dtg_threshold: 1.0
   
 data_gen:
-  num_episodes: 100000
+  num_episodes: 1000000
   ckpt_freq: 1
   exp_folder: "offline_10envs/"
   mode: 'eval'
     
 
 habitat_baselines:
-  num_environments: 20
+  num_environments: 10
   wb:
     project_name: "lmnav"
-    run_name: "lmnav imagenav env 744 datagen"
+    run_name: "lmnav imagenav 10 envs datagen"
     group: "datagen"
       
   rl:
@@ -55,5 +55,6 @@ habitat:
     habitat_sim_v0:
       allow_sliding: false
   dataset:
-    content_scenes: ['00744-1S7LAXRdDqK']
+    content_scenes: [ '00744-1S7LAXRdDqK', '00251-wsAYBFtQaL7', '00523-PK83UqrXjd3', '00773-9K1WbyTZ456', '00494-5737gQA9p2T', 
+                      '00754-EqZacbtdApE', '00489-boJrpwDQtu9', '00078-nJTPfwbAj4S', '00355-Qkm4CooNoPi', '00603-Xfhi9GYbhqD']
 
