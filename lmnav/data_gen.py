@@ -135,18 +135,23 @@ def collect_episodes(config, device, child_conn,
     observations = envs.reset()
     total_episodes = 0
     num_succ_episodes = 0
+    
 
     while True:
+        
+        
         if child_conn.poll():
             cmd = child_conn.recv()
             if cmd == 'EXIT':
                 print("Ending dataset collection process...")
                 child_conn.close()
                 break
-            
+        
+
         # roll out a step
         batch = batch_obs(observations, device)
         batch = apply_obs_transforms_batch(batch, obs_transform)
+
     
         policy_result = teacher.act(batch,
                                   rnn_hx,
@@ -158,7 +163,8 @@ def collect_episodes(config, device, child_conn,
         rnn_hx = policy_result.rnn_hidden_states
     
         step_data = [a.item() for a in policy_result.env_actions.cpu()]
-        
+        current_episodes = envs.current_episodes()
+
         outputs = envs.step(step_data)
         next_observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)]
     
@@ -179,15 +185,20 @@ def collect_episodes(config, device, child_conn,
                 if filter_fn(config, episodes[i]):
                     num_succ_episodes += 1
                     
-                    # log episode stats
-                    episode_stats = {
+                    # log generator stats
+                    generator_stats = {
                         'generator_step': step,
                         'generator_episode_num': num_succ_episodes,
                         'generator_episode_len': len(episodes[i]),
                         'generator_running_accuracy': num_succ_episodes / total_episodes
                     }
-                    
-                    child_conn.send((episode_stats, episodes[i]))
+
+                    episode_stats = {
+                        'scene_id': current_episodes[i].scene_id,
+                        'episode_id': current_episodes[i].episode_id
+                    }
+
+                    child_conn.send((generator_stats, episode_stats, episodes[i]))
                     
                 # reset state tensors
                 episodes[i] = []

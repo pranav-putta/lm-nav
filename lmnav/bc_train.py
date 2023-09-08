@@ -49,8 +49,9 @@ os.chdir('/srv/flash1/pputta7/projects/lm-nav')
 
 class BCTrainer:
     
-    def __init__(self, config):
+    def __init__(self, config, resume_run_id):
         self.config = config
+        self.resume_run_id = resume_run_id
         
     def initialize_eval(self):
         """
@@ -61,7 +62,7 @@ class BCTrainer:
         self.rank = 0
         self.is_distributed = False
         
-        self.writer = get_writer(self.config) 
+        self.writer = get_writer(self.config, self.resume_run_id) 
 
         self.agent = self.setup_student()
         self.agent.eval()
@@ -121,12 +122,12 @@ class BCTrainer:
         self.optim = torch.optim.Adam(params=optim_params, lr=self.config.bc.lr)
         
         if rank0_only(): 
-            self.writer = get_writer(self.config) 
+            self.writer = get_writer(self.config, self.resume_run_id) 
 
             
 
     def setup_student(self):
-        cfg_path = "/srv/flash1/pputta7/projects/lm-nav/exp_configs/lin_nav_llama_train.yaml"
+        cfg_path = self.config.bc.llama_cfg
         
         Args = namedtuple("Args", "cfg_path, model_type, gpu_id, options")
         args = Args(cfg_path, "llama_v2", self.rank, [])
@@ -270,24 +271,19 @@ class BCTrainer:
                    
 
                     
-    def save_episode_video(self, episode, num_episodes):
-        vid_folder = os.path.join(self.config.bc.exp_folder, 'videos')
-        os.makedirs(vid_folder, exist_ok=True)
-        
+    def save_episode_video(self, episode, num_episodes, video_dir, ckpt_idx):
         obs_infos = [(step['observation'], step['info']) for step in episode]
         _, infos = zip(*obs_infos)
         
         frames = [observations_to_image(obs, info) for obs, info in obs_infos]
         disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
 
-        os.makedirs(os.path.join(self.config.bc.exp_folder, 'videos'), exist_ok=True)
-        
         generate_video(
             video_option=['disk'],
-            video_dir=vid_folder,
+            video_dir=video_dir,
             images=frames,
             episode_id=num_episodes,
-            checkpoint_idx=300,
+            checkpoint_idx=ckpt_idx,
             metrics=extract_scalars_from_info(disp_info),
             fps=self.config.habitat_baselines.video_fps,
             tb_writer=None,
@@ -296,35 +292,43 @@ class BCTrainer:
 
 
     def eval(self):
-        ckpt_path_pattern = os.path.join(self.config.bc.exp_folder, 'ckpts', self.config.bc.eval.ckpt)
-        ckpt_paths = glob.glob(ckpt_path_pattern) 
-        ckpt_paths = reversed(sorted(ckpt_paths, key=lambda x: int(x.split(".")[1])))
+        eval_folder = os.path.join(self.config.bc.exp_folder, 'eval')
+        ckpt_path_pattern = os.path.join(os.path.join(self.config.bc.exp_folder, 'ckpts'), self.config.bc.eval.ckpt)
+        ckpt_paths = glob.glob(ckpt_path_pattern)
 
+        # go through each ckpt and get previous stats
+        for i in range(len(ckpt_paths)):
+            stats_path = os.path.join(eval_folder, os.path.basename(ckpt_paths[i]), 'stats.pkl')
+            if os.path.exists(stats_path):
+                with open(stats_path, 'rb') as f:
+                    prev_stats = pickle.load(f)
+                ckpt_paths[i] = (ckpt_paths[i], prev_stats)  
+            else:
+                ckpt_paths[i] = (ckpt_paths[i], None)
+        
+        ckpt_paths = reversed(sorted(list(ckpt_paths), key=lambda x: int(x[0].split(".")[1])))
         envs, env_spec = _init_envs(self.config)
         self.initialize_eval()
 
-
-        for ckpt_path in ckpt_paths:
-            self.eval_checkpoint(ckpt_path, envs)
+        for ckpt_path, stats in ckpt_paths:
+            self.eval_checkpoint(ckpt_path, stats, envs)
         
         
-    def eval_checkpoint(self, ckpt_path, envs):
+    def eval_checkpoint(self, ckpt_path, prev_stats, envs):
         print(f"Starting evaluation for {ckpt_path}")
         
-        N_episodes = 100
+        N_episodes = self.config.bc.eval.num_episodes
         T = self.config.bc.max_trajectory_length
 
         # construct directory to save stats
         ckpt_name = os.path.basename(ckpt_path)
-        stats_dir = os.path.join(self.config.bc.exp_folder, 'eval', ckpt_name)
-        video_dir = os.path.join(stats_dir, 'videos')
-        os.makedirs(stats_dir, exist_ok=True)
+        eval_dir = os.path.join(self.config.bc.exp_folder, 'eval', ckpt_name)
+        video_dir = os.path.join(eval_dir, 'videos')
+        os.makedirs(eval_dir, exist_ok=True)
         
         if self.config.bc.eval.save_videos:
             os.makedirs(video_dir, exist_ok=True)
 
-        # start evaluation
-        num_episodes_done = 0
         # load checkpoint
         print(f"Loading model from checkpoint")
         ckpt_state_dict = torch.load(ckpt_path)
@@ -341,15 +345,18 @@ class BCTrainer:
 
         stats = {
             f'{ckpt_name}/total_episodes': 0,
-            f'{ckpt_name}/successful_episodes': 0 
+            f'{ckpt_name}/successful_episodes': 0,
         }
 
-        actor = self.agent.action_generator(envs.num_envs, T, deterministic=True)
+        if prev_stats is not None:
+            stats = prev_stats
+
+        actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=True)
         
-        while num_episodes_done < N_episodes:
+        while stats[f'{ckpt_name}/total_episodes'] < N_episodes:
             
             next(actor)
-            actions = actor.send(observations, episode_idxs_to_reset) 
+            actions = actor.send((observations, episode_idxs_to_reset)) 
             episode_idxs_to_reset = set()
                         
             outputs = envs.step(actions)
@@ -373,16 +380,21 @@ class BCTrainer:
 
                     self.writer.write(stats)
                     if self.config.bc.eval.save_videos:
-                        self.save_episode_video(episodes[i], stats['total_episodes'])
+                        try:
+                            ckpt_idx = ckpt_name.split('.')[1]
+                            self.save_episode_video(episodes[i], stats[f'{ckpt_name}/total_episodes'], video_dir, ckpt_idx)
+                        except:
+                            print("There was an error while saving video!")
 
                     # this is to tell actor generator to clear this episode from history
                     episode_idxs_to_reset.add(i)
+                    episodes[i] = []
 
 
             observations = next_observations
         
-        with open(os.path.join(stats_dir, 'stats.pkl'), 'wb+') as f:
-            pickle.dump(stats, f)
+            with open(os.path.join(eval_dir, 'stats.pkl'), 'wb+') as f:
+                pickle.dump(stats, f)
          
                
 
@@ -391,19 +403,21 @@ def main():
     parser = argparse.ArgumentParser(description="Example argparse for cfg_path")
     parser.add_argument('cfg_path', type=str, help="Path to the configuration file")
     parser.add_argument('--eval', action='store_true', help='Flag to enable evaluation mode')
+    parser.add_argument('--resume_run_id', type=str, help="Writer run id to restart")
     args = parser.parse_args()
 
     config = habitat.get_config(args.cfg_path)
-    with read_write(config):
-        config.bc.mode = 'eval'
-        config.habitat_baselines.wb.group = 'eval'
-        config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
- 
-    trainer = BCTrainer(config)
+
+    trainer = BCTrainer(config, args.resume_run_id)
 
     if not args.eval:
         trainer.train()
     else:
+        with read_write(config):
+            config.bc.mode = 'eval'
+            config.habitat_baselines.wb.group = 'eval'
+            config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
+     
         trainer.eval()
 
 

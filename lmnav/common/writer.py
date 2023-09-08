@@ -3,20 +3,20 @@ from omegaconf import OmegaConf
 import wandb
 import os
 
-def get_writer(cfg):
+def get_writer(cfg, resume_run_id):
     writer_type = cfg.bc.writer
 
     if writer_type == 'console':
-        return ConsoleWriter(cfg)
+        return ConsoleWriter(cfg, resume_run_id)
     elif writer_type == 'wb':
-        return WandBWriter(cfg)
+        return WandBWriter(cfg, resume_run_id)
     else:
         raise NotImplementedError()
     
 
 class BaseWriter(ABC):
     
-    def __init__(self, config):
+    def __init__(self, config, resume_run_id):
         pass
 
     @abstractmethod
@@ -31,7 +31,7 @@ class ConsoleWriter(BaseWriter):
 
 class WandBWriter(BaseWriter):
 
-    def __init__(self, config):
+    def __init__(self, config, resume_run_id):
         wb_kwargs = {}
         if config.habitat_baselines.wb.project_name != "":
             wb_kwargs["project"] = config.habitat_baselines.wb.project_name
@@ -53,9 +53,9 @@ class WandBWriter(BaseWriter):
             )
 
         # TODO: add resume behavior
-        # if resume_run_id is not None:
-        #     wb_kwargs["id"] = resume_run_id
-        #     wb_kwargs["resume"] = "must"
+        if resume_run_id is not None:
+            wb_kwargs["id"] = resume_run_id
+            wb_kwargs["resume"] = "must"
         
         self.run = wandb.init(  # type: ignore[attr-defined]
             config={

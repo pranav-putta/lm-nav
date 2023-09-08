@@ -10,31 +10,22 @@ defaults:
 
 bc:
   teacher_ckpt: "ckpts/uLHP.300.pth" 
-  llama_cfg: "/srv/flash1/pputta7/projects/lm-nav/exp_configs/lin_nav_llama_train.yaml"
-  writer: "console"
+  writer: "wb"
   dtg_threshold: 1.0
-  epochs: 10000
-  batch_size: 2
-  lr: 2.5e-5
-  ckpt_freq: 10
-  exp_folder: "experiments/lmnav_imagenav/"
-  mode: 'train'
-  data_path: 'offline/'
-  max_trajectory_length: 24
-  bc_epochs: 10
-  grad_accums: 6
-  eval:
-    ckpt: 'ckpt.[0-9]*0.pth' 
-    num_episodes: 100
-    save_videos: True
+  
+data_gen:
+  num_episodes: 1000000
+  ckpt_freq: 1
+  exp_folder: "offline_10envs/"
+  mode: 'eval'
     
 
 habitat_baselines:
-  num_environments: 6
+  num_environments: 10
   wb:
     project_name: "lmnav"
-    run_name: "lmnav_imagenav"
-    group: "train"
+    run_name: "lmnav imagenav 10 envs datagen"
+    group: "datagen"
       
   rl:
     policy:
@@ -49,7 +40,7 @@ habitat_baselines:
         
 habitat:
   environment:
-    max_episode_steps: 200
+    max_episode_steps: 500
   simulator:
     turn_angle: 30
     agents:
@@ -64,5 +55,6 @@ habitat:
     habitat_sim_v0:
       allow_sliding: false
   dataset:
-    content_scenes: ['00744-1S7LAXRdDqK']
+    content_scenes: [ '00744-1S7LAXRdDqK', '00251-wsAYBFtQaL7', '00523-PK83UqrXjd3', '00773-9K1WbyTZ456', '00494-5737gQA9p2T', 
+                      '00754-EqZacbtdApE', '00489-boJrpwDQtu9', '00078-nJTPfwbAj4S', '00355-Qkm4CooNoPi', '00603-Xfhi9GYbhqD']
 

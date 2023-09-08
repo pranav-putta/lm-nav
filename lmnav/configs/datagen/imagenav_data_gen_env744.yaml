@@ -15,8 +15,8 @@ bc:
   
 data_gen:
   num_episodes: 100000
-  ckpt_freq: 100
-  exp_folder: "offline/"
+  ckpt_freq: 1
+  exp_folder: "offline_10envs/"
   mode: 'eval'
     
 
