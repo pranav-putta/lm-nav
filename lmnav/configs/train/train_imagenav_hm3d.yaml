@@ -28,7 +28,7 @@ bc:
     
 
 habitat_baselines:
-  num_environments: 2
+  num_environments: 6
   wb:
     project_name: "lmnav"
     run_name: "lmnav_imagenav"

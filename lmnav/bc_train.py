@@ -277,6 +277,8 @@ class BCTrainer:
         
         frames = [observations_to_image(obs, info) for obs, info in obs_infos]
         disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
+
+        print({k : [type(v[i]) for i in range(len(v))] for k, v in disp_info.items()})
         
         generate_video(
             video_option=['disk'],
@@ -307,7 +309,7 @@ class BCTrainer:
     def eval_checkpoint(self, ckpt_path, envs):
         print(f"Starting evaluation for {ckpt_path}")
         
-        N_episodes = 20
+        N_episodes = 100
         T = self.config.bc.max_trajectory_length
 
         # construct directory to save stats
@@ -369,11 +371,15 @@ class BCTrainer:
 
                     self.writer.write(stats)
                     if self.config.bc.eval.save_videos:
-                        ckpt_idx = ckpt_name.split('.')[1]
-                        self.save_episode_video(episodes[i], stats['total_episodes'], video_dir, ckpt_idx)
+                        try:
+                            ckpt_idx = ckpt_name.split('.')[1]
+                            self.save_episode_video(episodes[i], stats[f'{ckpt_name}/total_episodes'], video_dir, ckpt_idx)
+                        except:
+                            print("There was an error while saving video!")
 
                     # this is to tell actor generator to clear this episode from history
                     episode_idxs_to_reset.add(i)
+                    episodes[i] = []
 
 
             observations = next_observations
