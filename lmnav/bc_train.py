@@ -278,8 +278,6 @@ class BCTrainer:
         frames = [observations_to_image(obs, info) for obs, info in obs_infos]
         disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
 
-        print({k : [type(v[i]) for i in range(len(v))] for k, v in disp_info.items()})
-        
         generate_video(
             video_option=['disk'],
             video_dir=video_dir,
