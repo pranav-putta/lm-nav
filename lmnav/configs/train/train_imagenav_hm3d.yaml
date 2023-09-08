@@ -47,7 +47,7 @@ habitat_baselines:
         
 habitat:
   environment:
-    max_episode_steps: 500
+    max_episode_steps: 200
   simulator:
     turn_angle: 30
     agents:

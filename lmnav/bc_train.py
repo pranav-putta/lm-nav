@@ -285,7 +285,7 @@ class BCTrainer:
     def eval(self):
         ckpt_path_pattern = os.path.join(self.config.bc.exp_folder, 'ckpts', self.config.bc.eval.ckpt)
         ckpt_paths = glob.glob(ckpt_path_pattern) 
-        ckpt_paths = sorted(ckpt_paths, key=lambda x: int(x.split(".")[1]))
+        ckpt_paths = reversed(sorted(ckpt_paths, key=lambda x: int(x.split(".")[1])))
 
         envs, env_spec = _init_envs(self.config)
         self.initialize_eval()
