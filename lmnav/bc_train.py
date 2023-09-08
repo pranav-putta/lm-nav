@@ -340,12 +340,12 @@ class BCTrainer:
             f'{ckpt_name}/successful_episodes': 0 
         }
 
-        actor = self.agent.action_generator(envs.num_envs, T, deterministic=True)
+        actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=True)
         
         while num_episodes_done < N_episodes:
             
             next(actor)
-            actions = actor.send(observations, episode_idxs_to_reset) 
+            actions = actor.send((observations, episode_idxs_to_reset)) 
             episode_idxs_to_reset = set()
                         
             outputs = envs.step(actions)

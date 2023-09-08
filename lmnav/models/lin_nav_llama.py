@@ -276,7 +276,7 @@ class LinNavLLAMA(Blip2Base):
         return torch.stack(padded_seqs)
 
 
-    def action_generator(self, num_envs, T, deterministic=False):
+    def action_generator(self, num_envs, T, vis_processor, deterministic=False):
         """
             action generator function, takes in the next rgb, goal, and action 
         """
@@ -308,7 +308,7 @@ class LinNavLLAMA(Blip2Base):
             lens = [len(e) for e in partial_episodes]
             max_len = max(lens)
 
-            rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
+            rgbs_t, goals_t, actions_t = apply_transforms_inputs(vis_processor, rgbs_t, goals_t, actions_t)
             outputs = self(rgbs_t, goals_t, actions_t) 
 
             act_pos_delta = [33 * (max_len - l) + 2 for l in lens]
