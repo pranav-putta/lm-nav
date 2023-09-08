@@ -302,7 +302,8 @@ class BCTrainer:
         T = self.config.bc.max_trajectory_length
 
         # construct directory to save stats
-        stats_dir = os.path.join(self.config.bc.exp_folder, 'eval', os.path.basename(ckpt_path))
+        ckpt_name = os.path.basename(ckpt_path)
+        stats_dir = os.path.join(self.config.bc.exp_folder, 'eval', ckpt_name)
         video_dir = os.path.join(stats_dir, 'videos')
         os.makedirs(stats_dir, exist_ok=True)
         
@@ -325,8 +326,8 @@ class BCTrainer:
         episodes = [[] for _ in range(envs.num_envs)]
 
         stats = {
-            'total_episodes': 0,
-            'successful_episodes': 0 
+            f'{ckpt_name}/total_episodes': 0,
+            f'{ckpt_name}/successful_episodes': 0 
         }
         
         tokens = self.agent.llama_tokenizer('stop forward left right', add_special_tokens=False, return_tensors='pt') 
@@ -380,10 +381,10 @@ class BCTrainer:
             
             for i, done in enumerate(dones):
                 if done:
-                    stats['total_episodes'] += 1
+                    stats[f'{ckpt_name}/total_episodes'] += 1
                     
                     if episodes[i][-1]['info']['distance_to_goal'] < self.config.bc.dtg_threshold:
-                        stats['successful_episodes'] += 1
+                        stats[f'{ckpt_name}/successful_episodes'] += 1
 
                     self.writer.write(stats)
 
