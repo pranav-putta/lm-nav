@@ -2,6 +2,7 @@ import os
 import copy
 import multiprocessing as mp
 from time import sleep
+import gc
 
 import habitat
 import habitat.gym
@@ -53,7 +54,7 @@ os.chdir('/srv/flash1/pputta7/projects/lm-nav')
 
 def _init_envs(config=None, is_eval: bool = False):
     env_factory = hydra.utils.instantiate(config.habitat_baselines.vector_env_factory)
-    print(f"Initializing environment: {config.habitat.simulator.habitat_sim_v0.gpu_device_id}")
+    print(f"Initializing environment on gpu: {config.habitat.simulator.habitat_sim_v0.gpu_device_id}")
     envs = env_factory.construct_envs(
             config,
             workers_ignore_signals=is_slurm_batch_job(),
@@ -197,9 +198,12 @@ def collect_episodes(config, device, child_conn,
         observations = next_observations
         step += 1
 
-        for key in batch.keys():
-            batch[key] = batch[key].to('cpu')
+        gc.collect()
 
+
+        # for key in batch.keys():
+        #     batch[key] = batch[key].to('cpu')
+        
 
 def filter_fn(config, episode):
     dtg_threshold = config.bc.dtg_threshold
@@ -216,10 +220,4 @@ def start_data_gen_process(device, config, deterministic=False):
     p = ctx.Process(target=collect_episodes, args=(config, device, child_conn, deterministic, filter_fn))
     p.start()
     return p, parent_conn 
-    return None, None
-    
 
-    
-
-    
-    

@@ -1,6 +1,7 @@
 import torch
 import einops
 import random
+import math
 
 idx2class = {
     0: 'stop',
@@ -47,36 +48,47 @@ def extract_inputs_from_dataset(dataset):
     return rgbs, goals, actions
     
 
-def sample_subsequences(B, T, rgbs, goals, actions):
+def construct_subsequences(B, T, rgbs, goals, actions):
     """
     rgbs: list[torch.Tensor[T, C, H, W]] -> torch.Tensor[B, T, C, H, W]
     goals: list[torch.Tensor[1, C, H, W]] -> torch.Tensor[B, 1, C, H, W ]
     actions: list[torch.Tensor[T]] -> torch.Tensor[B, T]
     """
 
-    episode_lens = [int(ep_rgb.shape[0]) for ep_rgb in rgbs]
-    n_episodes = len(rgbs)
-
-    T = min(min(episode_lens), T)
-
-    rgbs_t, goals_t, actions_t = [], [], []
+    subsequences = []
     
+    n_episodes = len(rgbs)
+    episode_lens = [int(ep_rgb.shape[0]) for ep_rgb in rgbs]
+    
+    # set T to smaller length if there is a shortest episode
+    T = min(min(episode_lens), T)
     sliding_windows = [[slice(start, start + T, 1) for start in range(length - T + 1)] for length in episode_lens] 
     
-    while len(rgbs_t) < B:
-        # TODO; maybe don't construct tensors here
-        i = random.choices(range(n_episodes), weights=episode_lens, k=1)[0]
-        if episode_lens[i] < T:
-            continue
-        slices = random.sample(sliding_windows[i], 1)
-
-        rgbs_t += [rgbs[i][s].clone() for s in slices]
-        goals_t += [goals[i].clone() for _ in slices]
-        actions_t += [actions[i][s].clone() for s in slices]
+    # compute the number of samples for each episode
+    window_lengths = [len(sw) for sw in sliding_windows]
+    episode_weights = torch.tensor(window_lengths) / sum(window_lengths)
+    samples_per_episode = [min(window_lengths[i], math.ceil(B * episode_weights[i])) for i in range(n_episodes)]
     
-    rgbs_t = torch.stack(rgbs_t, dim=0)      
-    goals_t = torch.stack(goals_t, dim=0)      
-    actions_t = torch.stack(actions_t, dim=0)
+    # make sure constraint of sum(samples) = B is still satisfied
+    i = 0
+    delta = 1 if sum(samples_per_episode) < B else -1
+    while sum(samples_per_episode) != B:
+        samples_per_episode[i] = max(min(window_lengths[i], samples_per_episode[i] + delta), 1)
+        i = (i + 1) % len(samples_per_episode)        
 
+    # now, num_samples_per_episode are num_windows <= N <= B
+
+   
+    for i in range(n_episodes):
+        num_samples = samples_per_episode[i]
+       
+        slices = random.sample(sliding_windows[i][:-1],  num_samples - 1)
+        # make sure the last subsequence with STOP is always included
+        slices.append(sliding_windows[i][-1])
+        subsequences += [(rgbs[i][s].clone(), goals[i].clone(), actions[i][s].clone()) for s in slices]
+        
+    random.shuffle(subsequences)
+    rgbs, goals, actions = zip(*subsequences)
+    rgbs_t, goals_t, actions_t = torch.stack(rgbs), torch.stack(goals), torch.stack(actions)
     return rgbs_t, goals_t, actions_t
 

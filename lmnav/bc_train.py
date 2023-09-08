@@ -1,4 +1,8 @@
+import pickle
 import time
+import einops
+import gc
+import glob
 
 from pprint import pprint
 from habitat.utils.visualizations.utils import observations_to_image
@@ -24,14 +28,17 @@ import torch.distributed
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from typing import Any
+
+from torch.utils.data import DataLoader
 from lmnav.common.writer import get_writer
 
-from lmnav.data_gen import start_data_gen_process, _init_envs
+from lmnav.data_gen import  _init_envs
 from lmnav.common.config import Config as NavLLAMAConfig
 from lmnav.models import *
+from lmnav.offline_episode_dataset import OfflineEpisodeDataset
 from lmnav.processors import *
 from lmnav.common.registry import registry as llama_registry
-from lmnav.common.episode_processor import apply_transforms_inputs, extract_inputs_from_dataset, sample_subsequences
+from lmnav.common.episode_processor import apply_transforms_inputs, construct_subsequences, extract_inputs_from_dataset 
 
 
 os.environ["MAGNUM_LOG"] = "quiet"
@@ -41,14 +48,9 @@ os.chdir('/srv/flash1/pputta7/projects/lm-nav')
 
 
 class BCTrainer:
-    data_process: Any 
-    data_conn: Any
-
     
-    def __init__(self, cfg_path):
-        self.cfg_path = cfg_path
-        self.config = habitat.get_config(self.cfg_path)
-
+    def __init__(self, config):
+        self.config = config
         
     def initialize_eval(self):
         """
@@ -72,7 +74,7 @@ class BCTrainer:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         local_rank, world_rank, world_size = get_distrib_size()
-        self.is_distributed = world_size > 1
+        self.is_distributed = world_size > 1 or True
         
         if self.is_distributed:
             self.device = torch.device(f"cuda:{local_rank}")
@@ -103,20 +105,20 @@ class BCTrainer:
             self.num_rollouts_done_store.set("num_done", "0")
 
             
-        # start data generator process
-        print(f"Now starting gen process on {self.rank}")
-        self.data_process, self.data_conn = start_data_gen_process(self.device, self.config, deterministic=False)
-        
-      
+        # set up dataset
+        self.dataset = OfflineEpisodeDataset(self.config.bc.data_path)
+        self.data_loader = DataLoader(self.dataset, batch_size=10, shuffle=True, collate_fn=lambda x: x, num_workers=4)
+        self.data_loader = iter(self.data_loader)
+         
         # set up student
-        self.agent = self.setup_student()
         os.makedirs(self.config.bc.exp_folder, exist_ok=True)
         os.makedirs(os.path.join(self.config.bc.exp_folder, 'ckpts'), exist_ok=True)
 
+        self.agent = self.setup_student()
+        
         # set up optimizer
         optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
         self.optim = torch.optim.Adam(params=optim_params, lr=self.config.bc.lr)
-        self.dataset = []
         
         if rank0_only(): 
             self.writer = get_writer(self.config) 
@@ -134,12 +136,12 @@ class BCTrainer:
         model_config = cfg.model_cfg
         model_cls = llama_registry.get_model_class(model_config.arch)
         model = model_cls.from_config(model_config).to(self.device)
-        model.train()
 
         vis_processor_cfg = cfg.config.preprocess.vis_processor.train
         self.vis_processor = llama_registry.get_processor_class(vis_processor_cfg.name).from_config(vis_processor_cfg)
 
         agent = model.to(self.device)
+        agent.train()
         
         if self.is_distributed:
             print(f"Setting up DDP on GPU {self.rank}")
@@ -159,30 +161,25 @@ class BCTrainer:
 
     
     def train_epoch(self, epoch):
-        num_samples = 2
-        max_state_length = 20
-        num_bc_epochs = 10
-        min_episodes = 5
-        max_episodes = 20
-        num_grad_accums = 6
+        num_samples = self.config.bc.batch_size
+        max_state_length = self.config.bc.max_trajectory_length
+        num_bc_epochs = self.config.bc.bc_epochs
+        num_grad_accums = self.config.bc.grad_accums
 
-        # accumulate data from the data queue; ideally the queue should already be filled
-        start_episode_wait = time.time()
-        episode_stats, episodes = zip(*[self.data_conn.recv() for _ in range(min_episodes)])
-        avg_generator_stats = { k: sum([stats[k] for stats in episode_stats]) / len(episode_stats) for k in episode_stats[0].keys() } 
-        self.dataset += episodes        
-        end_episode_wait = time.time()
-        
-        if len(self.dataset) > max_episodes:
-            self.dataset = self.dataset[len(self.dataset) - max_episodes:]
-
-        rgbs, goals, actions = extract_inputs_from_dataset(self.dataset)
+        episodes = next(self.data_loader)
+        rgbs = [einops.rearrange(episode['rgb'], 't h w c -> t c h w') for episode in episodes]
+        goals = [einops.rearrange(episode['imagegoal'], 't h w c -> t c h w') for episode in episodes]
+        actions = [episode['action'] for episode in episodes]
 
         total_loss = 0
-
+        total_samples = num_samples * num_bc_epochs * num_grad_accums
+        rgbs, goals, actions = construct_subsequences(total_samples, max_state_length, rgbs, goals, actions)
+        p_idxs = torch.randperm(rgbs.shape[0]).view(num_bc_epochs, num_grad_accums, num_samples)
+       
         for bc_epoch in range(num_bc_epochs):
             for i in range(num_grad_accums):
-                rgbs_t, goals_t, actions_t = sample_subsequences(num_samples, max_state_length, rgbs, goals, actions)
+                idxs = p_idxs[bc_epoch, i] 
+                rgbs_t, goals_t, actions_t = rgbs[idxs], goals[idxs], actions[idxs]
                 rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
                 
                 if i < num_grad_accums - 1:
@@ -200,14 +197,17 @@ class BCTrainer:
             
                 rgbs_t.to('cpu')
                 goals_t.to('cpu')
+
+        del rgbs
+        del goals
+        del actions
+        gc.collect()
             
         avg_loss = total_loss / (num_bc_epochs * num_grad_accums)
 
         return {
             'loss': avg_loss,
-            'epoch': epoch,
-            'episode_wait': (end_episode_wait - start_episode_wait),
-            **avg_generator_stats
+            'epoch': epoch
         }
         
         
@@ -240,12 +240,13 @@ class BCTrainer:
             "epoch": epoch
         }
         ckpt_num = epoch // self.config.bc.ckpt_freq
-        ckpt_folder = os.path.join(self.config.bc.exp_folder, 'ckpt')
+        ckpt_folder = os.path.join(self.config.bc.exp_folder, 'ckpts')
         torch.save(save_obj,  os.path.join(ckpt_folder, f'ckpt.{ckpt_num}.pth')) 
 
         
     def train(self):
         self.initialize_train()
+        
 
         epochs, batch_size = self.config.bc.epochs, self.config.bc.batch_size
 
@@ -294,34 +295,53 @@ class BCTrainer:
         )
 
 
-    def eval_checkpoint(self, ckpt_path):
-        N_episodes = 100
-        T = 20
-        
-        # start evaluation
-        print(f"Starting evaluation of checkpoint {ckpt_path}")
-        num_episodes_done = 0
+    def eval(self):
+        ckpt_path_pattern = os.path.join(self.config.bc.exp_folder, 'ckpts', self.config.bc.eval.ckpt)
+        ckpt_paths = glob.glob(ckpt_path_pattern) 
+        ckpt_paths = reversed(sorted(ckpt_paths, key=lambda x: int(x.split(".")[1])))
+
         envs, env_spec = _init_envs(self.config)
         self.initialize_eval()
 
+
+        for ckpt_path in ckpt_paths:
+            self.eval_checkpoint(ckpt_path, envs)
+        
+        
+    def eval_checkpoint(self, ckpt_path, envs):
+        print(f"Starting evaluation for {ckpt_path}")
+        
+        N_episodes = 100
+        T = self.config.bc.max_trajectory_length
+
+        # construct directory to save stats
+        ckpt_name = os.path.basename(ckpt_path)
+        stats_dir = os.path.join(self.config.bc.exp_folder, 'eval', ckpt_name)
+        video_dir = os.path.join(stats_dir, 'videos')
+        os.makedirs(stats_dir, exist_ok=True)
+        
+        if self.config.bc.eval.save_videos:
+            os.makedirs(video_dir, exist_ok=True)
+
+        # start evaluation
+        num_episodes_done = 0
         # load checkpoint
         print(f"Loading model from checkpoint")
-        ckpt_state_dict = torch.load(os.path.join(self.config.bc.exp_folder, ckpt_path))
+        ckpt_state_dict = torch.load(ckpt_path)
         ckpt_state_dict = { k[len('module.'):]:v for k, v in ckpt_state_dict.items() }
-        self.agent.load_state_dict(ckpt_state_dict)
+        self.agent.load_state_dict(ckpt_state_dict, strict=False)
 
         # turn of all gradients
         for param in self.agent.parameters():
             param.requires_grad = False
 
         observations = envs.reset()
-
         episodes = [[] for _ in range(envs.num_envs)]
         episode_idxs_to_reset = set()
 
         stats = {
-            'total_episodes': 0,
-            'successful_episodes': 0 
+            f'{ckpt_name}/total_episodes': 0,
+            f'{ckpt_name}/successful_episodes': 0 
         }
 
         actor = self.agent.action_generator(envs.num_envs, T, deterministic=True)
@@ -346,10 +366,10 @@ class BCTrainer:
             
             for i, done in enumerate(dones):
                 if done:
-                    stats['total_episodes'] += 1
+                    stats[f'{ckpt_name}/total_episodes'] += 1
                     
                     if episodes[i][-1]['info']['distance_to_goal'] < self.config.bc.dtg_threshold:
-                        stats['successful_episodes'] += 1
+                        stats[f'{ckpt_name}/successful_episodes'] += 1
 
                     self.writer.write(stats)
                     if self.config.bc.eval.save_videos:
@@ -358,28 +378,34 @@ class BCTrainer:
                     # this is to tell actor generator to clear this episode from history
                     episode_idxs_to_reset.add(i)
 
+
             observations = next_observations
+        
+        with open(os.path.join(stats_dir, 'stats.pkl'), 'wb+') as f:
+            pickle.dump(stats, f)
+         
                
 
 
 def main():
     parser = argparse.ArgumentParser(description="Example argparse for cfg_path")
-    
-    # Add the 'cfg_path' argument
     parser.add_argument('cfg_path', type=str, help="Path to the configuration file")
-
-    # Parse the command-line arguments
+    parser.add_argument('--eval', action='store_true', help='Flag to enable evaluation mode')
     args = parser.parse_args()
 
-    # Access the value of 'cfg_path' argument
-    cfg_path = args.cfg_path
-    
-    trainer = BCTrainer(cfg_path)
+    config = habitat.get_config(args.cfg_path)
+    with read_write(config):
+        config.bc.mode = 'eval'
+        config.habitat_baselines.wb.group = 'eval'
+        config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
+ 
+    trainer = BCTrainer(config)
 
-    if trainer.config.bc.mode == 'train':
+    if not args.eval:
         trainer.train()
     else:
-        trainer.eval_checkpoint(trainer.config.bc.eval.ckpt)
+        trainer.eval()
+
 
 if __name__ == "__main__":
     main()
