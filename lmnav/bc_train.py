@@ -49,8 +49,9 @@ os.chdir('/srv/flash1/pputta7/projects/lm-nav')
 
 class BCTrainer:
     
-    def __init__(self, config):
+    def __init__(self, config, resume_run_id):
         self.config = config
+        self.resume_run_id = resume_run_id
         
     def initialize_eval(self):
         """
@@ -61,7 +62,7 @@ class BCTrainer:
         self.rank = 0
         self.is_distributed = False
         
-        self.writer = get_writer(self.config) 
+        self.writer = get_writer(self.config, self.resume_run_id) 
 
         self.agent = self.setup_student()
         self.agent.eval()
@@ -270,24 +271,19 @@ class BCTrainer:
                    
 
                     
-    def save_episode_video(self, episode, num_episodes):
-        vid_folder = os.path.join(self.config.bc.exp_folder, 'videos')
-        os.makedirs(vid_folder, exist_ok=True)
-        
+    def save_episode_video(self, episode, num_episodes, video_dir, ckpt_idx):
         obs_infos = [(step['observation'], step['info']) for step in episode]
         _, infos = zip(*obs_infos)
         
         frames = [observations_to_image(obs, info) for obs, info in obs_infos]
         disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
-
-        os.makedirs(os.path.join(self.config.bc.exp_folder, 'videos'), exist_ok=True)
         
         generate_video(
             video_option=['disk'],
-            video_dir=vid_folder,
+            video_dir=video_dir,
             images=frames,
             episode_id=num_episodes,
-            checkpoint_idx=300,
+            checkpoint_idx=ckpt_idx,
             metrics=extract_scalars_from_info(disp_info),
             fps=self.config.habitat_baselines.video_fps,
             tb_writer=None,
@@ -311,7 +307,7 @@ class BCTrainer:
     def eval_checkpoint(self, ckpt_path, envs):
         print(f"Starting evaluation for {ckpt_path}")
         
-        N_episodes = 100
+        N_episodes = 20
         T = self.config.bc.max_trajectory_length
 
         # construct directory to save stats
@@ -373,7 +369,8 @@ class BCTrainer:
 
                     self.writer.write(stats)
                     if self.config.bc.eval.save_videos:
-                        self.save_episode_video(episodes[i], stats['total_episodes'])
+                        ckpt_idx = ckpt_name.split('.')[1]
+                        self.save_episode_video(episodes[i], stats['total_episodes'], video_dir, ckpt_idx)
 
                     # this is to tell actor generator to clear this episode from history
                     episode_idxs_to_reset.add(i)
@@ -391,6 +388,7 @@ def main():
     parser = argparse.ArgumentParser(description="Example argparse for cfg_path")
     parser.add_argument('cfg_path', type=str, help="Path to the configuration file")
     parser.add_argument('--eval', action='store_true', help='Flag to enable evaluation mode')
+    parser.add_argument('--resume_run_id', type=str, help="Writer run id to restart")
     args = parser.parse_args()
 
     config = habitat.get_config(args.cfg_path)
@@ -399,7 +397,7 @@ def main():
         config.habitat_baselines.wb.group = 'eval'
         config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
  
-    trainer = BCTrainer(config)
+    trainer = BCTrainer(config, args.resume_run_id)
 
     if not args.eval:
         trainer.train()
