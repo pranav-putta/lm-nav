@@ -19,6 +19,7 @@ import copy
 from lmnav.models.Qformer import BertConfig, BertLMHeadModel
 from lmnav.models.ImageBind.models.imagebind_model import ImageBindModel,ModalityType
 from lmnav.models.ImageBind.models import imagebind_model
+from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 
 # from flamingo_pytorch import PerceiverResampler
 @registry.register_model("lin_nav_llama")
@@ -54,7 +55,7 @@ class LinNavLLAMA(Blip2Base):
         frozen_llama_proj=True,
         llama_proj_model='',
         lora_train_llama=False,
-        lora_rank=None,
+        lora_config=None,
     ):
         super().__init__()
 
@@ -147,12 +148,16 @@ class LinNavLLAMA(Blip2Base):
 
         if lora_train_llama:
             # wrap llama model in peft model and run fine-tuning
-            if lora_rank is None:
-                raise ValueError("Training LLAMA with LoRA requires specifiying a rank")
-            
-            
+            if lora_config is None:
+                raise ValueError("Training LLAMA with LoRA requires specifiying a config with the parameters: [rank, alpha, dropout]")
 
-        
+            peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM,
+                                     inference_mode=False,
+                                     r=lora_config.rank,
+                                     lora_alpha=lora_config.alpha,
+                                     lora_dropout=lora_config.dropout)
+            self.llama_model = get_peft_model(self.llama_model, peft_config)
+                   
 
         logging.info('Loading llama_proj Done')
 
@@ -201,7 +206,8 @@ class LinNavLLAMA(Blip2Base):
             atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(image_embeds.device)
             
         inputs_llama = einops.rearrange(inputs_llama, '(b t) q h -> b t q h', b=batch_size)
-        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=batch_size) return inputs_llama, atts_llama
+        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=batch_size)
+        return inputs_llama, atts_llama
     
    
     def embed_visual(self, imgs):
@@ -215,7 +221,7 @@ class LinNavLLAMA(Blip2Base):
 
 
     def embed_actions(self, action_tkns_t):
-        action_embds = [self.llama_model.model.embed_tokens(tkns_t) for tkns_t in action_tkns_t]
+        action_embds = [self.llama_model.get_input_embeddings()(tkns_t) for tkns_t in action_tkns_t]
         action_embds = torch.cat(action_embds, dim=0)
         return action_embds
 
@@ -231,7 +237,7 @@ class LinNavLLAMA(Blip2Base):
      
         prompt_segs = prompt.split("{}")
         prompt_tkns = [self.llama_tokenizer(seg, return_tensors='pt', add_special_tokens=(i == 0)) for i, seg in enumerate(prompt_segs) if len(seg)]
-        prompt_embd = [self.llama_model.model.embed_tokens(tkns.input_ids.to(self.device)) for tkns in prompt_tkns]
+        prompt_embd = [self.llama_model.get_input_embeddings()(tkns.input_ids.to(self.device)) for tkns in prompt_tkns]
         prompt_embd = [embd.repeat(B, 1, 1) for embd in prompt_embd]
         
         actions_embd = einops.rearrange(actions_embd, 'b t h -> b t 1 h')
@@ -364,8 +370,8 @@ class LinNavLLAMA(Blip2Base):
 
         llama_proj_model = cfg.get("llama_proj_model", '')
         lora_train_llama = cfg.get("lora_train_llama", False)
-        lora_rank = cfg.get('lora_rank', None)
-        
+        lora_config = cfg.get('lora_config', None)
+
 
         model = cls(
             vit_model=vit_model,
@@ -387,7 +393,7 @@ class LinNavLLAMA(Blip2Base):
             frozen_llama_proj=frozen_llama_proj,
             llama_proj_model=llama_proj_model,
             lora_train_llama=lora_train_llama,
-            lora_rank=lora_rank 
+            lora_config=lora_config 
         )
 
         ckpt_path = cfg.get("ckpt", "")  # load weights of MiniGPT-4

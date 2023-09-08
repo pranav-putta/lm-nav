@@ -10,6 +10,7 @@ defaults:
 
 bc:
   teacher_ckpt: "ckpts/uLHP.300.pth" 
+  llama_cfg: "/srv/flash1/pputta7/projects/lm-nav/exp_configs/lora_nav_llama_train.yaml"
   writer: "wb"
   dtg_threshold: 1.0
   epochs: 10000
@@ -19,7 +20,7 @@ bc:
   exp_folder: "experiments/lmnav_imagenav/"
   mode: 'train'
   data_path: 'offline/'
-  max_trajectory_length: 24
+  max_trajectory_length: 22
   bc_epochs: 10
   grad_accums: 6
   eval:
@@ -31,7 +32,7 @@ habitat_baselines:
   num_environments: 6
   wb:
     project_name: "lmnav"
-    run_name: "lmnav_imagenav"
+    run_name: "lmnav finetune lora8+linear"
     group: "train"
       
   rl:

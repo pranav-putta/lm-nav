@@ -122,7 +122,7 @@ class BCTrainer:
         self.optim = torch.optim.Adam(params=optim_params, lr=self.config.bc.lr)
         
         if rank0_only(): 
-            self.writer = get_writer(self.config) 
+            self.writer = get_writer(self.config, self.resume_run_id) 
 
             
 
@@ -407,16 +407,17 @@ def main():
     args = parser.parse_args()
 
     config = habitat.get_config(args.cfg_path)
-    with read_write(config):
-        config.bc.mode = 'eval'
-        config.habitat_baselines.wb.group = 'eval'
-        config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
- 
+
     trainer = BCTrainer(config, args.resume_run_id)
 
     if not args.eval:
         trainer.train()
     else:
+        with read_write(config):
+            config.bc.mode = 'eval'
+            config.habitat_baselines.wb.group = 'eval'
+            config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
+     
         trainer.eval()
 
 
