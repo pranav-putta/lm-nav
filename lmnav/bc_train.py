@@ -127,7 +127,7 @@ class BCTrainer:
             
 
     def setup_student(self):
-        cfg_path = "/srv/flash1/pputta7/projects/lm-nav/exp_configs/lin_nav_llama_train.yaml"
+        cfg_path = self.config.bc.llama_cfg
         
         Args = namedtuple("Args", "cfg_path, model_type, gpu_id, options")
         args = Args(cfg_path, "llama_v2", self.rank, [])

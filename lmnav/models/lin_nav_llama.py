@@ -53,6 +53,8 @@ class LinNavLLAMA(Blip2Base):
         device_8bit=0,  # the device of 8bit model should be set when loading and cannot be changed anymore.
         frozen_llama_proj=True,
         llama_proj_model='',
+        lora_train_llama=False,
+        lora_rank=None,
     ):
         super().__init__()
 
@@ -143,6 +145,15 @@ class LinNavLLAMA(Blip2Base):
                 param.requires_grad = True
             logging.info('LLAMA proj is not frozen')
 
+        if lora_train_llama:
+            # wrap llama model in peft model and run fine-tuning
+            if lora_rank is None:
+                raise ValueError("Training LLAMA with LoRA requires specifiying a rank")
+            
+            
+
+        
+
         logging.info('Loading llama_proj Done')
 
         self.max_txt_len = max_txt_len
@@ -190,8 +201,7 @@ class LinNavLLAMA(Blip2Base):
             atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(image_embeds.device)
             
         inputs_llama = einops.rearrange(inputs_llama, '(b t) q h -> b t q h', b=batch_size)
-        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=batch_size)
-        return inputs_llama, atts_llama
+        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=batch_size) return inputs_llama, atts_llama
     
    
     def embed_visual(self, imgs):
@@ -353,6 +363,8 @@ class LinNavLLAMA(Blip2Base):
         frozen_llama_proj = cfg.get("frozen_llama_proj", True)
 
         llama_proj_model = cfg.get("llama_proj_model", '')
+        lora_train_llama = cfg.get("lora_train_llama", False)
+        lora_rank = cfg.get('lora_rank', None)
         
 
         model = cls(
@@ -374,6 +386,8 @@ class LinNavLLAMA(Blip2Base):
             device_8bit=device_8bit,
             frozen_llama_proj=frozen_llama_proj,
             llama_proj_model=llama_proj_model,
+            lora_train_llama=lora_train_llama,
+            lora_rank=lora_rank 
         )
 
         ckpt_path = cfg.get("ckpt", "")  # load weights of MiniGPT-4
