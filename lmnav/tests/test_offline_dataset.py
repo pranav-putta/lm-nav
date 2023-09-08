@@ -9,39 +9,21 @@ import time
 import unittest
     
 from collections import namedtuple
+from lmnav.offline_episode_dataset import OfflineEpisodeDataset
 
    
-class TestEpisodeProcessor(unittest.TestCase):
+class TestOfflineDataset(unittest.TestCase):
     
-    def setUp(self):
-        self.device = 'cuda:0'
-        self.config = habitat.get_config("./lmnav/configs/habitat/train_imagenav_hm3d.yaml")
-
-    def test_data_gen_process(self):
-        B, T = 2, 10
-        C, H, W = 3, 480, 640
-        process, conn = start_data_gen_process(self.device, self.config, deterministic=False)
-
-        episode_stats, dataset = zip(*[conn.recv() for _ in range(1)])
-       
-        conn.send("EXIT")
-        conn.close()
-
-        process.join()
-        process.close()
- 
-        print("Collected episodes!")
-        print("Extracting dataset....")
-
-        rgbs, goals, actions = extract_inputs_from_dataset(dataset)
-        rgbs_t, goals_t, actions_t = sample_subsequences(2, 10, rgbs, goals, actions) 
-
-        self.assertTrue(rgbs_t.shape == (B, T, C, H, W))
-        self.assertTrue(goals_t.shape == (B, 1, C, H, W))
-        self.assertTrue(actions_t.shape == (B, T))
-
-        print("Final shape:", rgbs_t.shape)
-
+    def test_get_item_offline_dataset(self):
+        dataset = OfflineEpisodeDataset('./offline/output')
+        
+        for i in range(100):
+            x = dataset[i]
+            rgb = x['rgb']
+            goal = x['imagegoal']
+            self.assertTrue(tuple(rgb.shape[1:]) == (480, 640, 3))
+            self.assertTrue(tuple(goal.shape) == (1, 480, 640, 3))
+            print(f"Verified episode {i}")
 
  
 if __name__ == '__main__':

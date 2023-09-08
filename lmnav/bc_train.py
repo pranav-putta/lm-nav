@@ -1,5 +1,6 @@
 import time
 import einops
+import gc
 
 from pprint import pprint
 from habitat.utils.visualizations.utils import observations_to_image
@@ -38,7 +39,7 @@ from lmnav.models import *
 from lmnav.offline_episode_dataset import OfflineEpisodeDataset
 from lmnav.processors import *
 from lmnav.common.registry import registry as llama_registry
-from lmnav.common.episode_processor import apply_transforms_inputs, extract_inputs_from_dataset, sample_subsequences
+from lmnav.common.episode_processor import apply_transforms_inputs, construct_subsequences, extract_inputs_from_dataset 
 
 
 os.environ["MAGNUM_LOG"] = "quiet"
@@ -77,7 +78,7 @@ class BCTrainer:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         local_rank, world_rank, world_size = get_distrib_size()
-        self.is_distributed = world_size > 1
+        self.is_distributed = world_size > 1 or True
         
         if self.is_distributed:
             self.device = torch.device(f"cuda:{local_rank}")
@@ -110,14 +111,15 @@ class BCTrainer:
             
         # set up dataset
         self.dataset = OfflineEpisodeDataset(self.config.bc.data_path)
-        self.data_loader = DataLoader(self.dataset, batch_size=self.config.bc.batch_size, shuffle=True)
+        self.data_loader = DataLoader(self.dataset, batch_size=10, shuffle=True, collate_fn=lambda x: x, num_workers=4)
         self.data_loader = iter(self.data_loader)
          
         # set up student
-        self.agent = self.setup_student()
         os.makedirs(self.config.bc.exp_folder, exist_ok=True)
         os.makedirs(os.path.join(self.config.bc.exp_folder, 'ckpts'), exist_ok=True)
 
+        self.agent = self.setup_student()
+        
         # set up optimizer
         optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
         self.optim = torch.optim.Adam(params=optim_params, lr=self.config.bc.lr)
@@ -138,12 +140,12 @@ class BCTrainer:
         model_config = cfg.model_cfg
         model_cls = llama_registry.get_model_class(model_config.arch)
         model = model_cls.from_config(model_config).to(self.device)
-        model.train()
 
         vis_processor_cfg = cfg.config.preprocess.vis_processor.train
         self.vis_processor = llama_registry.get_processor_class(vis_processor_cfg.name).from_config(vis_processor_cfg)
 
         agent = model.to(self.device)
+        agent.train()
         
         if self.is_distributed:
             print(f"Setting up DDP on GPU {self.rank}")
@@ -174,10 +176,14 @@ class BCTrainer:
         actions = [episode['action'] for episode in episodes]
 
         total_loss = 0
-
+        total_samples = num_samples * num_bc_epochs * num_grad_accums
+        rgbs, goals, actions = construct_subsequences(total_samples, max_state_length, rgbs, goals, actions)
+        p_idxs = torch.randperm(rgbs.shape[0]).view(num_bc_epochs, num_grad_accums, num_samples)
+       
         for bc_epoch in range(num_bc_epochs):
             for i in range(num_grad_accums):
-                rgbs_t, goals_t, actions_t = sample_subsequences(num_samples, max_state_length, rgbs, goals, actions)
+                idxs = p_idxs[bc_epoch, i] 
+                rgbs_t, goals_t, actions_t = rgbs[idxs], goals[idxs], actions[idxs]
                 rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
                 
                 if i < num_grad_accums - 1:
@@ -195,14 +201,17 @@ class BCTrainer:
             
                 rgbs_t.to('cpu')
                 goals_t.to('cpu')
+
+        del rgbs
+        del goals
+        del actions
+        gc.collect()
             
         avg_loss = total_loss / (num_bc_epochs * num_grad_accums)
 
         return {
             'loss': avg_loss,
-            'epoch': epoch,
-            'episode_wait': (end_episode_wait - start_episode_wait),
-            **avg_generator_stats
+            'epoch': epoch
         }
         
         
@@ -235,12 +244,13 @@ class BCTrainer:
             "epoch": epoch
         }
         ckpt_num = epoch // self.config.bc.ckpt_freq
-        ckpt_folder = os.path.join(self.config.bc.exp_folder, 'ckpt')
+        ckpt_folder = os.path.join(self.config.bc.exp_folder, 'ckpts')
         torch.save(save_obj,  os.path.join(ckpt_folder, f'ckpt.{ckpt_num}.pth')) 
 
         
     def train(self):
         self.initialize_train()
+        
 
         epochs, batch_size = self.config.bc.epochs, self.config.bc.batch_size
 

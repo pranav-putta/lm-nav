@@ -15,16 +15,16 @@ bc:
   epochs: 10000
   batch_size: 2
   lr: 2.5e-5
-  ckpt_freq: 100
-  ckpt_folder: "experiments/lmnav_imagenav/"
+  ckpt_freq: 10
+  exp_folder: "experiments/lmnav_imagenav/"
   mode: 'train'
   data_path: 'offline/'
-  max_trajectory_length: 20
+  max_trajectory_length: 24
   bc_epochs: 10
   grad_accums: 6
 
 habitat_baselines:
-  num_environments: 16
+  num_environments: 1
   wb:
     project_name: "lmnav"
     run_name: "lmnav_imagenav"
