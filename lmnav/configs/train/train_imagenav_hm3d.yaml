@@ -22,9 +22,13 @@ bc:
   max_trajectory_length: 24
   bc_epochs: 10
   grad_accums: 6
+  eval:
+    ckpt: 'ckpt.[0-9]*0.pth' 
+    save_videos: True
+    
 
 habitat_baselines:
-  num_environments: 1
+  num_environments: 16
   wb:
     project_name: "lmnav"
     run_name: "lmnav_imagenav"
@@ -55,6 +59,8 @@ habitat:
           depth_sensor:
             width: 640
             height: 480
+    habitat_sim_v0:
+      allow_sliding: false
   dataset:
     content_scenes: ['00744-1S7LAXRdDqK']
 

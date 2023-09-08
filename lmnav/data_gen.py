@@ -54,7 +54,7 @@ os.chdir('/srv/flash1/pputta7/projects/lm-nav')
 
 def _init_envs(config=None, is_eval: bool = False):
     env_factory = hydra.utils.instantiate(config.habitat_baselines.vector_env_factory)
-    print(f"Initializing environment: {config.habitat.simulator.habitat_sim_v0.gpu_device_id}")
+    print(f"Initializing environment on gpu: {config.habitat.simulator.habitat_sim_v0.gpu_device_id}")
     envs = env_factory.construct_envs(
             config,
             workers_ignore_signals=is_slurm_batch_job(),

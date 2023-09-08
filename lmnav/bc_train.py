@@ -1,6 +1,8 @@
+import pickle
 import time
 import einops
 import gc
+import glob
 
 from pprint import pprint
 from habitat.utils.visualizations.utils import observations_to_image
@@ -51,10 +53,9 @@ os.chdir('/srv/flash1/pputta7/projects/lm-nav')
 
 class BCTrainer:
     
-    def __init__(self, cfg_path):
-        self.cfg_path = cfg_path
-        self.config = habitat.get_config(self.cfg_path)
-        
+    def __init__(self, config):
+        self.config = config
+       
         
     def initialize_eval(self):
         """
@@ -281,44 +282,62 @@ class BCTrainer:
         padded_seqs = [F.pad(seq, p2d_partial + (max_t - seq.shape[dim],)) for seq in seqs]
         return torch.stack(padded_seqs)
 
-    def eval_checkpoint(self, ckpt_path):
-        N_episodes = 100
-        T = 20
-        
-        # start evaluation
-        print(f"Starting evaluation of checkpoint {ckpt_path}")
-        num_episodes_done = 0
+    def eval(self):
+        ckpt_path_pattern = os.path.join(self.config.bc.exp_folder, 'ckpts', self.config.bc.eval.ckpt)
+        ckpt_paths = glob.glob(ckpt_path_pattern) 
+        ckpt_paths = sorted(ckpt_paths, key=lambda x: int(x.split(".")[1]))
+
         envs, env_spec = _init_envs(self.config)
         self.initialize_eval()
 
+
+        for ckpt_path in ckpt_paths:
+            self.eval_checkpoint(ckpt_path, envs)
+        
+        
+    def eval_checkpoint(self, ckpt_path, envs):
+        print(f"Starting evaluation for {ckpt_path}")
+        
+        N_episodes = 100
+        T = self.config.bc.max_trajectory_length
+
+        # construct directory to save stats
+        stats_dir = os.path.join(self.config.bc.exp_folder, 'eval', os.path.basename(ckpt_path))
+        video_dir = os.path.join(stats_dir, 'videos')
+        os.makedirs(stats_dir, exist_ok=True)
+        
+        if self.config.bc.eval.save_videos:
+            os.makedirs(video_dir, exist_ok=True)
+
+        # start evaluation
+        num_episodes_done = 0
         # load checkpoint
         print(f"Loading model from checkpoint")
-        ckpt_state_dict = torch.load(os.path.join(self.config.bc.exp_folder, ckpt_path))
+        ckpt_state_dict = torch.load(ckpt_path)
         ckpt_state_dict = { k[len('module.'):]:v for k, v in ckpt_state_dict.items() }
-        self.agent.load_state_dict(ckpt_state_dict)
+        self.agent.load_state_dict(ckpt_state_dict, strict=False)
 
         # turn of all gradients
         for param in self.agent.parameters():
             param.requires_grad = False
 
-        past_kv = [None for _ in range(envs.num_envs)]
         observations = envs.reset()
-
         episodes = [[] for _ in range(envs.num_envs)]
 
         stats = {
             'total_episodes': 0,
             'successful_episodes': 0 
         }
-
         
         tokens = self.agent.llama_tokenizer('stop forward left right', add_special_tokens=False, return_tensors='pt') 
         tokens = tokens.input_ids.to(self.device).squeeze()
 
-        
+        step_idx = 0        
         while num_episodes_done < N_episodes:
-            batch = batch_obs(observations, self.device)
-
+            step_idx += 1
+            if step_idx % 100 == 0:
+                print(f'Evaluation at step idx: {step_idx}')
+                
             for i in range(envs.num_envs):
                 episodes[i].append({
                     'observation': observations[i],
@@ -369,8 +388,6 @@ class BCTrainer:
                     self.writer.write(stats)
 
                     if self.config.bc.eval.save_videos:
-                        vid_folder = os.path.join(self.config.bc.exp_folder, 'videos')
-                        os.makedirs(vid_folder, exist_ok=True)
                         
                         obs_infos = [(step['observation'], step['info']) for step in episodes[i]]
                         observations, infos = zip(*obs_infos)
@@ -378,14 +395,14 @@ class BCTrainer:
                         frames = [observations_to_image(obs, info) for obs, info in obs_infos]
                         disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
 
-                        os.makedirs(os.path.join(self.config.bc.exp_folder, 'videos'), exist_ok=True)
+                        ckpt_idx = int(os.path.basename(ckpt_path).split('.')[1])
                         
                         generate_video(
                             video_option=['disk'],
-                            video_dir=vid_folder,
+                            video_dir=video_dir,
                             images=frames,
                             episode_id={stats['total_episodes']},
-                            checkpoint_idx=300,
+                            checkpoint_idx=ckpt_idx,
                             metrics=extract_scalars_from_info(disp_info),
                             fps=self.config.habitat_baselines.video_fps,
                             tb_writer=None,
@@ -394,27 +411,31 @@ class BCTrainer:
                     episodes[i] = []
 
             observations = next_observations
+        
+        with open(os.path.join(stats_dir, 'stats.pkl'), 'wb+') as f:
+            pickle.dump(stats, f)
+         
                
 
 
 def main():
     parser = argparse.ArgumentParser(description="Example argparse for cfg_path")
-    
-    # Add the 'cfg_path' argument
     parser.add_argument('cfg_path', type=str, help="Path to the configuration file")
-
-    # Parse the command-line arguments
+    parser.add_argument('--eval', action='store_true', help='Flag to enable evaluation mode')
     args = parser.parse_args()
 
-    # Access the value of 'cfg_path' argument
-    cfg_path = args.cfg_path
-    
-    trainer = BCTrainer(cfg_path)
+    config = habitat.get_config(args.cfg_path)
+    with read_write(config):
+        config.bc.mode = 'eval'
+        config.habitat_baselines.wb.group = 'eval'
+        config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
+ 
+    trainer = BCTrainer(config)
 
-    if trainer.config.bc.mode == 'train':
+    if not args.eval:
         trainer.train()
     else:
-        trainer.eval_checkpoint(trainer.config.bc.eval.ckpt)
+        trainer.eval()
 
 if __name__ == "__main__":
     main()
