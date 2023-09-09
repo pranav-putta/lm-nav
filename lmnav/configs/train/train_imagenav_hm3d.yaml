@@ -11,13 +11,13 @@ defaults:
 bc:
   teacher_ckpt: "ckpts/uLHP.300.pth" 
   llama_cfg: "/srv/flash1/pputta7/projects/lm-nav/exp_configs/lin_nav_llama_train.yaml"
-  writer: "console"
+  writer: "wb"
   dtg_threshold: 1.0
   epochs: 10000
   batch_size: 2
   lr: 2.5e-5
   ckpt_freq: 10
-  exp_folder: "experiments/lmnav_imagenav/"
+  exp_folder: "experiments/lmnav_imagenav_linear/"
   mode: 'train'
   data_path: 'offline/'
   max_trajectory_length: 24
@@ -33,7 +33,7 @@ habitat_baselines:
   num_environments: 6
   wb:
     project_name: "lmnav"
-    run_name: "lmnav_imagenav"
+    run_name: "lmnav_imagenav_linear"
     group: "train"
       
   rl:
@@ -49,7 +49,7 @@ habitat_baselines:
         
 habitat:
   environment:
-    max_episode_steps: 200
+    max_episode_steps: 500
   simulator:
     turn_angle: 30
     agents:

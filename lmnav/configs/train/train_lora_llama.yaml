@@ -11,7 +11,7 @@ defaults:
 bc:
   teacher_ckpt: "ckpts/uLHP.300.pth" 
   llama_cfg: "/srv/flash1/pputta7/projects/lm-nav/exp_configs/lora_nav_llama_train.yaml"
-  writer: "wb"
+  writer: "console"
   dtg_threshold: 1.0
   epochs: 10000
   batch_size: 2
@@ -25,6 +25,7 @@ bc:
   grad_accums: 6
   eval:
     ckpt: 'ckpt.[0-9]*0.pth' 
+    num_episodes: 10
     save_videos: True
     
 
@@ -48,7 +49,7 @@ habitat_baselines:
         
 habitat:
   environment:
-    max_episode_steps: 200
+    max_episode_steps: 500
   simulator:
     turn_angle: 30
     agents:

@@ -292,6 +292,8 @@ class BCTrainer:
 
 
     def eval(self):
+        self.initialize_eval()
+        
         eval_folder = os.path.join(self.config.bc.exp_folder, 'eval')
         ckpt_path_pattern = os.path.join(os.path.join(self.config.bc.exp_folder, 'ckpts'), self.config.bc.eval.ckpt)
         ckpt_paths = glob.glob(ckpt_path_pattern)
@@ -308,7 +310,6 @@ class BCTrainer:
         
         ckpt_paths = reversed(sorted(list(ckpt_paths), key=lambda x: int(x[0].split(".")[1])))
         envs, env_spec = _init_envs(self.config)
-        self.initialize_eval()
 
         for ckpt_path, stats in ckpt_paths:
             self.eval_checkpoint(ckpt_path, stats, envs)
@@ -332,7 +333,7 @@ class BCTrainer:
         # load checkpoint
         print(f"Loading model from checkpoint")
         ckpt_state_dict = torch.load(ckpt_path)
-        ckpt_state_dict = { k[len('module.'):]:v for k, v in ckpt_state_dict.items() }
+        ckpt_state_dict = { k[len('module.'):]:v for k, v in ckpt_state_dict['model'].items() }
         self.agent.load_state_dict(ckpt_state_dict, strict=False)
 
         # turn of all gradients
@@ -351,10 +352,9 @@ class BCTrainer:
         if prev_stats is not None:
             stats = prev_stats
 
-        actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=True)
+        actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=False)
         
         while stats[f'{ckpt_name}/total_episodes'] < N_episodes:
-            
             next(actor)
             actions = actor.send((observations, episode_idxs_to_reset)) 
             episode_idxs_to_reset = set()

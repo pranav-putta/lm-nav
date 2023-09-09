@@ -278,9 +278,11 @@ class LinNavLLAMA(Blip2Base):
         embd = embd.to(self.device)
         tgts = tgts.to(self.device)
 
+
         outputs = self.llama_model(inputs_embeds=embd,
                                     labels=tgts,
                                     return_dict=True)
+
         
         return outputs
 
@@ -336,9 +338,18 @@ class LinNavLLAMA(Blip2Base):
                 act_logits = logits[i, -act_pos_delta[i], act_tkn_ids]
                 act_logits = F.softmax(act_logits)
 
-                action = act_logits.argmax().cpu().item()
-                actions.append(action)
+                argmax_act = act_logits.argmax().cpu().item()
 
+                if not deterministic:
+                    # special nondeterminism where we sample only from non-stopping actions
+                    if argmax_act == 0:
+                        action = 0
+                    else:
+                        action = torch.multinomial(act_logits[1:], 1).cpu().item() + 1
+                else:
+                    action = argmax_act
+
+                actions.append(action)
                 episodes[i][-1]['action'] = action
 
             yield actions
