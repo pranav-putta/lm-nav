@@ -21,6 +21,8 @@ from lmnav.models.ImageBind.models.imagebind_model import ImageBindModel,Modalit
 from lmnav.models.ImageBind.models import imagebind_model
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 
+from lmnav.models.perceiver import Perceiver
+
 # from flamingo_pytorch import PerceiverResampler
 @registry.register_model("lin_nav_llama")
 class LinNavLLAMA(Blip2Base):
@@ -56,6 +58,7 @@ class LinNavLLAMA(Blip2Base):
         llama_proj_model='',
         lora_train_llama=False,
         lora_config=None,
+        qformer_compressor_cfg=None,
     ):
         super().__init__()
 
@@ -99,6 +102,30 @@ class LinNavLLAMA(Blip2Base):
             logging.info("freeze Qformer")
         logging.info('Loading Q-Former Done')
 
+        # check if we will compress q former tokens through a perceiver
+        self.qformer_compressor_cfg = qformer_compressor_cfg
+        if qformer_compressor_cfg is not None:
+            print('Loading Qformer Compression Perceiver')
+            self.qformer_compressor = Perceiver(
+                input_channels=self.Qformer.config.hidden_size,
+                input_axis=1,
+                num_freq_bands=64,
+                max_freq=64.,
+                depth=qformer_compressor_cfg.depth,
+                num_latents=qformer_compressor_cfg.num_latents,
+                latent_dim=self.Qformer.config.hidden_size,
+                cross_heads=1,
+                latent_heads=8,
+                cross_dim_head=1,
+                latent_dim_head=128,
+                final_classifier_head=False,
+                attn_dropout=0.1,
+                ff_dropout=0.1,
+                weight_tie_layers=False,
+                fourier_encode_data=True,
+                self_per_cross_attn=7,
+            )
+            
         logging.info('Loading LLAMA Tokenizer')
         self.llama_tokenizer = LlamaTokenizer.from_pretrained(llama_model, use_fast=False)
         if self.llama_tokenizer.pad_token is None:
@@ -201,6 +228,10 @@ class LinNavLLAMA(Blip2Base):
             )
             
             q_hidden_state = query_output.last_hidden_state
+
+            # check if compressor exists
+            if self.qformer_compressor_cfg is not None:
+                q_hidden_state = self.qformer_compressor(q_hidden_state)
             
             inputs_llama = self.llama_proj(q_hidden_state)
             atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(image_embeds.device)
@@ -226,12 +257,11 @@ class LinNavLLAMA(Blip2Base):
         return action_embds
 
 
-    def prompt1_wrap(self, prompt, rgbs, goals, actions):
+    def prompt1_wrap(self, prompt, rgbs, goals, actions, masks):
         rgbs_embd, rgbs_attn = self.embed_visual(rgbs)
         goals_embd, goals_attn = self.embed_visual(goals)
         action_tkns_t = self.tokenize_actions(actions)
         actions_embd = self.embed_actions(action_tkns_t)
-
         
         B, T, Q, H = rgbs_embd.shape
      
@@ -252,15 +282,17 @@ class LinNavLLAMA(Blip2Base):
         # construct targets
         prompt_tgts = torch.ones(B, prompt_embd[0].shape[1] + goals_embd.shape[1] + prompt_embd[1].shape[1]).fill_(-100).to(self.device)
         rgb_tgts = torch.ones(B, T, Q).fill_(-100).to(self.device)
+        
         act_tgts = action_tkns_t.permute(0, 2, 1)
-        s_a_tgts = torch.cat([rgb_tgts, act_tgts], dim=2).view(B, T * (Q + 1)).to(self.device)
+        act_tgts = act_tgts.masked_fill_(~masks[..., None], -100)
 
+        s_a_tgts = torch.cat([rgb_tgts, act_tgts], dim=2).view(B, T * (Q + 1)).to(self.device)
         tgts = torch.cat([prompt_tgts, s_a_tgts], dim=1).long().to(self.device) 
         
         return embds, tgts
 
 
-    def forward(self, rgbs_t, goals_t, actions_t):
+    def forward(self, rgbs_t, goals_t, actions_t, mask_t):
         """
         rgbs_t = [B, C, T, H, W]
         goals_t = [B, C, 1, H, W]
@@ -272,7 +304,7 @@ class LinNavLLAMA(Blip2Base):
            You can choose to move { left, right, forward, stop } at every step. The goal image is {}. \
            After every image, choose the best action. {}"
         
-        embd, tgts = self.prompt1_wrap(prompt1, rgbs_t, goals_t, actions_t)
+        embd, tgts = self.prompt1_wrap(prompt1, rgbs_t, goals_t, actions_t, mask_t)
         embd = embd.to(self.device)
         tgts = tgts.to(self.device)
 
@@ -288,6 +320,15 @@ class LinNavLLAMA(Blip2Base):
         
         padded_seqs = [F.pad(seq, p2d_partial + (max_t - seq.shape[dim],)) for seq in seqs]
         return torch.stack(padded_seqs)
+
+
+    @property
+    def tokens_per_img(self):
+        if self.qformer_compressor_cfg is not None:
+            return self.qformer_compressor_cfg.num_latents
+        else:
+            return 32
+        
 
 
     def action_generator(self, num_envs, T, vis_processor, deterministic=False):
@@ -325,7 +366,7 @@ class LinNavLLAMA(Blip2Base):
             rgbs_t, goals_t, actions_t = apply_transforms_inputs(vis_processor, rgbs_t, goals_t, actions_t)
             outputs = self(rgbs_t, goals_t, actions_t) 
 
-            act_pos_delta = [33 * (max_len - l) + 2 for l in lens]
+            act_pos_delta = [(self.tokens_per_img + 1) * (max_len - l) + 2 for l in lens]
             logits = outputs.logits
 
             # project onto the action space
@@ -370,6 +411,8 @@ class LinNavLLAMA(Blip2Base):
         lora_train_llama = cfg.get("lora_train_llama", False)
         lora_config = cfg.get('lora_config', None)
 
+        qformer_compressor_cfg = cfg.get('qformer_compressor_cfg', None)
+
 
         model = cls(
             vit_model=vit_model,
@@ -391,7 +434,8 @@ class LinNavLLAMA(Blip2Base):
             frozen_llama_proj=frozen_llama_proj,
             llama_proj_model=llama_proj_model,
             lora_train_llama=lora_train_llama,
-            lora_config=lora_config 
+            lora_config=lora_config,
+            qformer_compressor_cfg=qformer_compressor_cfg
         )
 
         ckpt_path = cfg.get("ckpt", "")  # load weights of MiniGPT-4

@@ -108,7 +108,7 @@ class BCTrainer:
             
         # set up dataset
         self.dataset = OfflineEpisodeDataset(self.config.bc.data_path)
-        self.data_loader = DataLoader(self.dataset, batch_size=10, shuffle=True, collate_fn=lambda x: x, num_workers=4)
+        self.data_loader = DataLoader(self.dataset, batch_size=24, shuffle=True, collate_fn=lambda x: x, num_workers=4)
         self.data_loader = iter(self.data_loader)
          
         # set up student
@@ -172,25 +172,38 @@ class BCTrainer:
         goals = [einops.rearrange(episode['imagegoal'], 't h w c -> t c h w') for episode in episodes]
         actions = [episode['action'] for episode in episodes]
 
+        print('Max state length', max_state_length)
+        print([x.shape for x in rgbs])
+
         total_loss = 0
         total_samples = num_samples * num_bc_epochs * num_grad_accums
         rgbs, goals, actions = construct_subsequences(total_samples, max_state_length, rgbs, goals, actions)
-        p_idxs = torch.randperm(rgbs.shape[0]).view(num_bc_epochs, num_grad_accums, num_samples)
+        p_idxs = torch.randperm(len(rgbs)).view(num_bc_epochs, num_grad_accums, num_samples)
        
         for bc_epoch in range(num_bc_epochs):
             for i in range(num_grad_accums):
                 idxs = p_idxs[bc_epoch, i] 
-                rgbs_t, goals_t, actions_t = rgbs[idxs], goals[idxs], actions[idxs]
+                # construct batch
+                rgbs_t, goals_t, actions_t = map(lambda t: [t[i] for i in idxs], (rgbs, goals, actions))
+                T = max_state_length # TODO update this to max length, but for testing keep at T
+                # pad inputs to T
+                mask_t = torch.stack([torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])]) for t in rgbs_t])
+                mask_t = mask_t.bool()
+                rgbs_t = torch.stack([F.pad(t, (0,)*7 + (T - t.shape[0],), 'constant', 0) for t in rgbs_t])
+                goals_t = torch.stack(goals_t) 
+                actions_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in actions_t])
                 rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
+                 
+                print(rgbs_t.shape)
                 
                 if i < num_grad_accums - 1:
                     with self.agent.no_sync():
-                        outputs = self.agent(rgbs_t, goals_t, actions_t)
+                        outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t)
                         loss = outputs.loss
                         total_loss += loss.item()
                         loss.backward()
                 else:
-                    outputs = self.agent(rgbs_t, goals_t, actions_t)
+                    outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t)
                     loss = outputs.loss
                     loss.backward()
                     self.optim.step()

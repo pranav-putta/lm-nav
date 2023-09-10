@@ -47,12 +47,10 @@ class TestEpisodeProcessor(unittest.TestCase):
 
     def test_sample_subsequences(self):
         for i in range(100):
-            B, T = 10, 30
+            B, T = 10, 200
             C, H, W = 3, 480, 640
             S = 60
-            ts = [random.randint(5, 500) for _ in range(B)]
-
-            actual_T = min(T, min(ts))
+            ts = [random.randint(1, 500) for _ in range(B)]
             
             rgbs = [torch.rand(ts[i], 3, 480, 640) for i in range(B)]
             goals = [torch.rand(1, 3, 480, 640) for _ in range(B)]
@@ -62,13 +60,13 @@ class TestEpisodeProcessor(unittest.TestCase):
                 action[-1] = 0
 
             start = time.time()
-            rgbs_t, goals_t, actions_t = construct_subsequences(S, T, rgbs, goals, actions) 
+            rgbs_t, goals_t, actions_t, mask = construct_subsequences(S, T, rgbs, goals, actions) 
             end = time.time()
 
             print(f'Iteration {i} took {end - start} seconds')
 
             print(rgbs_t.shape, goals_t.shape, actions_t.shape)
-            self.assertTrue(tuple(rgbs_t.shape) == (S, actual_T, C, H, W))
+            self.assertTrue(tuple(rgbs_t.shape) == (S, T, C, H, W))
             self.assertTrue(tuple(goals_t.shape) == (S, 1, C, H, W))
 
             num_zero_acts = 0
