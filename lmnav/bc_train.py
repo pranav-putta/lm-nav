@@ -330,6 +330,9 @@ class BCTrainer:
     def eval_checkpoint(self, ckpt_path, prev_stats, envs):
         print(f"Starting evaluation for {ckpt_path}")
         
+        import pdb
+        pdb.set_trace()
+        
         N_episodes = self.config.bc.eval.num_episodes
         T = self.config.bc.max_trajectory_length
 
@@ -345,7 +348,7 @@ class BCTrainer:
         # load checkpoint
         print(f"Loading model from checkpoint")
         ckpt_state_dict = torch.load(ckpt_path)
-        ckpt_state_dict = { k[len('module.'):]:v for k, v in ckpt_state_dict.items() }
+        ckpt_state_dict = { k[len('module.'):]:v for k, v in ckpt_state_dict['model'].items() }
         self.agent.load_state_dict(ckpt_state_dict, strict=False)
 
         # turn of all gradients
