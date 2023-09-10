@@ -14,7 +14,7 @@ model:
     alpha: 32
     dropout: 0.1
 
-  vidceiver_config:
+  vidformer_config:
     depth: 2
     num_latents: 256
     latent_dim: 768
