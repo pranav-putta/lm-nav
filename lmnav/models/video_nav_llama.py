@@ -21,9 +21,11 @@ from lmnav.models.ImageBind.models.imagebind_model import ImageBindModel,Modalit
 from lmnav.models.ImageBind.models import imagebind_model
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 
+from lmnav.models.perceiver import Perceiver
+
 # from flamingo_pytorch import PerceiverResampler
-@registry.register_model("lin_nav_llama")
-class LinNavLLAMA(Blip2Base):
+@registry.register_model("video_nav_llama")
+class VideoNavLLAMA(Blip2Base):
     """
     Extension from BLIP2 GPT-LLAMA model to operate over navigation space.
     Adds a linear transformation to the BLIP projections.
@@ -56,6 +58,7 @@ class LinNavLLAMA(Blip2Base):
         llama_proj_model='',
         lora_train_llama=False,
         lora_config=None,
+        vidformer_config=None
     ):
         super().__init__()
 
@@ -99,6 +102,28 @@ class LinNavLLAMA(Blip2Base):
             logging.info("freeze Qformer")
         logging.info('Loading Q-Former Done')
 
+        logging.info('Loading Perceiver')
+        # load in video perceiver module
+        self.vidformer = Perceiver(
+            input_channels=self.Qformer.config.hidden_size,
+            input_axis=1,
+            num_freq_bands=64,
+            max_freq=8192,
+            depth=vidformer_config.depth,
+            num_latents=vidformer_config.num_latents,
+            latent_dim=vidformer_config.latent_dim,
+            cross_heads=1,
+            latent_heads=8,
+            cross_dim_head=128,
+            latent_dim_head=128,
+            final_classifier_head=False,
+            attn_dropout=0.1,
+            ff_dropout=0.1,
+            weight_tie_layers=False,
+            fourier_encode_data=True,
+            self_per_cross_attn=7
+        )
+        
         logging.info('Loading LLAMA Tokenizer')
         self.llama_tokenizer = LlamaTokenizer.from_pretrained(llama_model, use_fast=False)
         if self.llama_tokenizer.pad_token is None:
@@ -202,17 +227,11 @@ class LinNavLLAMA(Blip2Base):
             
             q_hidden_state = query_output.last_hidden_state
             
-            inputs_llama = self.llama_proj(q_hidden_state)
-            atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(image_embeds.device)
-            
-        inputs_llama = einops.rearrange(inputs_llama, '(b t) q h -> b t q h', b=batch_size)
-        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=batch_size)
-        return inputs_llama, atts_llama
+        return q_hidden_state
     
    
     def embed_visual(self, imgs):
-        img_embds, img_attns = self.encode_Qformer_visual(imgs.half().to(self.device))
-        return img_embds, img_attns
+        return self.encode_Qformer_visual(imgs.half().to(self.device))
 
     def tokenize_actions(self, actions):
         action_tkns = [self.llama_tokenizer(' '.join(act), return_tensors='pt', add_special_tokens=False) for act in actions]
@@ -371,6 +390,10 @@ class LinNavLLAMA(Blip2Base):
         lora_train_llama = cfg.get("lora_train_llama", False)
         lora_config = cfg.get('lora_config', None)
 
+        vidformer_config = cfg.get('vidformer_config', None)
+
+        
+
 
         model = cls(
             vit_model=vit_model,
@@ -392,7 +415,8 @@ class LinNavLLAMA(Blip2Base):
             frozen_llama_proj=frozen_llama_proj,
             llama_proj_model=llama_proj_model,
             lora_train_llama=lora_train_llama,
-            lora_config=lora_config 
+            lora_config=lora_config,
+            vidformer_config=vidformer_config
         )
 
         ckpt_path = cfg.get("ckpt", "")  # load weights of MiniGPT-4

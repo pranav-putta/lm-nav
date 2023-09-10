@@ -1,5 +1,5 @@
 model:
-  arch: lin_nav_llama
+  arch: video_nav_llama
   model_type: pretrain_vicuna
   freeze_vit: True
   freeze_qformer: True
