@@ -3,6 +3,8 @@ import einops
 import random
 import math
 
+import torch.nn.functional as F
+
 idx2class = {
     0: 'stop',
     1: 'forward',
@@ -61,13 +63,15 @@ def construct_subsequences(B, T, rgbs, goals, actions):
     episode_lens = [int(ep_rgb.shape[0]) for ep_rgb in rgbs]
     
     # set T to smaller length if there is a shortest episode
-    T = min(min(episode_lens), T)
-    sliding_windows = [[slice(start, start + T, 1) for start in range(length - T + 1)] for length in episode_lens] 
+    sliding_windows = [[slice(start, start + min(T, length), 1) for start in range(length - min(T, length) + 1)] for length in episode_lens] 
     
     # compute the number of samples for each episode
     window_lengths = [len(sw) for sw in sliding_windows]
     episode_weights = torch.tensor(window_lengths) / sum(window_lengths)
     samples_per_episode = [min(window_lengths[i], math.ceil(B * episode_weights[i])) for i in range(n_episodes)]
+    
+    # B can be at most the window lengths so artificially cut it off
+    B = min(B, sum(window_lengths))
     
     # make sure constraint of sum(samples) = B is still satisfied
     i = 0
@@ -89,6 +93,6 @@ def construct_subsequences(B, T, rgbs, goals, actions):
         
     random.shuffle(subsequences)
     rgbs, goals, actions = zip(*subsequences)
-    rgbs_t, goals_t, actions_t = torch.stack(rgbs), torch.stack(goals), torch.stack(actions)
-    return rgbs_t, goals_t, actions_t
+                      
+    return rgbs, goals, actions
 

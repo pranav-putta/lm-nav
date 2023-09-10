@@ -24,8 +24,8 @@ from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 from lmnav.models.perceiver import Perceiver
 
 # from flamingo_pytorch import PerceiverResampler
-@registry.register_model("lin_nav_llama")
-class LinNavLLAMA(Blip2Base):
+@registry.register_model("video_nav_llama")
+class VideoNavLLAMA(Blip2Base):
     """
     Extension from BLIP2 GPT-LLAMA model to operate over navigation space.
     Adds a linear transformation to the BLIP projections.
@@ -58,7 +58,7 @@ class LinNavLLAMA(Blip2Base):
         llama_proj_model='',
         lora_train_llama=False,
         lora_config=None,
-        qformer_compressor_cfg=None,
+        vidformer_config=None
     ):
         super().__init__()
 
@@ -102,30 +102,28 @@ class LinNavLLAMA(Blip2Base):
             logging.info("freeze Qformer")
         logging.info('Loading Q-Former Done')
 
-        # check if we will compress q former tokens through a perceiver
-        self.qformer_compressor_cfg = qformer_compressor_cfg
-        if qformer_compressor_cfg is not None:
-            print('Loading Qformer Compression Perceiver')
-            self.qformer_compressor = Perceiver(
-                input_channels=self.Qformer.config.hidden_size,
-                input_axis=1,
-                num_freq_bands=64,
-                max_freq=64.,
-                depth=qformer_compressor_cfg.depth,
-                num_latents=qformer_compressor_cfg.num_latents,
-                latent_dim=self.Qformer.config.hidden_size,
-                cross_heads=1,
-                latent_heads=8,
-                cross_dim_head=1,
-                latent_dim_head=128,
-                final_classifier_head=False,
-                attn_dropout=0.1,
-                ff_dropout=0.1,
-                weight_tie_layers=False,
-                fourier_encode_data=True,
-                self_per_cross_attn=7,
-            )
-            
+        logging.info('Loading Perceiver')
+        # load in video perceiver module
+        self.vidformer = Perceiver(
+            input_channels=self.Qformer.config.hidden_size,
+            input_axis=1,
+            num_freq_bands=64,
+            max_freq=8192,
+            depth=vidformer_config.depth,
+            num_latents=vidformer_config.num_latents,
+            latent_dim=vidformer_config.latent_dim,
+            cross_heads=1,
+            latent_heads=8,
+            cross_dim_head=128,
+            latent_dim_head=128,
+            final_classifier_head=False,
+            attn_dropout=0.1,
+            ff_dropout=0.1,
+            weight_tie_layers=False,
+            fourier_encode_data=True,
+            self_per_cross_attn=7
+        )
+        
         logging.info('Loading LLAMA Tokenizer')
         self.llama_tokenizer = LlamaTokenizer.from_pretrained(llama_model, use_fast=False)
         if self.llama_tokenizer.pad_token is None:
@@ -228,22 +226,12 @@ class LinNavLLAMA(Blip2Base):
             )
             
             q_hidden_state = query_output.last_hidden_state
-
-            # check if compressor exists
-            if self.qformer_compressor_cfg is not None:
-                q_hidden_state = self.qformer_compressor(q_hidden_state)
             
-            inputs_llama = self.llama_proj(q_hidden_state)
-            atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(image_embeds.device)
-            
-        inputs_llama = einops.rearrange(inputs_llama, '(b t) q h -> b t q h', b=batch_size)
-        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=batch_size)
-        return inputs_llama, atts_llama
+        return q_hidden_state
     
    
     def embed_visual(self, imgs):
-        img_embds, img_attns = self.encode_Qformer_visual(imgs.half().to(self.device))
-        return img_embds, img_attns
+        return self.encode_Qformer_visual(imgs.half().to(self.device))
 
     def tokenize_actions(self, actions):
         action_tkns = [self.llama_tokenizer(' '.join(act), return_tensors='pt', add_special_tokens=False) for act in actions]
@@ -257,11 +245,17 @@ class LinNavLLAMA(Blip2Base):
         return action_embds
 
 
-    def prompt1_wrap(self, prompt, rgbs, goals, actions, masks):
+    def prompt_wrap(self, rgbs, goals, actions, mask):
+        prompt = "You are a navigational agent tasked with exploring an indoor environment to find a goal image. \
+                  You can choose to move { left, right, forward, stop } at every step. The goal image is {}. \
+                  You are provided with a video of your state action history: {}. Choose the next best action: {}"
+ 
         rgbs_embd, rgbs_attn = self.embed_visual(rgbs)
         goals_embd, goals_attn = self.embed_visual(goals)
+        
         action_tkns_t = self.tokenize_actions(actions)
         actions_embd = self.embed_actions(action_tkns_t)
+
         
         B, T, Q, H = rgbs_embd.shape
      
@@ -282,29 +276,23 @@ class LinNavLLAMA(Blip2Base):
         # construct targets
         prompt_tgts = torch.ones(B, prompt_embd[0].shape[1] + goals_embd.shape[1] + prompt_embd[1].shape[1]).fill_(-100).to(self.device)
         rgb_tgts = torch.ones(B, T, Q).fill_(-100).to(self.device)
-        
         act_tgts = action_tkns_t.permute(0, 2, 1)
-        act_tgts = act_tgts.masked_fill_(~masks[..., None], -100)
-
         s_a_tgts = torch.cat([rgb_tgts, act_tgts], dim=2).view(B, T * (Q + 1)).to(self.device)
+
         tgts = torch.cat([prompt_tgts, s_a_tgts], dim=1).long().to(self.device) 
         
         return embds, tgts
 
 
-    def forward(self, rgbs_t, goals_t, actions_t, mask_t):
+    def forward(self, rgbs_t, goals_t, actions_t, mask):
         """
         rgbs_t = [B, C, T, H, W]
         goals_t = [B, C, 1, H, W]
-        actions_t = [B, T]
+        actions_t = [B, 1]
+        mask = [B, T]
         """
         
-        im_patch_token_id = self.IMAGE_PATCH_TOKEN_ID
-        prompt1 = "You are a navigational agent tasked with exploring an indoor environment to find a goal image. \
-           You can choose to move { left, right, forward, stop } at every step. The goal image is {}. \
-           After every image, choose the best action. {}"
-        
-        embd, tgts = self.prompt1_wrap(prompt1, rgbs_t, goals_t, actions_t, mask_t)
+        embd, tgts = self.prompt_wrap(rgbs_t, goals_t, actions_t, mask)
         embd = embd.to(self.device)
         tgts = tgts.to(self.device)
 
@@ -320,15 +308,6 @@ class LinNavLLAMA(Blip2Base):
         
         padded_seqs = [F.pad(seq, p2d_partial + (max_t - seq.shape[dim],)) for seq in seqs]
         return torch.stack(padded_seqs)
-
-
-    @property
-    def tokens_per_img(self):
-        if self.qformer_compressor_cfg is not None:
-            return self.qformer_compressor_cfg.num_latents
-        else:
-            return 32
-        
 
 
     def action_generator(self, num_envs, T, vis_processor, deterministic=False):
@@ -366,7 +345,7 @@ class LinNavLLAMA(Blip2Base):
             rgbs_t, goals_t, actions_t = apply_transforms_inputs(vis_processor, rgbs_t, goals_t, actions_t)
             outputs = self(rgbs_t, goals_t, actions_t) 
 
-            act_pos_delta = [(self.tokens_per_img + 1) * (max_len - l) + 2 for l in lens]
+            act_pos_delta = [33 * (max_len - l) + 2 for l in lens]
             logits = outputs.logits
 
             # project onto the action space
@@ -411,7 +390,9 @@ class LinNavLLAMA(Blip2Base):
         lora_train_llama = cfg.get("lora_train_llama", False)
         lora_config = cfg.get('lora_config', None)
 
-        qformer_compressor_cfg = cfg.get('qformer_compressor_cfg', None)
+        vidformer_config = cfg.get('vidformer_config', None)
+
+        
 
 
         model = cls(
@@ -435,7 +416,7 @@ class LinNavLLAMA(Blip2Base):
             llama_proj_model=llama_proj_model,
             lora_train_llama=lora_train_llama,
             lora_config=lora_config,
-            qformer_compressor_cfg=qformer_compressor_cfg
+            vidformer_config=vidformer_config
         )
 
         ckpt_path = cfg.get("ckpt", "")  # load weights of MiniGPT-4
