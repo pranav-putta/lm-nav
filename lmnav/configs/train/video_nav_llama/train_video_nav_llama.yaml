@@ -1,0 +1,68 @@
+# @package _global_
+
+defaults:
+  - /benchmark/nav/imagenav/imagenav_base
+  - /habitat_baselines: habitat_baselines_rl_config_base
+  - /habitat/dataset/imagenav: hm3d
+  - /habitat_baselines/rl/policy/obs_transforms:
+    - resize_shortest_edge_base 
+  - _self_
+
+bc:
+  teacher_ckpt: "ckpts/uLHP.300.pth" 
+  llama_cfg: "/srv/flash1/pputta7/projects/lm-nav/exp_configs/lora_nav_llama_train.yaml"
+  writer: "console"
+  dtg_threshold: 1.0
+  epochs: 10000
+  batch_size: 2
+  lr: 2.5e-5
+  ckpt_freq: 10
+  exp_folder: "experiments/lmnav_imagenav_video/"
+  mode: 'train'
+  data_path: 'offline/'
+  max_trajectory_length: 22
+  bc_epochs: 10
+  grad_accums: 6
+  eval:
+    num_episodes: 25
+    ckpt: 'ckpt.[0-9]*0.pth' 
+    save_videos: True
+    
+
+habitat_baselines:
+  num_environments: 6
+  wb:
+    project_name: "lmnav"
+    run_name: "video_nav_llama linear"
+    group: "train"
+      
+  rl:
+    policy:
+      name: PointNavResNetPolicy
+      obs_transforms:
+        resize_shortest_edge:
+          size: 120
+          trans_keys: [rgb, depth, imagegoal]
+
+    ddppo:
+      distrib_backend: "NCCL" 
+        
+habitat:
+  environment:
+    max_episode_steps: 200
+  simulator:
+    turn_angle: 30
+    agents:
+      main_agent:
+        sim_sensors:
+          rgb_sensor:
+            width: 640
+            height: 480
+          depth_sensor:
+            width: 640
+            height: 480
+    habitat_sim_v0:
+      allow_sliding: false
+  dataset:
+    content_scenes: ['00744-1S7LAXRdDqK']
+
