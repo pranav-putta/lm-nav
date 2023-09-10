@@ -210,15 +210,11 @@ def collect_episodes(config, device, child_conn,
         step += 1
 
         gc.collect()
-
-
-        # for key in batch.keys():
-        #     batch[key] = batch[key].to('cpu')
         
 
 def filter_fn(config, episode):
     dtg_threshold = config.bc.dtg_threshold
-    return episode[-1]['info']['distance_to_goal'] <= dtg_threshold
+    return len(episode) < 500 and episode[-1]['info']['distance_to_goal'] <= dtg_threshold
 
 
 def start_data_gen_process(device, config, deterministic=False):

@@ -24,6 +24,7 @@ bc:
   bc_epochs: 10
   grad_accums: 6
   eval:
+    num_episodes: 25
     ckpt: 'ckpt.[0-9]*0.pth' 
     save_videos: True
     
