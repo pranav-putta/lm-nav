@@ -19,6 +19,7 @@ import copy
 from lmnav.models.Qformer import BertConfig, BertLMHeadModel
 from lmnav.models.ImageBind.models.imagebind_model import ImageBindModel,ModalityType
 from lmnav.models.ImageBind.models import imagebind_model
+from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 
 # from flamingo_pytorch import PerceiverResampler
 @registry.register_model("lin_nav_llama")
@@ -53,6 +54,8 @@ class LinNavLLAMA(Blip2Base):
         device_8bit=0,  # the device of 8bit model should be set when loading and cannot be changed anymore.
         frozen_llama_proj=True,
         llama_proj_model='',
+        lora_train_llama=False,
+        lora_config=None,
     ):
         super().__init__()
 
@@ -143,6 +146,19 @@ class LinNavLLAMA(Blip2Base):
                 param.requires_grad = True
             logging.info('LLAMA proj is not frozen')
 
+        if lora_train_llama:
+            # wrap llama model in peft model and run fine-tuning
+            if lora_config is None:
+                raise ValueError("Training LLAMA with LoRA requires specifiying a config with the parameters: [rank, alpha, dropout]")
+
+            peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM,
+                                     inference_mode=False,
+                                     r=lora_config.rank,
+                                     lora_alpha=lora_config.alpha,
+                                     lora_dropout=lora_config.dropout)
+            self.llama_model = get_peft_model(self.llama_model, peft_config)
+                   
+
         logging.info('Loading llama_proj Done')
 
         self.max_txt_len = max_txt_len
@@ -205,7 +221,7 @@ class LinNavLLAMA(Blip2Base):
 
 
     def embed_actions(self, action_tkns_t):
-        action_embds = [self.llama_model.model.embed_tokens(tkns_t) for tkns_t in action_tkns_t]
+        action_embds = [self.llama_model.get_input_embeddings()(tkns_t) for tkns_t in action_tkns_t]
         action_embds = torch.cat(action_embds, dim=0)
         return action_embds
 
@@ -221,7 +237,7 @@ class LinNavLLAMA(Blip2Base):
      
         prompt_segs = prompt.split("{}")
         prompt_tkns = [self.llama_tokenizer(seg, return_tensors='pt', add_special_tokens=(i == 0)) for i, seg in enumerate(prompt_segs) if len(seg)]
-        prompt_embd = [self.llama_model.model.embed_tokens(tkns.input_ids.to(self.device)) for tkns in prompt_tkns]
+        prompt_embd = [self.llama_model.get_input_embeddings()(tkns.input_ids.to(self.device)) for tkns in prompt_tkns]
         prompt_embd = [embd.repeat(B, 1, 1) for embd in prompt_embd]
         
         actions_embd = einops.rearrange(actions_embd, 'b t h -> b t 1 h')
@@ -353,7 +369,9 @@ class LinNavLLAMA(Blip2Base):
         frozen_llama_proj = cfg.get("frozen_llama_proj", True)
 
         llama_proj_model = cfg.get("llama_proj_model", '')
-        
+        lora_train_llama = cfg.get("lora_train_llama", False)
+        lora_config = cfg.get('lora_config', None)
+
 
         model = cls(
             vit_model=vit_model,
@@ -374,6 +392,8 @@ class LinNavLLAMA(Blip2Base):
             device_8bit=device_8bit,
             frozen_llama_proj=frozen_llama_proj,
             llama_proj_model=llama_proj_model,
+            lora_train_llama=lora_train_llama,
+            lora_config=lora_config 
         )
 
         ckpt_path = cfg.get("ckpt", "")  # load weights of MiniGPT-4

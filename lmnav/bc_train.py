@@ -122,12 +122,12 @@ class BCTrainer:
         self.optim = torch.optim.Adam(params=optim_params, lr=self.config.bc.lr)
         
         if rank0_only(): 
-            self.writer = get_writer(self.config) 
+            self.writer = get_writer(self.config, self.resume_run_id) 
 
             
 
     def setup_student(self):
-        cfg_path = "/srv/flash1/pputta7/projects/lm-nav/exp_configs/lin_nav_llama_train.yaml"
+        cfg_path = self.config.bc.llama_cfg
         
         Args = namedtuple("Args", "cfg_path, model_type, gpu_id, options")
         args = Args(cfg_path, "llama_v2", self.rank, [])
@@ -278,8 +278,6 @@ class BCTrainer:
         frames = [observations_to_image(obs, info) for obs, info in obs_infos]
         disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
 
-        print({k : [type(v[i]) for i in range(len(v))] for k, v in disp_info.items()})
-        
         generate_video(
             video_option=['disk'],
             video_dir=video_dir,
@@ -294,35 +292,43 @@ class BCTrainer:
 
 
     def eval(self):
-        ckpt_path_pattern = os.path.join(self.config.bc.exp_folder, 'ckpts', self.config.bc.eval.ckpt)
-        ckpt_paths = glob.glob(ckpt_path_pattern) 
-        ckpt_paths = reversed(sorted(ckpt_paths, key=lambda x: int(x.split(".")[1])))
+        eval_folder = os.path.join(self.config.bc.exp_folder, 'eval')
+        ckpt_path_pattern = os.path.join(os.path.join(self.config.bc.exp_folder, 'ckpts'), self.config.bc.eval.ckpt)
+        ckpt_paths = glob.glob(ckpt_path_pattern)
 
+        # go through each ckpt and get previous stats
+        for i in range(len(ckpt_paths)):
+            stats_path = os.path.join(eval_folder, os.path.basename(ckpt_paths[i]), 'stats.pkl')
+            if os.path.exists(stats_path):
+                with open(stats_path, 'rb') as f:
+                    prev_stats = pickle.load(f)
+                ckpt_paths[i] = (ckpt_paths[i], prev_stats)  
+            else:
+                ckpt_paths[i] = (ckpt_paths[i], None)
+        
+        ckpt_paths = reversed(sorted(list(ckpt_paths), key=lambda x: int(x[0].split(".")[1])))
         envs, env_spec = _init_envs(self.config)
         self.initialize_eval()
 
-
-        for ckpt_path in ckpt_paths:
-            self.eval_checkpoint(ckpt_path, envs)
+        for ckpt_path, stats in ckpt_paths:
+            self.eval_checkpoint(ckpt_path, stats, envs)
         
         
-    def eval_checkpoint(self, ckpt_path, envs):
+    def eval_checkpoint(self, ckpt_path, prev_stats, envs):
         print(f"Starting evaluation for {ckpt_path}")
         
-        N_episodes = 100
+        N_episodes = self.config.bc.eval.num_episodes
         T = self.config.bc.max_trajectory_length
 
         # construct directory to save stats
         ckpt_name = os.path.basename(ckpt_path)
-        stats_dir = os.path.join(self.config.bc.exp_folder, 'eval', ckpt_name)
-        video_dir = os.path.join(stats_dir, 'videos')
-        os.makedirs(stats_dir, exist_ok=True)
+        eval_dir = os.path.join(self.config.bc.exp_folder, 'eval', ckpt_name)
+        video_dir = os.path.join(eval_dir, 'videos')
+        os.makedirs(eval_dir, exist_ok=True)
         
         if self.config.bc.eval.save_videos:
             os.makedirs(video_dir, exist_ok=True)
 
-        # start evaluation
-        num_episodes_done = 0
         # load checkpoint
         print(f"Loading model from checkpoint")
         ckpt_state_dict = torch.load(ckpt_path)
@@ -339,12 +345,15 @@ class BCTrainer:
 
         stats = {
             f'{ckpt_name}/total_episodes': 0,
-            f'{ckpt_name}/successful_episodes': 0 
+            f'{ckpt_name}/successful_episodes': 0,
         }
+
+        if prev_stats is not None:
+            stats = prev_stats
 
         actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=True)
         
-        while num_episodes_done < N_episodes:
+        while stats[f'{ckpt_name}/total_episodes'] < N_episodes:
             
             next(actor)
             actions = actor.send((observations, episode_idxs_to_reset)) 
@@ -384,8 +393,8 @@ class BCTrainer:
 
             observations = next_observations
         
-        with open(os.path.join(stats_dir, 'stats.pkl'), 'wb+') as f:
-            pickle.dump(stats, f)
+            with open(os.path.join(eval_dir, 'stats.pkl'), 'wb+') as f:
+                pickle.dump(stats, f)
          
                
 
@@ -398,16 +407,17 @@ def main():
     args = parser.parse_args()
 
     config = habitat.get_config(args.cfg_path)
-    with read_write(config):
-        config.bc.mode = 'eval'
-        config.habitat_baselines.wb.group = 'eval'
-        config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
- 
+
     trainer = BCTrainer(config, args.resume_run_id)
 
     if not args.eval:
         trainer.train()
     else:
+        with read_write(config):
+            config.bc.mode = 'eval'
+            config.habitat_baselines.wb.group = 'eval'
+            config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
+     
         trainer.eval()
 
 
