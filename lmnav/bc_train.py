@@ -258,10 +258,10 @@ class BCTrainer:
             "epoch": epoch
         }
         ckpt_num = epoch // self.config.bc.ckpt_freq
-        ckpt_filepath = os.path.join(self.exp_folder, 'ckpts', f'ckpts.{ckpt_num}.pth')
+        ckpt_filepath = os.path.join(self.exp_folder, 'ckpts', f'ckpt.{ckpt_num}.pth')
         torch.save(save_obj, ckpt_filepath) 
 
-        self.writer.save_artifact(self.config.bc.exp_name, 'model', ckpt_filepath)
+        self.writer.save_artifact(self.config.bc.exp_name, 'model', os.path.abspath(ckpt_filepath))
 
         
     def train(self):

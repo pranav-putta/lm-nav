@@ -17,7 +17,8 @@ bc:
   batch_size: 2
   lr: 2.5e-5
   ckpt_freq: 100
-  exp_folder: "experiments/lmnav_8_compression/"
+  exp_name: "lmnav_8_compression"
+  exp_dir: "experiments/"
   mode: 'train'
   data_path: 'offline_00744:latest'
   max_trajectory_length: 60
