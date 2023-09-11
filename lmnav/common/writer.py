@@ -87,6 +87,8 @@ class WandBWriter(BaseWriter):
 
     def save_artifact(self, name, atype, filepath):
         artifact = wandb.Artifact(name, type=atype)
+        if 'file://' not in filepath:
+            filepath = f'file://{filepath}'
         artifact.add_reference(filepath)
         wandb.log_artifact(artifact)
 

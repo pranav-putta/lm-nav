@@ -51,6 +51,7 @@ class BCTrainer:
     
     def __init__(self, config, resume_run_id):
         self.config = config
+        self.exp_folder = os.path.join(self.config.bc.exp_dir, self.config.bc.exp_name)
         self.resume_run_id = resume_run_id
         
     def initialize_eval(self):
@@ -107,8 +108,8 @@ class BCTrainer:
            
          
         # set up student
-        os.makedirs(self.config.bc.exp_folder, exist_ok=True)
-        os.makedirs(os.path.join(self.config.bc.exp_folder, 'ckpts'), exist_ok=True)
+        os.makedirs(self.exp_folder, exist_ok=True)
+        os.makedirs(os.path.join(self.exp_folder, 'ckpts'), exist_ok=True)
 
         self.agent = self.setup_student()
         
@@ -179,8 +180,6 @@ class BCTrainer:
         rgbs = [einops.rearrange(episode['rgb'], 't h w c -> t c h w') for episode in episodes]
         goals = [einops.rearrange(episode['imagegoal'], 't h w c -> t c h w') for episode in episodes]
         actions = [episode['action'] for episode in episodes]
-
-        print('Max state length', max_state_length)
 
         total_loss = 0
         total_samples = num_samples * num_bc_epochs * num_grad_accums
@@ -259,11 +258,10 @@ class BCTrainer:
             "epoch": epoch
         }
         ckpt_num = epoch // self.config.bc.ckpt_freq
-        ckpt_filepath = os.path.join(self.config.bc.exp_folder, 'ckpts', f'ckpts.{ckpt_num}.pth')
+        ckpt_filepath = os.path.join(self.exp_folder, 'ckpts', f'ckpts.{ckpt_num}.pth')
         torch.save(save_obj, ckpt_filepath) 
 
-        model_name = os.path.basename(self.config.bc.exp_folder)
-        self.writer.save_artifact(model_name, 'model', ckpt_filepath)
+        self.writer.save_artifact(self.config.bc.exp_name, 'model', ckpt_filepath)
 
         
     def train(self):
@@ -313,8 +311,8 @@ class BCTrainer:
 
 
     def eval(self):
-        eval_folder = os.path.join(self.config.bc.exp_folder, 'eval')
-        ckpt_path_pattern = os.path.join(os.path.join(self.config.bc.exp_folder, 'ckpts'), self.config.bc.eval.ckpt)
+        eval_folder = os.path.join(self.exp_folder, 'eval')
+        ckpt_path_pattern = os.path.join(os.path.join(self.exp_folder, 'ckpts'), self.config.bc.eval.ckpt)
         ckpt_paths = glob.glob(ckpt_path_pattern)
 
         # go through each ckpt and get previous stats
@@ -343,7 +341,7 @@ class BCTrainer:
 
         # construct directory to save stats
         ckpt_name = os.path.basename(ckpt_path)
-        eval_dir = os.path.join(self.config.bc.exp_folder, 'eval', ckpt_name)
+        eval_dir = os.path.join(self.exp_folder, 'eval', ckpt_name)
         video_dir = os.path.join(eval_dir, 'videos')
         os.makedirs(eval_dir, exist_ok=True)
         
@@ -428,7 +426,6 @@ def main():
     args = parser.parse_args()
 
     config = habitat.get_config(args.cfg_path)
-
     trainer = BCTrainer(config, args.resume_run_id)
 
     if not args.eval:
