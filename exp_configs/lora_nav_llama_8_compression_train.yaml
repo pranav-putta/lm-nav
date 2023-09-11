@@ -15,14 +15,14 @@ model:
     dropout: 0.1
 
   qformer_compressor_cfg:
-    num_latents: 4
+    num_latents: 8
     depth: 1
     self_per_cross_attn: 2
     cross_heads: 1
     latent_heads: 8
     cross_dim_head: 64
     latent_dim_head: 64
-
+      # 
   # If you want use LLaMA-2-chat,
   # some ckpts could be download from our provided huggingface repo
   # i.e.  https://huggingface.co/DAMO-NLP-SG/Video-LLaMA-2-13B-Finetuned

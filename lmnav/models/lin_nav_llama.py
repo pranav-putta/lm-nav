@@ -114,16 +114,16 @@ class LinNavLLAMA(Blip2Base):
                 depth=qformer_compressor_cfg.depth,
                 num_latents=qformer_compressor_cfg.num_latents,
                 latent_dim=self.Qformer.config.hidden_size,
-                cross_heads=1,
-                latent_heads=8,
-                cross_dim_head=1,
-                latent_dim_head=128,
+                cross_heads=qformer_compressor_cfg.cross_heads,
+                latent_heads=qformer_compressor_cfg.latent_heads,
+                cross_dim_head=qformer_compressor_cfg.cross_dim_head,
+                latent_dim_head=qformer_compressor_cfg.latent_dim_head,
                 final_classifier_head=False,
                 attn_dropout=0.1,
                 ff_dropout=0.1,
                 weight_tie_layers=False,
                 fourier_encode_data=True,
-                self_per_cross_attn=7,
+                self_per_cross_attn=qformer_compressor_cfg.self_per_cross_attn,
             )
             
         logging.info('Loading LLAMA Tokenizer')
@@ -303,6 +303,7 @@ class LinNavLLAMA(Blip2Base):
         prompt1 = "You are a navigational agent tasked with exploring an indoor environment to find a goal image. \
            You can choose to move { left, right, forward, stop } at every step. The goal image is {}. \
            After every image, choose the best action. {}"
+        mask_t = mask_t.to(torch.bool)
         
         embd, tgts = self.prompt1_wrap(prompt1, rgbs_t, goals_t, actions_t, mask_t)
         embd = embd.to(self.device)
@@ -360,11 +361,12 @@ class LinNavLLAMA(Blip2Base):
             rgbs_t = self.pad_sequences(rgbs, dim=0)
             actions_t = self.pad_sequences(actions, dim=0)
             goals_t = self.pad_sequences(goals, dim=0)
+            mask_t = torch.ones_like(actions_t).to(self.device)
             lens = [len(e) for e in partial_episodes]
             max_len = max(lens)
 
             rgbs_t, goals_t, actions_t = apply_transforms_inputs(vis_processor, rgbs_t, goals_t, actions_t)
-            outputs = self(rgbs_t, goals_t, actions_t) 
+            outputs = self(rgbs_t, goals_t, actions_t, mask_t) 
 
             act_pos_delta = [(self.tokens_per_img + 1) * (max_len - l) + 2 for l in lens]
             logits = outputs.logits
