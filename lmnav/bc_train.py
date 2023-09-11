@@ -129,7 +129,7 @@ class BCTrainer:
 
         # set up dataset
         self.dataset = OfflineEpisodeDataset(files=data_files)
-        self.data_loader = DataLoader(self.dataset, batch_size=24, shuffle=True, collate_fn=lambda x: x, num_workers=4)
+        self.data_loader = DataLoader(self.dataset, batch_size=self.config.bc.num_episodes_per_epoch, shuffle=True, collate_fn=lambda x: x, num_workers=4)
         self.data_loader = iter(self.data_loader)
 
         

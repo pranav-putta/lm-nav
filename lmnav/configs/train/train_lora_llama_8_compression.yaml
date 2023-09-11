@@ -24,6 +24,7 @@ bc:
   max_trajectory_length: 60
   bc_epochs: 2
   grad_accums: 8
+  num_episodes_per_epoch: 25
   eval:
     num_episodes: 25
     ckpt: 'ckpt.[0-9]*0.pth' 

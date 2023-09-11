@@ -16,18 +16,20 @@ bc:
   epochs: 10000
   batch_size: 2
   lr: 2.5e-5
-  ckpt_freq: 10
-  exp_folder: "experiments/lmnav_imagenav/"
+  ckpt_freq: 100
+  exp_name: "lmnav_imagenav"
+  exp_dir: "experiments/"
   mode: 'train'
-  data_path: 'offline/'
-  max_trajectory_length: 22
+  data_artifact: 'offline_00744:latest'
+  max_trajectory_length: 24
   bc_epochs: 10
   grad_accums: 6
+  num_episodes_per_epoch: 10
   eval:
     num_episodes: 25
-    ckpt: 'ckpt.[0-9]*0.pth' 
+    ckpt: 'ckpt.*.pth' 
     save_videos: True
-    
+ 
 
 habitat_baselines:
   num_environments: 6
