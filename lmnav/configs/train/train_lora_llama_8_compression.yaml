@@ -20,7 +20,7 @@ bc:
   exp_name: "lmnav_8_compression"
   exp_dir: "experiments/"
   mode: 'train'
-  data_path: 'offline_00744:latest'
+  data_artifact: 'offline_00744:latest'
   max_trajectory_length: 60
   bc_epochs: 2
   grad_accums: 8
