@@ -19,7 +19,7 @@ bc:
   ckpt_freq: 100
   exp_folder: "experiments/lmnav_8_compression/"
   mode: 'train'
-  data_path: 'offline/'
+  data_path: 'offline_00744:latest'
   max_trajectory_length: 60
   bc_epochs: 2
   grad_accums: 8
