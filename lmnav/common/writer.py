@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from omegaconf import OmegaConf
 import wandb
 import os
+from urllib.parse import unquote, urlparse
 
 def get_writer(cfg, resume_run_id):
     writer_type = cfg.bc.writer
@@ -24,7 +25,11 @@ class BaseWriter(ABC):
         pass
 
     @abstractmethod
-    def artifact(self, name, atype, filepath):
+    def save_artifact(self, name, atype, filepath):
+        pass
+
+    @abstractmethod
+    def load_dataset(self, name):
         pass
 
 
@@ -33,8 +38,13 @@ class ConsoleWriter(BaseWriter):
     def write(self, log_dict):
         print(log_dict)
         
-    def artifact(self, name, atype, filepath):
+    def save_artifact(self, name, atype, filepath):
         pass
+
+    def load_dataset(self, name):
+        dirpath = f'data/datasets/{name}'
+        files = [path for path in os.listdir(dirpath)]
+        return files
 
 class WandBWriter(BaseWriter):
 
@@ -75,8 +85,13 @@ class WandBWriter(BaseWriter):
     def write(self, log_dict):
         wandb.log(log_dict)
 
-    def artifact(self, name, atype, filepath):
+    def save_artifact(self, name, atype, filepath):
         artifact = wandb.Artifact(name, type=atype)
         artifact.add_reference(filepath)
         wandb.log_artifact(artifact)
+
+    def load_dataset(self, name):
+        artifact = wandb.use_artifact(name)
+        files = [unquote(urlparse(v.ref).path) for k, v in artifact.manifest.entries.items()]
+        return files
         

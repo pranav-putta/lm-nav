@@ -102,14 +102,9 @@ class BCTrainer:
             np.random.seed(self.config.habitat.seed)
             torch.manual_seed(self.config.habitat.seed)
             
-            self.num_rollouts_done_store = torch.distributed.PrefixStore("rollout_tracker", tcp_store)
-            self.num_rollouts_done_store.set("num_done", "0")
+            self.artifact_store = torch.distributed.PrefixStore("artifacts", tcp_store)
 
-            
-        # set up dataset
-        self.dataset = OfflineEpisodeDataset(self.config.bc.data_path)
-        self.data_loader = DataLoader(self.dataset, batch_size=24, shuffle=True, collate_fn=lambda x: x, num_workers=4)
-        self.data_loader = iter(self.data_loader)
+           
          
         # set up student
         os.makedirs(self.config.bc.exp_folder, exist_ok=True)
@@ -120,11 +115,24 @@ class BCTrainer:
         # set up optimizer
         optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
         self.optim = torch.optim.Adam(params=optim_params, lr=self.config.bc.lr)
-        
+
+        # set up writer and scatter all relevant data to worker nodes
         if rank0_only(): 
             self.writer = get_writer(self.config, self.resume_run_id) 
+            data_files = self.writer.load_dataset(os.path.basename(self.config.bc.data_artifact))
+            self.artifact_store.set("data_files", ';'.join(data_files))
+        else:
+            self.artifact_store.wait(["data_files"])
+            data_files = self.artifact_store.get("data_files").decode('utf-8').split(';')
 
-            
+
+        # set up dataset
+        self.dataset = OfflineEpisodeDataset(files=data_files)
+        self.data_loader = DataLoader(self.dataset, batch_size=24, shuffle=True, collate_fn=lambda x: x, num_workers=4)
+        self.data_loader = iter(self.data_loader)
+
+        
+                   
 
     def setup_student(self):
         cfg_path = self.config.bc.llama_cfg
@@ -173,7 +181,6 @@ class BCTrainer:
         actions = [episode['action'] for episode in episodes]
 
         print('Max state length', max_state_length)
-        print([x.shape for x in rgbs])
 
         total_loss = 0
         total_samples = num_samples * num_bc_epochs * num_grad_accums
@@ -193,8 +200,6 @@ class BCTrainer:
                 goals_t = torch.stack(goals_t) 
                 actions_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in actions_t])
                 rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
-                 
-                print(rgbs_t.shape)
                 
                 if i < num_grad_accums - 1:
                     with self.agent.no_sync():
@@ -258,7 +263,7 @@ class BCTrainer:
         torch.save(save_obj, ckpt_filepath) 
 
         model_name = os.path.basename(self.config.bc.exp_folder)
-        self.writer.artifact(model_name, 'model', ckpt_filepath)
+        self.writer.save_artifact(model_name, 'model', ckpt_filepath)
 
         
     def train(self):
