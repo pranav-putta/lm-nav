@@ -254,8 +254,11 @@ class BCTrainer:
             "epoch": epoch
         }
         ckpt_num = epoch // self.config.bc.ckpt_freq
-        ckpt_folder = os.path.join(self.config.bc.exp_folder, 'ckpts')
-        torch.save(save_obj,  os.path.join(ckpt_folder, f'ckpt.{ckpt_num}.pth')) 
+        ckpt_filepath = os.path.join(self.config.bc.exp_folder, 'ckpts', f'ckpts.{ckpt_num}.pth')
+        torch.save(save_obj, ckpt_filepath) 
+
+        model_name = os.path.basename(self.config.bc.exp_folder)
+        self.writer.artifact(model_name, 'model', ckpt_filepath)
 
         
     def train(self):
@@ -329,9 +332,6 @@ class BCTrainer:
         
     def eval_checkpoint(self, ckpt_path, prev_stats, envs):
         print(f"Starting evaluation for {ckpt_path}")
-        
-        import pdb
-        pdb.set_trace()
         
         N_episodes = self.config.bc.eval.num_episodes
         T = self.config.bc.max_trajectory_length
@@ -433,6 +433,7 @@ def main():
             config.bc.mode = 'eval'
             config.habitat_baselines.wb.group = 'eval'
             config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
+            # config.habitat.dataset.split = 'val_hard'
      
         trainer.eval()
 

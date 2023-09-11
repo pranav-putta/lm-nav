@@ -23,11 +23,18 @@ class BaseWriter(ABC):
     def write(self, log_dict):
         pass
 
+    @abstractmethod
+    def artifact(self, name, atype, filepath):
+        pass
+
 
 class ConsoleWriter(BaseWriter):
 
     def write(self, log_dict):
         print(log_dict)
+        
+    def artifact(self, name, atype, filepath):
+        pass
 
 class WandBWriter(BaseWriter):
 
@@ -67,4 +74,9 @@ class WandBWriter(BaseWriter):
     
     def write(self, log_dict):
         wandb.log(log_dict)
+
+    def artifact(self, name, atype, filepath):
+        artifact = wandb.Artifact(name, type=atype)
+        artifact.add_reference(filepath)
+        wandb.log_artifact(artifact)
         
