@@ -15,8 +15,8 @@ bc:
   dtg_threshold: 1.0
   epochs: 10000
   batch_size: 2
-  lr: 2.5e-5
-  ckpt_freq: 100
+  lr: 2.5e-4
+  ckpt_freq: 50
   exp_name: "lmnav_8_compression"
   exp_dir: "experiments/"
   mode: 'train'
@@ -27,7 +27,7 @@ bc:
   num_episodes_per_epoch: 25
   eval:
     num_episodes: 25
-    ckpt: 'ckpt.[0-9]*0.pth' 
+    ckpt: 'ckpt.*.pth' 
     save_videos: True
     
 
