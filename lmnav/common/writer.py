@@ -3,21 +3,13 @@ from omegaconf import OmegaConf
 import wandb
 import os
 from urllib.parse import unquote, urlparse
+from lmnav.common.registry import registry
 
 from lmnav.config.default_structured_configs import WBLoggerConfig
 
-def get_writer(cfg):
-    writer_type = cfg.bc.writer
-
-    if writer_type == 'console':
-        return ConsoleWriter(cfg)
-    elif writer_type == 'wb':
-        return WandBWriter(cfg)
-    else:
-        raise NotImplementedError()
     
 
-class BaseWriter(ABC):
+class BaseLogger(ABC):
     
     def __init__(self, config):
         pass
@@ -35,7 +27,9 @@ class BaseWriter(ABC):
         pass
 
 
-class ConsoleWriter(BaseWriter):
+
+@registry.register_logger('console')
+class ConsoleLogger(BaseLogger):
 
     def write(self, log_dict):
         print(log_dict)
@@ -48,7 +42,8 @@ class ConsoleWriter(BaseWriter):
         files = [path for path in os.listdir(dirpath)]
         return files
 
-class WandBWriter(BaseWriter):
+@registry.register_logger('wb')
+class WandBLogger(BaseLogger):
 
     def __init__(self, config: WBLoggerConfig):
         wb_kwargs = {}
@@ -58,9 +53,9 @@ class WandBWriter(BaseWriter):
             wb_kwargs["name"] = config.name
         if config.group != "":
             wb_kwargs["group"] = config.group
-        if config.tags != "":
+        if config.tags is not None:
             wb_kwargs["tags"] = config.tags
-        if config.notes != "":
+        if config.notes is not None:
             wb_kwargs["notes"] = config.notes
             
         slurm_info_dict = {

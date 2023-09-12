@@ -13,7 +13,7 @@ class Registry:
         "processor_name_mapping": {},
         "model_name_mapping": {},
         "lr_scheduler_name_mapping": {},
-        "runner_name_mapping": {},
+        "logger_name_mapping": {},
         "state": {},
         "paths": {},
     }
@@ -125,7 +125,7 @@ class Registry:
         return wrap
 
     @classmethod
-    def register_runner(cls, name):
+    def register_logger(cls, name):
         r"""Register a model to registry with key 'name'
 
         Args:
@@ -136,15 +136,15 @@ class Registry:
             from lmnav.common.registry import registry
         """
 
-        def wrap(runner_cls):
-            if name in cls.mapping["runner_name_mapping"]:
+        def wrap(logger_cls):
+            if name in cls.mapping["logger_name_mapping"]:
                 raise KeyError(
                     "Name '{}' already registered for {}.".format(
-                        name, cls.mapping["runner_name_mapping"][name]
+                        name, cls.mapping["logger_name_mapping"][name]
                     )
                 )
-            cls.mapping["runner_name_mapping"][name] = runner_cls
-            return runner_cls
+            cls.mapping["logger_name_mapping"][name] = logger_cls
+            return logger_cls
 
         return wrap
 
@@ -212,8 +212,8 @@ class Registry:
         return cls.mapping["lr_scheduler_name_mapping"].get(name, None)
 
     @classmethod
-    def get_runner_class(cls, name):
-        return cls.mapping["runner_name_mapping"].get(name, None)
+    def get_logger_class(cls, name):
+        return cls.mapping["logger_name_mapping"].get(name, None)
 
     @classmethod
     def list_runners(cls):

@@ -9,17 +9,15 @@ import os
 import sys
 
 
-from lmnav.common.registry import registry
-
 from lmnav.models import *
 from lmnav.processors import *
 
 
 root_dir = os.path.dirname(os.path.abspath(__file__))
 
-registry.register_path("library_root", root_dir)
-repo_root = os.path.join(root_dir, "..")
-registry.register_path("repo_root", repo_root)
-
-registry.register("MAX_INT", sys.maxsize)
-registry.register("SPLIT_NAMES", ["train", "val", "test"])
+# registry.register_path("library_root", root_dir)
+# repo_root = os.path.join(root_dir, "..")
+# registry.register_path("repo_root", repo_root)
+#
+# registry.register("MAX_INT", sys.maxsize)
+# registry.register("SPLIT_NAMES", ["train", "val", "test"])

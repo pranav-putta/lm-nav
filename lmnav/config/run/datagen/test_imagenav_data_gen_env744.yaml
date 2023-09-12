@@ -3,9 +3,10 @@
 defaults:
   - /benchmark/nav/imagenav/imagenav_base
   - /exp: base
-  - /logger@exp.logger: wb  
+  - /logger@exp.logger: console  
   - /generator: base
   - /actor@generator.actor: old_eai_policy
+  - /generator/filter_method: dtg
   - /dataset/imagenav: hm3d
   - /habitat_baselines: habitat_baselines_rl_config_base
   - /habitat_baselines/rl/policy/obs_transforms:
@@ -14,6 +15,7 @@ defaults:
 
 exp:
   name: "offline_744"
+  root_dir: "data/datasets/lmnav"
   logger:
     project: "lmnav"
     name: "lmnav imagenav env 744 datagen"
@@ -22,10 +24,12 @@ exp:
 generator:
   num_episodes: 100000
   artifact: "offline_test"
-  dtg_threshold: 1.0
+  deterministic: False
+  filter_method:
+    dtg_threshold: 1.0
     
   actor:
-    name: "old_eai_policy"
+    name: "actors.old_eai_policy"
     ckpt: "ckpts/uLHP.300.pth"
 
 habitat_baselines:

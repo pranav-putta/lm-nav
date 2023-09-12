@@ -9,9 +9,7 @@ from lmnav.config.default import get_config
 from lmnav.common.registry import registry
 from lmnav.common.actor_setups import *
    
-def dtg_filter_fn(threshold, episode):
-    return len(episode) < 500 and episode[-1]['info']['distance_to_goal'] <= threshold
-     
+    
 
 class TestEpisodeProcessor(unittest.TestCase):
     
