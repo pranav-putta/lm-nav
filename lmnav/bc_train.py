@@ -94,6 +94,7 @@ class BCTrainer:
                 
             # update gpu ids for this process
             with read_write(self.config):
+                self.config.device = f'cuda:{local_rank}'
                 self.config.habitat_baselines.torch_gpu_id = local_rank
                 self.config.habitat.simulator.habitat_sim_v0.gpu_device_id = local_rank
 

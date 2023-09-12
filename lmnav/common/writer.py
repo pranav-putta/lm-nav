@@ -4,20 +4,22 @@ import wandb
 import os
 from urllib.parse import unquote, urlparse
 
-def get_writer(cfg, resume_run_id):
+from lmnav.config.default_structured_configs import WBLoggerConfig
+
+def get_writer(cfg):
     writer_type = cfg.bc.writer
 
     if writer_type == 'console':
-        return ConsoleWriter(cfg, resume_run_id)
+        return ConsoleWriter(cfg)
     elif writer_type == 'wb':
-        return WandBWriter(cfg, resume_run_id)
+        return WandBWriter(cfg)
     else:
         raise NotImplementedError()
     
 
 class BaseWriter(ABC):
     
-    def __init__(self, config, resume_run_id):
+    def __init__(self, config):
         pass
 
     @abstractmethod
@@ -48,17 +50,19 @@ class ConsoleWriter(BaseWriter):
 
 class WandBWriter(BaseWriter):
 
-    def __init__(self, config, resume_run_id):
+    def __init__(self, config: WBLoggerConfig):
         wb_kwargs = {}
-        if config.habitat_baselines.wb.project_name != "":
-            wb_kwargs["project"] = config.habitat_baselines.wb.project_name
-        if config.habitat_baselines.wb.run_name != "":
-            wb_kwargs["name"] = config.habitat_baselines.wb.run_name
-        if config.habitat_baselines.wb.entity != "":
-            wb_kwargs["entity"] = config.habitat_baselines.wb.entity
-        if config.habitat_baselines.wb.group != "":
-            wb_kwargs["group"] = config.habitat_baselines.wb.group
-
+        if config.project != "":
+            wb_kwargs["project"] = config.project
+        if config.name != "":
+            wb_kwargs["name"] = config.name
+        if config.group != "":
+            wb_kwargs["group"] = config.group
+        if config.tags != "":
+            wb_kwargs["tags"] = config.tags
+        if config.notes != "":
+            wb_kwargs["notes"] = config.notes
+            
         slurm_info_dict = {
             k[len("SLURM_") :]: v
             for k, v in os.environ.items()
@@ -69,9 +73,8 @@ class WandBWriter(BaseWriter):
                 "Requested to log with wandb, but wandb is not installed."
             )
 
-        # TODO: add resume behavior
-        if resume_run_id is not None:
-            wb_kwargs["id"] = resume_run_id
+        if config.resume_id is not None:
+            wb_kwargs["id"] = config.resume_id
             wb_kwargs["resume"] = "must"
         
         self.run = wandb.init(  # type: ignore[attr-defined]

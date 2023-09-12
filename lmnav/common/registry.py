@@ -9,7 +9,7 @@
 class Registry:
     mapping = {
         "builder_name_mapping": {},
-        "task_name_mapping": {},
+        "fn_name_mapping": {},
         "processor_name_mapping": {},
         "model_name_mapping": {},
         "lr_scheduler_name_mapping": {},
@@ -19,43 +19,11 @@ class Registry:
     }
 
     @classmethod
-    def register_builder(cls, name):
-        r"""Register a dataset builder to registry with key 'name'
+    def register_fn(cls, name):
+        r"""Register a function to registry with key 'name'
 
         Args:
-            name: Key with which the builder will be registered.
-
-        Usage:
-
-            from lmnav.common.registry import registry
-            from lmnav.datasets.base_dataset_builder import BaseDatasetBuilder
-        """
-
-        def wrap(builder_cls):
-            from lmnav.datasets.builders.base_dataset_builder import BaseDatasetBuilder
-
-            assert issubclass(
-                builder_cls, BaseDatasetBuilder
-            ), "All builders must inherit BaseDatasetBuilder class, found {}".format(
-                builder_cls
-            )
-            if name in cls.mapping["builder_name_mapping"]:
-                raise KeyError(
-                    "Name '{}' already registered for {}.".format(
-                        name, cls.mapping["builder_name_mapping"][name]
-                    )
-                )
-            cls.mapping["builder_name_mapping"][name] = builder_cls
-            return builder_cls
-
-        return wrap
-
-    @classmethod
-    def register_task(cls, name):
-        r"""Register a task to registry with key 'name'
-
-        Args:
-            name: Key with which the task will be registered.
+            name: Key with which the function will be registered.
 
         Usage:
 
@@ -63,18 +31,13 @@ class Registry:
         """
 
         def wrap(task_cls):
-            from lmnav.tasks.base_task import BaseTask
-
-            assert issubclass(
-                task_cls, BaseTask
-            ), "All tasks must inherit BaseTask class"
-            if name in cls.mapping["task_name_mapping"]:
+            if name in cls.mapping["fn_name_mapping"]:
                 raise KeyError(
                     "Name '{}' already registered for {}.".format(
-                        name, cls.mapping["task_name_mapping"][name]
+                        name, cls.mapping["fn_name_mapping"][name]
                     )
                 )
-            cls.mapping["task_name_mapping"][name] = task_cls
+            cls.mapping["fn_name_mapping"][name] = task_cls
             return task_cls
 
         return wrap
@@ -237,8 +200,8 @@ class Registry:
         return cls.mapping["model_name_mapping"].get(name, None)
 
     @classmethod
-    def get_task_class(cls, name):
-        return cls.mapping["task_name_mapping"].get(name, None)
+    def get_fn(cls, name):
+        return cls.mapping["fn_name_mapping"].get(name, None)
 
     @classmethod
     def get_processor_class(cls, name):

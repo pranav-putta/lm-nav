@@ -2,41 +2,43 @@
 
 defaults:
   - /benchmark/nav/imagenav/imagenav_base
+  - /exp: base
+  - /logger@exp.logger: wb  
+  - /generator: base
+  - /actor@generator.actor: old_eai_policy
+  - /dataset/imagenav: hm3d
   - /habitat_baselines: habitat_baselines_rl_config_base
-  - /habitat/dataset/imagenav: hm3d
   - /habitat_baselines/rl/policy/obs_transforms:
     - resize_shortest_edge_base 
   - _self_
 
-bc:
-  teacher_ckpt: "ckpts/uLHP.300.pth" 
-  writer: "wb"
-  dtg_threshold: 1.0
+exp:
+  name: "offline_744"
+  logger:
+    project: "lmnav"
+    name: "lmnav imagenav env 744 datagen"
+    group: "datagen"
   
-data_gen:
+generator:
   num_episodes: 100000
-  ckpt_freq: 1
-  exp_folder: "offline_10envs/"
-  mode: 'eval'
+  artifact: "offline_test"
+  dtg_threshold: 1.0
     
+  actor:
+    name: "old_eai_policy"
+    ckpt: "ckpts/uLHP.300.pth"
 
 habitat_baselines:
   num_environments: 2
-  wb:
-    project_name: "lmnav"
-    run_name: "lmnav imagenav env 744 datagen"
-    group: "datagen"
-      
   rl:
     policy:
-      name: PointNavResNetPolicy
       obs_transforms:
         resize_shortest_edge:
           size: 120
           trans_keys: [rgb, depth, imagegoal]
-
     ddppo:
       distrib_backend: "NCCL" 
+        
         
 habitat:
   environment:
@@ -52,6 +54,7 @@ habitat:
           depth_sensor:
             width: 640
             height: 480
+    agents_order: ['main_agent']
     habitat_sim_v0:
       allow_sliding: false
   dataset:
