@@ -1,3 +1,4 @@
+from functools import partial
 import os
 import multiprocessing as mp
 import gc
@@ -8,21 +9,11 @@ from habitat_baselines.rl.ddppo.ddp_utils import (
 )
 import hydra
 
-import torch
-
-
-from lmnav.emb_transfer.old_eai_policy import OldEAIPolicy
-
-
-# Quiet the Habitat simulator logging
-os.environ["MAGNUM_LOG"] = "quiet"
-os.environ["HABITAT_SIM_LOG"] = "quiet"
-
-os.chdir('/srv/flash1/pputta7/projects/lm-nav')
-
-
-
 def _init_envs(config=None, is_eval: bool = False):
+    # Quiet the Habitat simulator logging
+    os.environ["MAGNUM_LOG"] = "quiet"
+    os.environ["HABITAT_SIM_LOG"] = "quiet"
+
     env_factory = hydra.utils.instantiate(config.habitat_baselines.vector_env_factory)
     print(f"Initializing environment on gpu: {config.habitat.simulator.habitat_sim_v0.gpu_device_id}")
     envs = env_factory.construct_envs(
@@ -41,46 +32,33 @@ def _init_envs(config=None, is_eval: bool = False):
 
     return envs, _env_spec
 
-
-def collect_episodes(config, device, child_conn,
-                     deterministic, setup_teacher, filter_fn=None):
-    
-    print(f"Starting data collection process on device {device}")
+def collect_episodes(config, setup_teacher, filter_fn, deterministic, conn, q):
     envs, env_spec = _init_envs(config)
-    teacher = setup_teacher(config.data_gen.ckpt, config, env_spec)
+    teacher = setup_teacher(config, env_spec)
     
     if filter_fn is None:
         filter_fn = lambda *_: True
         
-    device = torch.device(device)
-    num_envs = envs.num_envs
-    step = 0
-    episodes = [[] for _ in range(num_envs)]
-
-    teacher = teacher.to(device)
-    teacher = teacher.eval()
-
-    for param in teacher.parameters():
-        param.requires_grad = False
-
+    episodes = [[] for _ in range(envs.num_envs)]
+    dones = [False for _ in range(envs.num_envs)]
     observations = envs.reset()
-    dones = [False for _ in range(num_envs)]
-    
+
     total_episodes = 0
     num_succ_episodes = 0
+    step = 0
 
     actor = teacher.action_generator(envs.num_envs, deterministic=deterministic)
     
     while True:
-        if child_conn.poll():
-            cmd = child_conn.recv()
+        if conn.poll():
+            cmd = conn.recv()
             if cmd == 'PAUSE':
                 print("Puasing dataset collection process...")
-                cmd = child_conn.recv()
+                cmd = conn.recv()
             
             if cmd == 'EXIT':
                 print("Ending dataset collection process...")
-                child_conn.close()
+                conn.close()
                 break
             elif cmd == 'RESUME':
                 pass
@@ -109,7 +87,7 @@ def collect_episodes(config, device, child_conn,
             if done:
                 total_episodes += 1
                 
-                if filter_fn(config, episodes[i]):
+                if filter_fn(episodes[i]):
                     num_succ_episodes += 1
                     
                     # log generator stats
@@ -125,7 +103,7 @@ def collect_episodes(config, device, child_conn,
                         'episode_id': current_episodes[i].episode_id
                     }
 
-                    child_conn.send((generator_stats, episode_stats, episodes[i]))
+                    q.put((generator_stats, episode_stats, episodes[i]))
                     
                 # reset state tensors
                 episodes[i] = []
@@ -136,32 +114,25 @@ def collect_episodes(config, device, child_conn,
         gc.collect()
         
 
-def filter_fn(config, episode):
-    dtg_threshold = config.bc.dtg_threshold
-    return len(episode) < 500 and episode[-1]['info']['distance_to_goal'] <= dtg_threshold
-
-def _setup_teacher(teacher_ckpt, config, env_spec):
-    obs_space, action_space = env_spec.observation_space, env_spec.action_space
-    teacher = OldEAIPolicy.hardcoded(OldEAIPolicy, obs_space, action_space)
-
-    ckpt_dict = torch.load(teacher_ckpt, map_location='cpu')
-    state_dict = ckpt_dict['state_dict']
-    state_dict = {k[len('actor_critic.'):]: v for k, v in state_dict.items()}
-
-    teacher.load_state_dict(state_dict, strict=False)
-    return teacher
-
-
-def start_data_gen_process(device, config, setup_teacher, filter_fn, deterministic=False):
+def start_data_gen_process(config, setup_teacher, filter_fn, deterministic=False):
     """
     This function constructs a multiprocessing server to collect data and returns a queue which can be called to retrieve
+
+    config: must include config.habitat and config.habitat_baselines for sim
+    setup_teacher: function that constructs the actor to be used for generation.
+                   the teacher must implement the function action_generator(num_envs, deterministic) which
+                   constructs a generator that preserves teacher state
+    filter_fn: filter function to decide which episodes to keep
+    deterministic: if actions should be sampled from distribution or take argmax
+    
     """
     ctx = mp.get_context('forkserver')
     parent_conn, child_conn = ctx.Pipe()
+    queue = ctx.Queue()
 
-    p = ctx.Process(target=collect_episodes, args=(config, device, 
-                                                   child_conn, deterministic, 
-                                                   setup_teacher, filter_fn))
+    f = partial(collect_episodes, config=config, setup_teacher=setup_teacher, filter_fn=filter_fn,
+                                  deterministic=deterministic, q=queue, conn=child_conn)
+    p = ctx.Process(target=f)
     p.start()
-    return p, parent_conn 
+    return p, parent_conn, queue
 

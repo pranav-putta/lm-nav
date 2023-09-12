@@ -381,30 +381,21 @@ class OldEAIPolicy(NetPolicy):
 
         return rnn_hx, prev_actions, not_done_masks 
 
-    @staticmethod
-    def _create_obs_transforms(config, env_spec):
-        obs_transforms = get_active_obs_transforms(config)
-        env_spec.observation_space = apply_obs_transforms_obs_space(
-                env_spec.observation_space, obs_transforms
-            )
-        return obs_transforms, env_spec
 
- 
-    def action_generator(self, num_envs, env_spec, config, device, deterministic):
-        rnn_hx, prev_actions, not_done_masks = self._construct_state_tensors(num_envs, device)
-        obs_transform, env_spec = self._create_obs_transforms(config, env_spec)
+    def action_generator(self, num_envs, deterministic):
+        rnn_hx, prev_actions, not_done_masks = self._construct_state_tensors(num_envs, self.device)
 
-        episodes = [ [] for _ in range(num_envs) ]
-        
         while True:
             observations, dones = yield
 
-            for i, episode in enumerate(episodes):
+            for i in range(num_envs):
                 if dones[i]:
-                    episode.clear()
+                    rnn_hx[i] = torch.zeros(rnn_hx.shape[1:])
+                    prev_actions[i] = torch.zeros(prev_actions.shape[1:])
+                    not_done_masks[i] = torch.ones(not_done_masks.shape[1:])
             
-            batch = batch_obs(observations, device)
-            batch = apply_obs_transforms_batch(batch, obs_transform)
+            batch = batch_obs(observations, self.device)
+            batch = apply_obs_transforms_batch(batch, self.obs_transforms)
 
             policy_result = self.act(batch, rnn_hx, prev_actions, not_done_masks, deterministic=deterministic)
             prev_actions.copy_(policy_result.actions)
