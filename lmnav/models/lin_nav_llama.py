@@ -343,10 +343,10 @@ class LinNavLLAMA(Blip2Base):
         act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
         
         while True:
-            observations, episode_idxs_to_reset = yield
+            observations, dones = yield
             
             for i, episode in enumerate(episodes):
-                if i in episode_idxs_to_reset:
+                if dones[i]:
                     episode.clear()
 
                 episode.append({

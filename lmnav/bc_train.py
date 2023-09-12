@@ -360,7 +360,7 @@ class BCTrainer:
 
         observations = envs.reset()
         episodes = [[] for _ in range(envs.num_envs)]
-        episode_idxs_to_reset = set()
+        dones = [False for _ in range(envs.num_envsj)]
 
         stats = {
             f'{ckpt_name}/total_episodes': 0,
@@ -370,13 +370,12 @@ class BCTrainer:
         if prev_stats is not None:
             stats = prev_stats
 
-        actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=True)
+        actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=False)
         
         while stats[f'{ckpt_name}/total_episodes'] < N_episodes:
             
             next(actor)
-            actions = actor.send((observations, episode_idxs_to_reset)) 
-            episode_idxs_to_reset = set()
+            actions = actor.send((observations, dones)) 
                         
             outputs = envs.step(actions)
             next_observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)] 
@@ -406,7 +405,6 @@ class BCTrainer:
                             print("There was an error while saving video!")
 
                     # this is to tell actor generator to clear this episode from history
-                    episode_idxs_to_reset.add(i)
                     episodes[i] = []
 
 
@@ -435,7 +433,7 @@ def main():
             config.bc.mode = 'eval'
             config.habitat_baselines.wb.group = 'eval'
             config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
-            # config.habitat.dataset.split = 'val_hard'
+            config.habitat.dataset.split = 'val_hard'
      
         trainer.eval()
 

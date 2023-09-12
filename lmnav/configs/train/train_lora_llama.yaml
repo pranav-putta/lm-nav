@@ -66,5 +66,6 @@ habitat:
     habitat_sim_v0:
       allow_sliding: false
   dataset:
-    content_scenes: ['00744-1S7LAXRdDqK']
+    # content_scenes: ['00744-1S7LAXRdDqK']
+    content_scenes: ['00800-TEEsavR23oF']
 

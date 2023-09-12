@@ -1,6 +1,8 @@
 from typing import Dict, Optional, Tuple
 
 import cv2
+from habitat_baselines.common.obs_transformers import apply_obs_transforms_batch
+from habitat_baselines.utils.common import batch_obs
 import numpy as np
 import torch
 from gym import spaces
@@ -118,7 +120,7 @@ class EAINet(Net):
                 resnet_baseplanes=resnet_baseplanes,
                 resnet_ngroups=resnet_baseplanes // 2,
                 vit_use_fc_norm=vit_use_fc_norm,
-                vit_global_pool=vit_global_pool,
+vit_global_pool=vit_global_pool,
                 vit_use_cls=vit_use_cls,
                 vit_mask_ratio=vit_mask_ratio,
                 avgpooled_image=avgpooled_image,
@@ -370,3 +372,44 @@ class OldEAIPolicy(NetPolicy):
             drop_path_rate=0,
             scale_obs=1
         )
+
+    @staticmethod
+    def _construct_state_tensors(num_environments, device):
+        rnn_hx = torch.zeros((num_environments, 2, 512), device=device)
+        prev_actions = torch.zeros(num_environments, 1, device=device, dtype=torch.long)
+        not_done_masks = torch.ones(num_environments, 1, device=device, dtype=torch.bool)
+
+        return rnn_hx, prev_actions, not_done_masks 
+
+    @staticmethod
+    def _create_obs_transforms(config, env_spec):
+        obs_transforms = get_active_obs_transforms(config)
+        env_spec.observation_space = apply_obs_transforms_obs_space(
+                env_spec.observation_space, obs_transforms
+            )
+        return obs_transforms, env_spec
+
+ 
+    def action_generator(self, num_envs, env_spec, config, device, deterministic):
+        rnn_hx, prev_actions, not_done_masks = self._construct_state_tensors(num_envs, device)
+        obs_transform, env_spec = self._create_obs_transforms(config, env_spec)
+
+        episodes = [ [] for _ in range(num_envs) ]
+        
+        while True:
+            observations, dones = yield
+
+            for i, episode in enumerate(episodes):
+                if dones[i]:
+                    episode.clear()
+            
+            batch = batch_obs(observations, device)
+            batch = apply_obs_transforms_batch(batch, obs_transform)
+
+            policy_result = self.act(batch, rnn_hx, prev_actions, not_done_masks, deterministic=deterministic)
+            prev_actions.copy_(policy_result.actions)
+            rnn_hx = policy_result.rnn_hidden_states
+
+            yield policy_result.actions
+        
+        
