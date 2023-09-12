@@ -370,7 +370,7 @@ class BCTrainer:
         if prev_stats is not None:
             stats = prev_stats
 
-        actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=True)
+        actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=False)
         
         while stats[f'{ckpt_name}/total_episodes'] < N_episodes:
             

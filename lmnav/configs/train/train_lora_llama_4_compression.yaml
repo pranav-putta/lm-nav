@@ -23,8 +23,8 @@ bc:
   data_artifact: 'offline_00744:latest'
   max_trajectory_length: 125
   bc_epochs: 2
-  grad_accums: 8
-  num_episodes_per_epoch: 25
+  grad_accums: 6
+  num_episodes_per_epoch: 24
   eval:
     num_episodes: 25
     ckpt: 'ckpt.*.pth' 

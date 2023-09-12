@@ -21,12 +21,12 @@ bc:
   exp_dir: "experiments/"
   mode: 'train'
   data_artifact: 'offline_10envs:latest'
-  max_trajectory_length: 24
+  max_trajectory_length: 22
   bc_epochs: 10
   grad_accums: 6
   num_episodes_per_epoch: 10
   eval:
-    num_episodes: 25
+    num_episodes: 10
     ckpt: 'ckpt.*.pth' 
     save_videos: True
     
