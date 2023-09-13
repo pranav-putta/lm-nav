@@ -13,7 +13,7 @@ class TestEpisodeProcessor(unittest.TestCase):
     
     def setUp(self):
         self.device = 'cuda:0'
-        self.config = get_config("datagen/test_imagenav_data_gen_env744")
+        self.config = get_config("datagen/imagenav_data_gen_env744")
         
     def test_data_gen_process(self):
         filter_fn = partial(registry.get_fn(self.config.generator.filter_method._target_), self.config.generator.filter_method)

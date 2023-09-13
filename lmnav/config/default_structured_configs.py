@@ -48,6 +48,7 @@ class BasePolicyConfig:
 @dataclass
 class OldEAIPolicyConfig(BasePolicyConfig):
     _target_: str = "old_eai_policy"
+    ckpt: str = MISSING
 
 @dataclass
 class BaseNavLLaMAPolicyConfig(BasePolicyConfig):

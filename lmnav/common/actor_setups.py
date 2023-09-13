@@ -17,7 +17,7 @@ def setup_eai_teacher(config, env_spec):
     teacher.obs_transforms = obs_transforms
     teacher.device = device
     
-    ckpt_dict = torch.load(config.generator.actor.ckpt, map_location='cpu')
+    ckpt_dict = torch.load(config.generator.policy.ckpt, map_location='cpu')
     state_dict = ckpt_dict['state_dict']
     state_dict = {k[len('actor_critic.'):]: v for k, v in state_dict.items()}
 

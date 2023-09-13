@@ -397,10 +397,15 @@ class OldEAIPolicy(NetPolicy):
             batch = batch_obs(observations, self.device)
             batch = apply_obs_transforms_batch(batch, self.obs_transforms)
 
-            policy_result = self.act(batch, rnn_hx, prev_actions, not_done_masks, deterministic=deterministic)
-            prev_actions.copy_(policy_result.actions)
-            rnn_hx = policy_result.rnn_hidden_states
+            features, rnn_hx, _ = self.net(batch, rnn_hx, prev_actions, not_done_masks)
+            dist = self.action_distribution(features)
 
-            yield policy_result.actions
-        
+            if deterministic:
+                actions = dist.mode()
+            else:
+                actions = dist.sample()
+            
+            prev_actions.copy_(actions)
+
+            yield (actions, dist.probs)        
         

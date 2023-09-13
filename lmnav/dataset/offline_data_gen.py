@@ -2,13 +2,14 @@ import argparse
 from functools import partial
 import gc
 import tarfile
+from habitat_sim.utils.datasets_download import gzip
 import numpy as np
 import multiprocessing as mp
 from multiprocessing.connection import Connection
 from habitat.config.read_write import read_write
 import torch
 import torch.distributed
-import habitat
+import pickle
 
 import copy
 import time
@@ -67,6 +68,7 @@ class OfflineDataGenerator:
         new_episode['imagegoal'] = torch.from_numpy(episode[0]['observation']['imagegoal'][None, :])
         new_episode['reward'] = torch.from_numpy(np.array([step['reward'] for step in episode]).astype(np.float16))
         new_episode['action'] = torch.from_numpy(np.array([step['action'] for step in episode]).astype(np.uint8))
+        new_episode['action_probs'] = torch.stack([step['probs'] for step in episode])
         new_episode['info'] = [{ k:v for k, v in step['info'].items() if k in info_keys_to_keep } for step in episode]
 
         del raw_episode
@@ -75,10 +77,12 @@ class OfflineDataGenerator:
 
         
     def generate(self):
-        print(f"Starting generation with {self.num_gpus} gpus")
         generator_cfg = self.config.generator
         max_buffer_len = generator_cfg.ckpt_freq
         exp_folder = os.path.join(generator_cfg.store_artifact.dirpath, generator_cfg.store_artifact.name)
+        
+        print(f"Starting generation with {self.num_gpus} gpus")
+        print(f"Saving data to {exp_folder}")
         
         self.cfgs, self.processes, self.conns, self.queues = zip(*[self.initialize_data_generator(exp_folder, max_buffer_len, i) for i in range(self.num_gpus)]) 
         
@@ -109,7 +113,9 @@ class OfflineDataGenerator:
                 if max_buffer_len == 1:
                     data = data[0]
                     
-                torch.save(data, filepath)
+                # gzip file as well
+                with gzip.open(filepath, 'wb+') as f:
+                    pickle.dump(data, f)
                
                 self.N += max_buffer_len
                 gc.collect()

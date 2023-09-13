@@ -222,7 +222,7 @@ class BCTrainer:
         gc.collect()
             
         avg_loss = total_loss / (num_bc_epochs * num_grad_accums)
-        current_lr = self.lr_scheduler.get_last_lr()
+        current_lr = self.lr_scheduler.get_last_lr()[0]
 
         return {
             'loss': avg_loss,

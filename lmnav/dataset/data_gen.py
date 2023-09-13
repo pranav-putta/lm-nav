@@ -67,7 +67,7 @@ def collect_episodes(config, setup_teacher, filter_fn, deterministic, conn, q):
                 
         # roll out a step
         next(actor)
-        actions = actor.send((observations, dones))
+        actions, probs = actor.send((observations, dones))
         step_data = [a.item() for a in actions.cpu()]
 
         outputs = envs.step(step_data)
@@ -79,7 +79,8 @@ def collect_episodes(config, setup_teacher, filter_fn, deterministic, conn, q):
             episode.append({'observation': observations[i],
                             'reward': rewards_l[i],
                             'info': infos[i],
-                            'action': step_data[i]})
+                            'action': step_data[i],
+                            'probs': probs[i].cpu() })
 
         
         # check if any episodes finished and archive it into dataset
