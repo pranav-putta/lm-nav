@@ -38,8 +38,9 @@ class ConsoleLogger(BaseLogger):
         pass
 
     def load_dataset(self, name):
-        dirpath = f'data/datasets/{name}'
-        files = [path for path in os.listdir(dirpath)]
+        name = name.split(':')[0]
+        dirpath = f'data/datasets/lmnav/{name}'
+        files = [os.path.join(dirpath, path) for path in os.listdir(dirpath)]
         return files
 
 @registry.register_logger('wb')

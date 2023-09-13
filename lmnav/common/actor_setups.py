@@ -3,7 +3,7 @@ import torch
 from lmnav.emb_transfer.old_eai_policy import OldEAIPolicy
 from lmnav.common.registry import registry
 
-@registry.register_fn('actors.old_eai_policy')
+@registry.register_fn('policies.old_eai_policy')
 def setup_eai_teacher(config, env_spec):
     print("setting up eai teacher...")
     device = torch.device(config.exp.device)

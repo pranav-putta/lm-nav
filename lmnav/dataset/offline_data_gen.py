@@ -50,10 +50,10 @@ class OfflineDataGenerator:
             cfg.habitat_baselines.torch_gpu_id = gpu_id
             cfg.habitat.simulator.habitat_sim_v0.gpu_device_id = gpu_id
 
-        filter_fn = partial(registry.get_fn(cfg.generator.filter_method.name), cfg.generator.filter_method)
-        setup_actor = registry.get_fn(self.config.generator.actor.name)
+        filter_fn = partial(registry.get_fn(cfg.generator.filter_method._target_), cfg.generator.filter_method)
+        setup_policy = registry.get_fn(self.config.generator.policy._target_)
 
-        process, conn, queue = start_data_gen_process(cfg, setup_actor, filter_fn, cfg.generator.deterministic) 
+        process, conn, queue = start_data_gen_process(cfg, setup_policy, filter_fn, cfg.generator.deterministic) 
         return cfg, process, conn, queue
          
     

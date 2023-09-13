@@ -1,0 +1,49 @@
+# @package _global_
+
+defaults:
+  # set up habitat 
+  - /env@habitat_baselines: habitat_baselines
+  - /env@habitat: habitat 
+  - /dataset/imagenav/hm3d_10env
+    
+  # set up experiment misc.
+  - /exp: base
+  - /logger@exp.logger: console
+    
+  # set up train
+  - /runner@train: bc
+  - /policy/nav_llama@train.policy: lora 
+  - /dataset@train.dataset: offline_episode
+    
+  # set up eval
+  - /runner@eval: eval
+  - /dataset@eval.dataset: offline_episode
+    
+  - _self_
+
+
+exp:
+  name: "lmnav_imagenav_10envs"
+  root_dir: "experiments/"
+  logger:
+    project: "lmnav"
+    name: "lmnav imagenav linear"
+    group: "train"
+
+train:
+  batch_size: 2
+  num_envs: 10
+  epochs: 10_000
+  bc_epochs: 10
+  grad_accums: 6
+  lr: 1e-4
+  max_trajectory_length: 22    
+  dataset: 
+    artifact: "offline_10envs:latest"
+ 
+eval:
+  policy: ${..train.policy}
+  ckpt: "ckpt.*.pth"
+  num_episodes: 50
+  save_videos: True
+  deterministic: False

@@ -7,3 +7,4 @@ defaults:
 type: PointNav-v1
 split: train
 data_path: data/datasets/imagenav/hm3d/v1/{split}/{split}.json.gz
+content_scenes: ['00744-1S7LAXRdDqK']
