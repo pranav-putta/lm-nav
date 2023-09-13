@@ -59,6 +59,7 @@ class NavLLAMA(Blip2Base):
         freeze_lora=False,
         lora_config=None,
         qformer_compressor_cfg=None,
+        use_qformer=True
     ):
         super().__init__()
 
@@ -81,50 +82,52 @@ class NavLLAMA(Blip2Base):
             logging.info("freeze vision encoder")
         print('Loading VIT Done')
 
-        print('Loading Q-Former')
-        self.Qformer, self.query_tokens = self.init_Qformer(
-            num_query_token, self.visual_encoder.num_features
-        )
-        self.Qformer.cls = None
-        self.Qformer.bert.embeddings.word_embeddings = None
-        self.Qformer.bert.embeddings.position_embeddings = None
-        for layer in self.Qformer.bert.encoder.layer:
-            layer.output = None
-            layer.intermediate = None
-        self.load_from_pretrained(url_or_filename=q_former_model)
-
-        if freeze_qformer:
-            for name, param in self.Qformer.named_parameters():
-                param.requires_grad = False
-            self.Qformer = self.Qformer.eval()
-            self.Qformer.train = disabled_train
-            self.query_tokens.requires_grad = False
-            logging.info("freeze Qformer")
-        logging.info('Loading Q-Former Done')
-
-        # check if we will compress q former tokens through a perceiver
-        self.qformer_compressor_cfg = qformer_compressor_cfg
-        if qformer_compressor_cfg is not None:
-            print('Loading Qformer Compression Perceiver')
-            self.qformer_compressor = Perceiver(
-                input_channels=self.Qformer.config.hidden_size,
-                input_axis=1,
-                num_freq_bands=64,
-                max_freq=64.,
-                depth=qformer_compressor_cfg.depth,
-                num_latents=qformer_compressor_cfg.num_latents,
-                latent_dim=self.Qformer.config.hidden_size,
-                cross_heads=qformer_compressor_cfg.cross_heads,
-                latent_heads=qformer_compressor_cfg.latent_heads,
-                cross_dim_head=qformer_compressor_cfg.cross_dim_head,
-                latent_dim_head=qformer_compressor_cfg.latent_dim_head,
-                final_classifier_head=False,
-                attn_dropout=0.1,
-                ff_dropout=0.1,
-                weight_tie_layers=False,
-                fourier_encode_data=True,
-                self_per_cross_attn=qformer_compressor_cfg.self_per_cross_attn,
+        self.use_qformer = use_qformer
+        if use_qformer:
+            print('Loading Q-Former')
+            self.Qformer, self.query_tokens = self.init_Qformer(
+                num_query_token, self.visual_encoder.num_features
             )
+            self.Qformer.cls = None
+            self.Qformer.bert.embeddings.word_embeddings = None
+            self.Qformer.bert.embeddings.position_embeddings = None
+            for layer in self.Qformer.bert.encoder.layer:
+                layer.output = None
+                layer.intermediate = None
+            self.load_from_pretrained(url_or_filename=q_former_model)
+
+            if freeze_qformer:
+                for name, param in self.Qformer.named_parameters():
+                    param.requires_grad = False
+                self.Qformer = self.Qformer.eval()
+                self.Qformer.train = disabled_train
+                self.query_tokens.requires_grad = False
+                logging.info("freeze Qformer")
+            logging.info('Loading Q-Former Done')
+
+            # check if we will compress q former tokens through a perceiver
+            self.qformer_compressor_cfg = qformer_compressor_cfg
+            if qformer_compressor_cfg is not None:
+                print('Loading Qformer Compression Perceiver')
+                self.qformer_compressor = Perceiver(
+                    input_channels=self.Qformer.config.hidden_size,
+                    input_axis=1,
+                    num_freq_bands=64,
+                    max_freq=64.,
+                    depth=qformer_compressor_cfg.depth,
+                    num_latents=qformer_compressor_cfg.num_latents,
+                    latent_dim=self.Qformer.config.hidden_size,
+                    cross_heads=qformer_compressor_cfg.cross_heads,
+                    latent_heads=qformer_compressor_cfg.latent_heads,
+                    cross_dim_head=qformer_compressor_cfg.cross_dim_head,
+                    latent_dim_head=qformer_compressor_cfg.latent_dim_head,
+                    final_classifier_head=False,
+                    attn_dropout=0.1,
+                    ff_dropout=0.1,
+                    weight_tie_layers=False,
+                    fourier_encode_data=True,
+                    self_per_cross_attn=qformer_compressor_cfg.self_per_cross_attn,
+                )
             
         logging.info('Loading LLAMA Tokenizer')
         self.llama_tokenizer = LlamaTokenizer.from_pretrained(llama_model, use_fast=False)
@@ -208,17 +211,8 @@ class NavLLAMA(Blip2Base):
         self.visual_encoder.to("cpu")
         self.visual_encoder.float()
 
-    def encode_Qformer_visual(self, image):
-        device = image.device
-        
-        # input shape b,c,t,h,w
-        batch_size,_,time_length,_,_ = image.size()
-        image = einops.rearrange(image, 'b c t h w -> (b t) c h w')
+    def encode_Qformer_visual(self, image_embeds, image_atts):
         with self.maybe_autocast():
-            # embed image features with blip2, out: (b t) q h
-            image_embeds = self.ln_vision(self.visual_encoder(image)).to(device)
-            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(device)
-
             query_tokens = self.query_tokens.expand(image_embeds.shape[0], -1, -1)
             query_output = self.Qformer.bert(
                 query_embeds=query_tokens,
@@ -236,14 +230,28 @@ class NavLLAMA(Blip2Base):
             inputs_llama = self.llama_proj(q_hidden_state)
             atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(image_embeds.device)
             
-        inputs_llama = einops.rearrange(inputs_llama, '(b t) q h -> b t q h', b=batch_size)
-        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=batch_size)
         return inputs_llama, atts_llama
     
    
     def embed_visual(self, imgs):
-        img_embds, img_attns = self.encode_Qformer_visual(imgs.half().to(self.device))
-        return img_embds, img_attns
+        device = imgs.device
+        B, _, T, _, _ = imgs.size()
+        image = einops.rearrange(image, 'b c t h w -> (b t) c h w')
+        with self.maybe_autocast():
+            image_embeds = self.ln_vision(self.visual_encoder(image)).to(device)
+            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(device)
+
+        if self.use_qformer:
+            # embed images through qformer
+            inputs_llama, atts_llama = self.encode_Qformer_visual(image_embeds, image_atts)
+        else:
+            # just embed them through EVA VIT
+            inputs_llama, atts_llama = image_embeds, image_atts
+        
+        inputs_llama = einops.rearrange(inputs_llama, '(b t) q h -> b t q h', b=batch_size)
+        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=batch_size)
+           
+        return inputs_llama, atts_llama
 
     def tokenize_actions(self, actions):
         action_tkns = [self.llama_tokenizer(' '.join(act), return_tensors='pt', add_special_tokens=False) for act in actions]
@@ -414,6 +422,7 @@ class NavLLAMA(Blip2Base):
         lora_config = cfg.get('lora_config', None)
 
         qformer_compressor_cfg = cfg.get('qformer_compressor_cfg', None)
+        use_qformer = cfg.get('use_qformer', True)
 
 
         model = cls(
@@ -437,7 +446,8 @@ class NavLLAMA(Blip2Base):
             llama_proj_model=llama_proj_model,
             freeze_lora=freeze_lora,
             lora_config=lora_config,
-            qformer_compressor_cfg=qformer_compressor_cfg
+            qformer_compressor_cfg=qformer_compressor_cfg,
+            use_qformer=use_qformer
         )
 
         ckpt_path = cfg.get("ckpt", "")  # load weights of MiniGPT-4
