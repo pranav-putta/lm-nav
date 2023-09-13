@@ -15,7 +15,6 @@ from lmnav.models.base_model import BaseModel
 from lmnav.models.blip2 import Blip2Base
 from lmnav.models.video_llama import VideoLLAMA
 from lmnav.models.nav_llama import NavLLAMA
-from lmnav.models.lin_nav_llama import LinNavLLAMA
 from lmnav.models.video_nav_llama import VideoNavLLAMA
 from lmnav.processors.base_processor import BaseProcessor
 
@@ -26,7 +25,6 @@ __all__ = [
     "Blip2Base",
     "VideoLLAMA",
     "NavLLAMA",
-    "LinNavLLAMA",
     "VideoNavLLAMA"
 ]
 

@@ -1,9 +1,12 @@
 import logging
 import random
 
+import torch.nn.functional as F
+
 import torch
 from torch.cuda.amp import autocast as autocast
 import torch.nn as nn
+from lmnav.common.episode_processor import apply_transforms_inputs, extract_inputs_from_dataset
 
 from lmnav.common.registry import registry
 from lmnav.models.blip2 import Blip2Base, disabled_train
@@ -16,34 +19,22 @@ import copy
 from lmnav.models.Qformer import BertConfig, BertLMHeadModel
 from lmnav.models.ImageBind.models.imagebind_model import ImageBindModel,ModalityType
 from lmnav.models.ImageBind.models import imagebind_model
+from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
+
+from lmnav.models.perceiver import Perceiver
 
 # from flamingo_pytorch import PerceiverResampler
 @registry.register_model("nav_llama")
 class NavLLAMA(Blip2Base):
     """
     Extension from BLIP2 GPT-LLAMA model to operate over navigation space.
+    Adds a linear transformation to the BLIP projections.
     """
 
     PRETRAINED_MODEL_CONFIG_DICT = {
         "pretrain_vicuna": "configs/models/video_llama.yaml",
         "pretrain_llama_v2": "configs/models/video_llama.yaml",
     }
-
-    @classmethod
-    def init_video_Qformer(cls, num_query_token, vision_width,num_hidden_layers =2):
-        encoder_config = BertConfig.from_pretrained("bert-base-uncased")
-        encoder_config.num_hidden_layers = num_hidden_layers
-        encoder_config.encoder_width = vision_width
-        # insert cross-attention layer every other block
-        encoder_config.add_cross_attention = True
-        encoder_config.cross_attention_freq = 1
-        encoder_config.query_length = num_query_token
-        Qformer = BertLMHeadModel(config=encoder_config)
-        query_tokens = nn.Parameter(
-            torch.zeros(1, num_query_token, encoder_config.hidden_size)
-        )
-        query_tokens.data.normal_(mean=0.0, std=encoder_config.initializer_range)
-        return Qformer, query_tokens
 
     def __init__(
         self,
@@ -63,22 +54,13 @@ class NavLLAMA(Blip2Base):
         end_sym='\n',
         low_resource=False,  # use 8 bit and put vit in cpu
         device_8bit=0,  # the device of 8bit model should be set when loading and cannot be changed anymore.
-
-        frozen_llama_proj=True,
-        frozen_video_Qformer=True,
-
+        freeze_llama_proj=True,
         llama_proj_model='',
-        fusion_header_type= "seqTransf",
-        max_frame_pos= 32,
-        fusion_head_layers = 2,
-        num_video_query_token = 32,
-        imagebind_ckpt_path = '/mnt/workspace/ckpt',
+        lora_train_llama=False,
+        lora_config=None,
+        qformer_compressor_cfg=None,
     ):
         super().__init__()
-
-        self.INSTRUCTION_PROMPT = "You are a navigation agent tasked with exploring an indoor environment to find a goal image. \
-                                  You are provided with the goal image: {} and a video of your state history: {}. Choose the best \
-                                  next action from { left, right, forward, stop }: "
 
         self.tokenizer = self.init_tokenizer()
         self.low_resource = low_resource
@@ -120,6 +102,30 @@ class NavLLAMA(Blip2Base):
             logging.info("freeze Qformer")
         logging.info('Loading Q-Former Done')
 
+        # check if we will compress q former tokens through a perceiver
+        self.qformer_compressor_cfg = qformer_compressor_cfg
+        if qformer_compressor_cfg is not None:
+            print('Loading Qformer Compression Perceiver')
+            self.qformer_compressor = Perceiver(
+                input_channels=self.Qformer.config.hidden_size,
+                input_axis=1,
+                num_freq_bands=64,
+                max_freq=64.,
+                depth=qformer_compressor_cfg.depth,
+                num_latents=qformer_compressor_cfg.num_latents,
+                latent_dim=self.Qformer.config.hidden_size,
+                cross_heads=qformer_compressor_cfg.cross_heads,
+                latent_heads=qformer_compressor_cfg.latent_heads,
+                cross_dim_head=qformer_compressor_cfg.cross_dim_head,
+                latent_dim_head=qformer_compressor_cfg.latent_dim_head,
+                final_classifier_head=False,
+                attn_dropout=0.1,
+                ff_dropout=0.1,
+                weight_tie_layers=False,
+                fourier_encode_data=True,
+                self_per_cross_attn=qformer_compressor_cfg.self_per_cross_attn,
+            )
+            
         logging.info('Loading LLAMA Tokenizer')
         self.llama_tokenizer = LlamaTokenizer.from_pretrained(llama_model, use_fast=False)
         if self.llama_tokenizer.pad_token is None:
@@ -157,7 +163,7 @@ class NavLLAMA(Blip2Base):
             llama_proj_weight = torch.load(llama_proj_model, map_location="cpu")
             msg = model.load_state_dict(llama_proj_weight['model'], strict=False)
 
-        if frozen_llama_proj:
+        if freeze_llama_proj:
             #  todo frozen  llama_proj
             for name, param in self.llama_proj.named_parameters():
                 param.requires_grad = False
@@ -166,6 +172,19 @@ class NavLLAMA(Blip2Base):
             for name, param in self.llama_proj.named_parameters():
                 param.requires_grad = True
             logging.info('LLAMA proj is not frozen')
+
+        if lora_train_llama:
+            # wrap llama model in peft model and run fine-tuning
+            if lora_config is None:
+                raise ValueError("Training LLAMA with LoRA requires specifiying a config with the parameters: [rank, alpha, dropout]")
+
+            peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM,
+                                     inference_mode=False,
+                                     r=lora_config.rank,
+                                     lora_alpha=lora_config.alpha,
+                                     lora_dropout=lora_config.dropout)
+            self.llama_model = get_peft_model(self.llama_model, peft_config)
+                   
 
         logging.info('Loading llama_proj Done')
 
@@ -182,37 +201,6 @@ class NavLLAMA(Blip2Base):
         else:
             self.prompt_list = []
 
-        self.video_frame_position_embedding = nn.Embedding(max_frame_pos, self.Qformer.config.hidden_size)
-
-        self.num_video_query_token = num_video_query_token
-        self.video_Qformer,self.video_query_tokens = self.init_video_Qformer(num_query_token = num_video_query_token,\
-            vision_width=self.Qformer.config.hidden_size, num_hidden_layers =2)
-
-        self.video_Qformer.cls = None
-        self.video_Qformer.bert.embeddings.word_embeddings = None
-        self.video_Qformer.bert.embeddings.position_embeddings = None
-        for layer in self.video_Qformer.bert.encoder.layer:
-            layer.output = None
-            layer.intermediate = None
-
-
-        if frozen_video_Qformer:
-            #  todo frozen  llama_proj
-            for name, param in self.video_Qformer.named_parameters():
-                param.requires_grad = False
-            for name, param in self.video_frame_position_embedding.named_parameters():
-                param.requires_grad = False
-            self.video_query_tokens.requires_grad = False
-            
-            logging.info('video_Qformer is frozen')
-        else:
-            for name, param in self.video_Qformer.named_parameters():
-                param.requires_grad = True
-            for name, param in self.video_frame_position_embedding.named_parameters():
-                param.requires_grad = True
-            self.video_query_tokens.requires_grad = True
-            logging.info('video_Qformer is not frozen')
-
 
     def vit_to_cpu(self):
         self.ln_vision.to("cpu")
@@ -220,7 +208,7 @@ class NavLLAMA(Blip2Base):
         self.visual_encoder.to("cpu")
         self.visual_encoder.float()
 
-    def encode_videoQformer_visual(self, image):
+    def encode_Qformer_visual(self, image):
         device = image.device
         
         # input shape b,c,t,h,w
@@ -238,178 +226,165 @@ class NavLLAMA(Blip2Base):
                 encoder_attention_mask=image_atts,
                 return_dict=True,
             )
-
-            # add frame_pos embedding
-            position_ids = torch.arange(time_length, dtype=torch.long, device=query_tokens.device)
-            position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
-            frame_position_embeddings = self.video_frame_position_embedding(position_ids)
+            
             q_hidden_state = query_output.last_hidden_state
 
-            frame_position_embeddings = frame_position_embeddings.unsqueeze(-2)
-            frame_hidden_state = einops.rearrange(q_hidden_state, '(b t) q h -> b t q h',b=batch_size,t=time_length)
-            frame_hidden_state = frame_position_embeddings + frame_hidden_state
-
-            # frame attention
-            frame_hidden_state =  einops.rearrange(frame_hidden_state, 'b t q h -> b (t q) h',b=batch_size,t=time_length)
-            frame_atts = torch.ones(frame_hidden_state.size()[:-1], dtype=torch.long).to(device)
-            video_query_tokens = self.video_query_tokens.expand(frame_hidden_state.shape[0], -1, -1)
-
-            video_query_output = self.video_Qformer.bert(
-                query_embeds=video_query_tokens,
-                encoder_hidden_states=frame_hidden_state,
-                encoder_attention_mask=frame_atts,
-                return_dict=True,
-                )
-            video_hidden = video_query_output.last_hidden_state
-
-            inputs_llama = self.llama_proj(video_hidden)
+            # check if compressor exists
+            if self.qformer_compressor_cfg is not None:
+                q_hidden_state = self.qformer_compressor(q_hidden_state)
+            
+            inputs_llama = self.llama_proj(q_hidden_state)
             atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(image_embeds.device)
+            
+        inputs_llama = einops.rearrange(inputs_llama, '(b t) q h -> b t q h', b=batch_size)
+        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=batch_size)
         return inputs_llama, atts_llama
     
-    
-    def prompt_wrap(self, img_embeds, atts_img, prompt):
-        if prompt:
-            batch_size = img_embeds.shape[0]
-            # print(prompt)
-            p_before, p_after = prompt.split('<ImageHere>')
-            p_before_tokens = self.llama_tokenizer(
-                p_before, return_tensors="pt", add_special_tokens=False).to(img_embeds.device)
-            p_after_tokens = self.llama_tokenizer(
-                p_after, return_tensors="pt", add_special_tokens=False).to(img_embeds.device)
-            p_before_embeds = self.llama_model.model.embed_tokens(p_before_tokens.input_ids).expand(batch_size, -1, -1)
-            p_after_embeds = self.llama_model.model.embed_tokens(p_after_tokens.input_ids).expand(batch_size, -1, -1)
-            wrapped_img_embeds = torch.cat([p_before_embeds, img_embeds, p_after_embeds], dim=1)
-            wrapped_atts_img = atts_img[:, :1].expand(-1, wrapped_img_embeds.shape[1])
-            
-            return wrapped_img_embeds, wrapped_atts_img
-        else:
-            return img_embeds, atts_img
-    
-    def forward(self, videos, next_action):
+   
+    def embed_visual(self, imgs):
+        img_embds, img_attns = self.encode_Qformer_visual(imgs.half().to(self.device))
+        return img_embds, img_attns
+
+    def tokenize_actions(self, actions):
+        action_tkns = [self.llama_tokenizer(' '.join(act), return_tensors='pt', add_special_tokens=False) for act in actions]
+        action_tkns_t = torch.stack([tkn.input_ids.to(self.device) for tkn in action_tkns])
+        return action_tkns_t
+
+
+    def embed_actions(self, action_tkns_t):
+        action_embds = [self.llama_model.get_input_embeddings()(tkns_t) for tkns_t in action_tkns_t]
+        action_embds = torch.cat(action_embds, dim=0)
+        return action_embds
+
+
+    def prompt1_wrap(self, prompt, rgbs, goals, actions, masks):
+        rgbs_embd, rgbs_attn = self.embed_visual(rgbs)
+        goals_embd, goals_attn = self.embed_visual(goals)
+        action_tkns_t = self.tokenize_actions(actions)
+        actions_embd = self.embed_actions(action_tkns_t)
+        
+        B, T, Q, H = rgbs_embd.shape
+     
+        prompt_segs = prompt.split("{}")
+        prompt_tkns = [self.llama_tokenizer(seg, return_tensors='pt', add_special_tokens=(i == 0)) for i, seg in enumerate(prompt_segs) if len(seg)]
+        prompt_embd = [self.llama_model.get_input_embeddings()(tkns.input_ids.to(self.device)) for tkns in prompt_tkns]
+        prompt_embd = [embd.repeat(B, 1, 1) for embd in prompt_embd]
+        
+        actions_embd = einops.rearrange(actions_embd, 'b t h -> b t 1 h')
+        s_a_embds = torch.cat([rgbs_embd, actions_embd], dim=2)
+        s_a_embds = s_a_embds.view(B, T * (Q + 1), H)
+
+        goals_embd = goals_embd.squeeze(1)
+
+        embds = [prompt_embd[0], goals_embd, prompt_embd[1], s_a_embds]
+        embds = torch.cat(embds, dim=1)
+
+        # construct targets
+        prompt_tgts = torch.ones(B, prompt_embd[0].shape[1] + goals_embd.shape[1] + prompt_embd[1].shape[1]).fill_(-100).to(self.device)
+        rgb_tgts = torch.ones(B, T, Q).fill_(-100).to(self.device)
+        
+        act_tgts = action_tkns_t.permute(0, 2, 1)
+        act_tgts = act_tgts.masked_fill_(~masks[..., None], -100)
+
+        s_a_tgts = torch.cat([rgb_tgts, act_tgts], dim=2).view(B, T * (Q + 1)).to(self.device)
+        tgts = torch.cat([prompt_tgts, s_a_tgts], dim=1).long().to(self.device) 
+        
+        return embds, tgts
+
+
+    def forward(self, rgbs_t, goals_t, actions_t, mask_t):
         """
+        rgbs_t = [B, C, T, H, W]
+        goals_t = [B, C, 1, H, W]
+        actions_t = [B, T]
         """
+        
         im_patch_token_id = self.IMAGE_PATCH_TOKEN_ID
-
-        goal = einops.rearrange(batch['goal_image'], 'b c h w -> b c 1 h w')
-        state_hist = batch['rgb']
-        next_action = batch['next_action']
-
+        prompt1 = "You are a navigational agent tasked with exploring an indoor environment to find a goal image. \
+           You can choose to move { left, right, forward, stop } at every step. The goal image is {}. \
+           After every image, choose the best action. {}"
+        mask_t = mask_t.to(torch.bool)
         
-        
-        
-        
-        
-        if 'conv_type' in samples.keys() and samples['conv_type']=='multi':
-            
-            im_patch_token_id = self.IMAGE_PATCH_TOKEN_ID
-            image = samples["images"]
-            input_ids = samples['input_ids']
-            if len(image.size())==4:
-                time = 1
-                image = einops.repeat(image, 'b c h w -> b c t h w',t = time)
+        embd, tgts = self.prompt1_wrap(prompt1, rgbs_t, goals_t, actions_t, mask_t)
+        embd = embd.to(self.device)
+        tgts = tgts.to(self.device)
 
-            if self.train_flag == 0:
-                num_patch_tokens = self.num_video_query_token
-                img_embeds, atts_img = self.encode_videoQformer_visual(image)
-            elif self.train_flag == 1:
-                num_patch_tokens = self.num_audio_query_token
-                image = einops.rearrange(image, 'b c t h w -> b t c h w')
-                img_embeds, atts_img = self.encode_audioQformer(image, modality_type=ModalityType.VISION)
-                
-            temp_input_ids = copy.deepcopy(input_ids)
-            temp_input_ids[temp_input_ids == im_patch_token_id] = 0
-            temp_input_embedding = self.llama_model.model.embed_tokens(temp_input_ids)
+        outputs = self.llama_model(inputs_embeds=embd,
+                                    labels=tgts,
+                                    return_dict=True)
+        
+        return outputs
 
-            new_input_embeds=[]
-            cur_image_idx = 0
-            for cur_input_ids, cur_input_embeds in zip(input_ids, temp_input_embedding):
-                cur_image_features = img_embeds[cur_image_idx]
+    def pad_sequences(self, seqs, dim):
+        p2d_partial = (0,) * ((len(seqs[0].shape) - dim - 1) * 2 + 1)
+        max_t = max([seq.shape[dim] for seq in seqs])
+        
+        padded_seqs = [F.pad(seq, p2d_partial + (max_t - seq.shape[dim],)) for seq in seqs]
+        return torch.stack(padded_seqs)
 
-                if (cur_input_ids == im_patch_token_id).sum() != num_patch_tokens:
-                        raise ValueError("The number of image patch tokens should be the same as the number of image patches.")
-                masked_indices = torch.where(cur_input_ids == im_patch_token_id)[0]
-                mask_index_start = masked_indices[0]
-                if (masked_indices != torch.arange(mask_index_start, mask_index_start+num_patch_tokens, device=masked_indices.device, dtype=masked_indices.dtype)).any():
-                    raise ValueError("The image patch tokens should be consecutive.")
-                
-                cur_new_input_embeds = torch.cat((cur_input_embeds[:mask_index_start], cur_image_features, cur_input_embeds[mask_index_start+num_patch_tokens:]), dim=0)
-                new_input_embeds.append(cur_new_input_embeds)
-                
-                cur_image_idx+=1
-            inputs_embeds = torch.stack(new_input_embeds, dim=0)
-            targets = samples['labels']
-            attention_mask = samples['attention_mask']
-            with self.maybe_autocast():
-                outputs = self.llama_model(
-                    inputs_embeds=inputs_embeds,
-                    attention_mask=attention_mask,
-                    return_dict=True,
-                    labels=targets,
-                )
-            loss = outputs.loss
-            return {"loss": loss}
+
+    @property
+    def tokens_per_img(self):
+        if self.qformer_compressor_cfg is not None:
+            return self.qformer_compressor_cfg.num_latents
         else:
-            image = samples["image"]
+            return 32
+        
 
-            if len(image.size()) != 5:
-                time = 1
-                image = einops.repeat(image, 'b c h w -> b c t h w',t = time)
+
+    def action_generator(self, num_envs, T, vis_processor, deterministic=False):
+        """
+            action generator function, takes in the next rgb, goal, and action 
+        """
+        
+        episodes = [ [] for _ in range(num_envs) ] 
+        
+        act_tkn_ids = self.llama_tokenizer('stop forward left right', add_special_tokens=False, return_tensors='pt') 
+        act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
+        
+        while True:
+            observations, dones = yield
             
-            if self.train_flag == 1:
-                image = einops.rearrange(image, 'b c t h w -> b t c h w')
-                img_embeds, atts_img = self.encode_audioQformer(image, modality_type=ModalityType.VISION)
-            else:
-                img_embeds, atts_img = self.encode_videoQformer_visual(image)
+            for i, episode in enumerate(episodes):
+                if dones[i]:
+                    episode.clear()
 
-            if self.prompt_list:
-                prompt = random.choice(self.prompt_list)
-                img_embeds, atts_img = self.prompt_wrap(img_embeds, atts_img, prompt)
-                
+                episode.append({
+                                    'observation': observations[i],
+                                    'action': 0
+                                })
 
-            self.llama_tokenizer.padding_side = "right"
+            
+            partial_episodes = [e[-(T - 1):] for e in episodes]
+            rgbs, goals, actions = extract_inputs_from_dataset(partial_episodes)
 
-            text = [t + self.end_sym for t in samples["text_input"]]
+            rgbs_t = self.pad_sequences(rgbs, dim=0)
+            actions_t = self.pad_sequences(actions, dim=0)
+            goals_t = self.pad_sequences(goals, dim=0)
+            mask_t = torch.ones_like(actions_t).to(self.device)
+            lens = [len(e) for e in partial_episodes]
+            max_len = max(lens)
 
-            to_regress_tokens = self.llama_tokenizer(
-                text,
-                return_tensors="pt",
-                padding="longest",
-                truncation=True,
-                max_length=self.max_txt_len,
-                add_special_tokens=False
-            ).to(image.device)
+            rgbs_t, goals_t, actions_t = apply_transforms_inputs(vis_processor, rgbs_t, goals_t, actions_t)
+            outputs = self(rgbs_t, goals_t, actions_t, mask_t) 
 
-            targets = to_regress_tokens.input_ids.masked_fill(
-                to_regress_tokens.input_ids == self.llama_tokenizer.pad_token_id, -100
-            )
+            act_pos_delta = [(self.tokens_per_img + 1) * (max_len - l) + 2 for l in lens]
+            logits = outputs.logits
 
-            empty_targets = (
-                torch.ones([atts_img.shape[0], atts_img.shape[1]+1],
-                        dtype=torch.long).to(image.device).fill_(-100)  # plus one for bos
-            )
-            targets = torch.cat([empty_targets, targets], dim=1)
+            # project onto the action space
+            actions = []
+            for i in range(len(partial_episodes)):
+                act_logits = logits[i, -act_pos_delta[i], act_tkn_ids]
+                act_logits = F.softmax(act_logits)
 
-            batch_size = img_embeds.shape[0]
-            bos = torch.ones([batch_size, 1],
-                            dtype=to_regress_tokens.input_ids.dtype,
-                            device=to_regress_tokens.input_ids.device) * self.llama_tokenizer.bos_token_id
-            bos_embeds = self.llama_model.model.embed_tokens(bos)
-            atts_bos = atts_img[:, :1]
+                action = act_logits.argmax().cpu().item()
+                actions.append(action)
 
-            to_regress_embeds = self.llama_model.model.embed_tokens(to_regress_tokens.input_ids)
-            inputs_embeds = torch.cat([bos_embeds, img_embeds, to_regress_embeds], dim=1)
-            attention_mask = torch.cat([atts_bos, atts_img, to_regress_tokens.attention_mask], dim=1)
+                episodes[i][-1]['action'] = action
 
-            with self.maybe_autocast():
-                outputs = self.llama_model(
-                    inputs_embeds=inputs_embeds,
-                    attention_mask=attention_mask,
-                    return_dict=True,
-                    labels=targets,
-                )
-            loss = outputs.loss
-
-        return {"loss": loss}
+            yield actions
+            
+       
 
     @classmethod
     def from_config(cls, cfg):
@@ -432,17 +407,15 @@ class NavLLAMA(Blip2Base):
         max_txt_len = cfg.get("max_txt_len", 32)
         end_sym = cfg.get("end_sym", '\n')
         
-        frozen_llama_proj = cfg.get("frozen_llama_proj", True)
-        frozen_video_Qformer = cfg.get("frozen_video_Qformer", True)
+        freeze_llama_proj = cfg.get("freeze_llama_proj", True)
 
         llama_proj_model = cfg.get("llama_proj_model", '')
-        
-        fusion_header_type = cfg.get("fusion_header_type", 'seqTransf')
-        max_frame_pos = cfg.get("max_frame_pos", 32)
-        fusion_head_layers = cfg.get("fusion_head_layers", 2)
-        num_video_query_token =  cfg.get("num_video_query_token", 32)
+        lora_train_llama = cfg.get("lora_train_llama", False)
+        lora_config = cfg.get('lora_config', None)
 
-        imagebind_ckpt_path = cfg.get("imagebind_ckpt_path", '/mnt/workspace/ckpt')
+        qformer_compressor_cfg = cfg.get('qformer_compressor_cfg', None)
+
+
         model = cls(
             vit_model=vit_model,
             q_former_model=q_former_model,
@@ -460,13 +433,11 @@ class NavLLAMA(Blip2Base):
             end_sym=end_sym,
             low_resource=low_resource,
             device_8bit=device_8bit,
-            fusion_header_type=fusion_header_type,
-            max_frame_pos=max_frame_pos,
-            fusion_head_layers=fusion_head_layers,
-            frozen_llama_proj=frozen_llama_proj,
-            frozen_video_Qformer=frozen_video_Qformer,
-            num_video_query_token=num_video_query_token,
-            imagebind_ckpt_path = imagebind_ckpt_path,
+            freeze_llama_proj=freeze_llama_proj,
+            llama_proj_model=llama_proj_model,
+            lora_train_llama=lora_train_llama,
+            lora_config=lora_config,
+            qformer_compressor_cfg=qformer_compressor_cfg
         )
 
         ckpt_path = cfg.get("ckpt", "")  # load weights of MiniGPT-4

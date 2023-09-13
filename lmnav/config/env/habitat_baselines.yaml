@@ -1,0 +1,10 @@
+# @package habitat_baselines
+ 
+defaults:
+  - /habitat_baselines@_here_: habitat_baselines_rl_config_base
+  - _self_
+    
+num_environments: 2
+rl:
+  ddppo:
+    distrib_backend: "NCCL" 

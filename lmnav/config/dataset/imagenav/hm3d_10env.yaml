@@ -1,0 +1,11 @@
+# @package habitat.dataset
+
+defaults:
+  - /habitat/dataset: dataset_config_schema
+  - _self_
+
+type: PointNav-v1
+split: train
+data_path: data/datasets/imagenav/hm3d/v1/{split}/{split}.json.gz
+content_scenes: [ '00744-1S7LAXRdDqK', '00251-wsAYBFtQaL7', '00523-PK83UqrXjd3', '00773-9K1WbyTZ456', '00494-5737gQA9p2T', 
+                    '00754-EqZacbtdApE', '00489-boJrpwDQtu9', '00078-nJTPfwbAj4S', '00355-Qkm4CooNoPi', '00603-Xfhi9GYbhqD']

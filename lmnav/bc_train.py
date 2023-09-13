@@ -30,15 +30,19 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from typing import Any
 
 from torch.utils.data import DataLoader
-from lmnav.common.writer import get_writer
+from lmnav.config.default import get_config
 
-from lmnav.data_gen import  _init_envs
+from lmnav.dataset.data_gen import  _init_envs
 from lmnav.common.config import Config as NavLLAMAConfig
 from lmnav.models import *
-from lmnav.offline_episode_dataset import OfflineEpisodeDataset
+from lmnav.dataset.offline_episode_dataset import OfflineEpisodeDataset
 from lmnav.processors import *
 from lmnav.common.registry import registry as llama_registry
 from lmnav.common.episode_processor import apply_transforms_inputs, construct_subsequences, extract_inputs_from_dataset 
+
+from lmnav.common.registry import registry
+from lmnav.common.writer import *
+from lmnav.dataset.offline_episode_dataset import *
 
 
 os.environ["MAGNUM_LOG"] = "quiet"
@@ -49,10 +53,9 @@ os.chdir('/srv/flash1/pputta7/projects/lm-nav')
 
 class BCTrainer:
     
-    def __init__(self, config, resume_run_id):
+    def __init__(self, config):
         self.config = config
-        self.exp_folder = os.path.join(self.config.bc.exp_dir, self.config.bc.exp_name)
-        self.resume_run_id = resume_run_id
+        self.exp_folder = os.path.join(self.config.exp.root_dir, self.config.exp.name)
         
     def initialize_eval(self):
         """
@@ -63,7 +66,8 @@ class BCTrainer:
         self.rank = 0
         self.is_distributed = False
         
-        self.writer = get_writer(self.config, self.resume_run_id) 
+        
+        self.writer = registry.get_logger_class(self.config.exp.logger._target_)(self.config.exp.logger)
 
         self.agent = self.setup_student()
         self.agent.eval()
@@ -94,6 +98,7 @@ class BCTrainer:
                 
             # update gpu ids for this process
             with read_write(self.config):
+                self.config.device = f'cuda:{local_rank}'
                 self.config.habitat_baselines.torch_gpu_id = local_rank
                 self.config.habitat.simulator.habitat_sim_v0.gpu_device_id = local_rank
 
@@ -115,12 +120,12 @@ class BCTrainer:
         
         # set up optimizer
         optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
-        self.optim = torch.optim.Adam(params=optim_params, lr=self.config.bc.lr)
+        self.optim = torch.optim.Adam(params=optim_params, lr=self.config.train.lr)
 
         # set up writer and scatter all relevant data to worker nodes
         if rank0_only(): 
-            self.writer = get_writer(self.config, self.resume_run_id) 
-            data_files = self.writer.load_dataset(os.path.basename(self.config.bc.data_artifact))
+            self.writer = registry.get_logger_class(self.config.exp.logger._target_)(self.config.exp.logger)
+            data_files = self.writer.load_dataset(self.config.train.dataset.artifact)
             self.artifact_store.set("data_files", ';'.join(data_files))
         else:
             self.artifact_store.wait(["data_files"])
@@ -129,26 +134,17 @@ class BCTrainer:
 
         # set up dataset
         self.dataset = OfflineEpisodeDataset(files=data_files)
-        self.data_loader = DataLoader(self.dataset, batch_size=self.config.bc.num_episodes_per_epoch, shuffle=True, collate_fn=lambda x: x, num_workers=4)
+        effective_batch_size = self.config.train.bc_epochs * self.config.train.batch_size * self.config.train.grad_accums
+        self.data_loader = DataLoader(self.dataset, batch_size=effective_batch_size, shuffle=True, collate_fn=lambda x: x, num_workers=4)
         self.data_loader = iter(self.data_loader)
-
-        
                    
 
     def setup_student(self):
-        cfg_path = self.config.bc.llama_cfg
-        
-        Args = namedtuple("Args", "cfg_path, model_type, gpu_id, options")
-        args = Args(cfg_path, "llama_v2", self.rank, [])
-
-        cfg = NavLLAMAConfig(args)
-
-        model_config = cfg.model_cfg
-        model_cls = llama_registry.get_model_class(model_config.arch)
+        model_config = self.config.train.policy
+        model_cls = llama_registry.get_model_class(model_config._target_)
         model = model_cls.from_config(model_config).to(self.device)
 
-        vis_processor_cfg = cfg.config.preprocess.vis_processor.train
-        self.vis_processor = llama_registry.get_processor_class(vis_processor_cfg.name).from_config(vis_processor_cfg)
+        self.vis_processor = llama_registry.get_processor_class(model_config.vis_processor._target_).from_config(model_config.vis_processor)
 
         agent = model.to(self.device)
         agent.train()
@@ -171,10 +167,10 @@ class BCTrainer:
 
     
     def train_epoch(self, epoch):
-        num_samples = self.config.bc.batch_size
-        max_state_length = self.config.bc.max_trajectory_length
-        num_bc_epochs = self.config.bc.bc_epochs
-        num_grad_accums = self.config.bc.grad_accums
+        num_samples = self.config.train.batch_size
+        max_state_length = self.config.train.max_trajectory_length
+        num_bc_epochs = self.config.train.bc_epochs
+        num_grad_accums = self.config.train.grad_accums
 
         episodes = next(self.data_loader)
         rgbs = [einops.rearrange(episode['rgb'], 't h w c -> t c h w') for episode in episodes]
@@ -209,6 +205,7 @@ class BCTrainer:
                 else:
                     outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t)
                     loss = outputs.loss
+                    total_loss += loss.item()
                     loss.backward()
                     self.optim.step()
                     self.optim.zero_grad()
@@ -257,18 +254,18 @@ class BCTrainer:
             "config": OmegaConf.to_container(self.config),
             "epoch": epoch
         }
-        ckpt_num = epoch // self.config.bc.ckpt_freq
+        ckpt_num = epoch // self.config.train.ckpt_freq
         ckpt_filepath = os.path.join(self.exp_folder, 'ckpts', f'ckpt.{ckpt_num}.pth')
         torch.save(save_obj, ckpt_filepath) 
 
-        self.writer.save_artifact(self.config.bc.exp_name, 'model', os.path.abspath(ckpt_filepath))
+        self.writer.save_artifact(self.config.exp.name, 'model', os.path.abspath(ckpt_filepath))
 
         
     def train(self):
         self.initialize_train()
         
 
-        epochs, batch_size = self.config.bc.epochs, self.config.bc.batch_size
+        epochs, batch_size = self.config.train.epochs, self.config.train.batch_size
 
         for epoch in range(epochs):
             stats = self.train_epoch(epoch)
@@ -285,7 +282,7 @@ class BCTrainer:
             if rank0_only():
                 self.writer.write(stats)
 
-                if epoch % self.config.bc.ckpt_freq == 0:
+                if epoch % self.config.train.ckpt_freq == 0:
                     self.save_checkpoint(epoch)
                    
 
@@ -312,7 +309,7 @@ class BCTrainer:
 
     def eval(self):
         eval_folder = os.path.join(self.exp_folder, 'eval')
-        ckpt_path_pattern = os.path.join(os.path.join(self.exp_folder, 'ckpts'), self.config.bc.eval.ckpt)
+        ckpt_path_pattern = os.path.join(os.path.join(self.exp_folder, 'ckpts'), self.config.eval.ckpt)
         ckpt_paths = glob.glob(ckpt_path_pattern)
 
         # go through each ckpt and get previous stats
@@ -336,8 +333,8 @@ class BCTrainer:
     def eval_checkpoint(self, ckpt_path, prev_stats, envs):
         print(f"Starting evaluation for {ckpt_path}")
         
-        N_episodes = self.config.bc.eval.num_episodes
-        T = self.config.bc.max_trajectory_length
+        N_episodes = self.config.eval.num_episodes
+        T = self.config.train.max_trajectory_length
 
         # construct directory to save stats
         ckpt_name = os.path.basename(ckpt_path)
@@ -345,7 +342,7 @@ class BCTrainer:
         video_dir = os.path.join(eval_dir, 'videos')
         os.makedirs(eval_dir, exist_ok=True)
         
-        if self.config.bc.eval.save_videos:
+        if self.config.eval.save_videos:
             os.makedirs(video_dir, exist_ok=True)
 
         # load checkpoint
@@ -360,7 +357,7 @@ class BCTrainer:
 
         observations = envs.reset()
         episodes = [[] for _ in range(envs.num_envs)]
-        episode_idxs_to_reset = set()
+        dones = [False for _ in range(envs.num_envs)]
 
         stats = {
             f'{ckpt_name}/total_episodes': 0,
@@ -370,13 +367,12 @@ class BCTrainer:
         if prev_stats is not None:
             stats = prev_stats
 
-        actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=True)
+        actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=self.config.eval.deterministic)
         
         while stats[f'{ckpt_name}/total_episodes'] < N_episodes:
             
             next(actor)
-            actions = actor.send((observations, episode_idxs_to_reset)) 
-            episode_idxs_to_reset = set()
+            actions = actor.send((observations, dones)) 
                         
             outputs = envs.step(actions)
             next_observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)] 
@@ -394,11 +390,11 @@ class BCTrainer:
                 if done:
                     stats[f'{ckpt_name}/total_episodes'] += 1
                     
-                    if episodes[i][-1]['info']['distance_to_goal'] < self.config.bc.dtg_threshold:
+                    if episodes[i][-1]['info']['distance_to_goal'] < self.config.eval.dtg_threshold:
                         stats[f'{ckpt_name}/successful_episodes'] += 1
 
                     self.writer.write(stats)
-                    if self.config.bc.eval.save_videos:
+                    if self.config.eval.save_videos:
                         try:
                             ckpt_idx = ckpt_name.split('.')[1]
                             self.save_episode_video(episodes[i], stats[f'{ckpt_name}/total_episodes'], video_dir, ckpt_idx)
@@ -406,7 +402,6 @@ class BCTrainer:
                             print("There was an error while saving video!")
 
                     # this is to tell actor generator to clear this episode from history
-                    episode_idxs_to_reset.add(i)
                     episodes[i] = []
 
 
@@ -425,14 +420,20 @@ def main():
     parser.add_argument('--resume_run_id', type=str, help="Writer run id to restart")
     args = parser.parse_args()
 
-    config = habitat.get_config(args.cfg_path)
-    trainer = BCTrainer(config, args.resume_run_id)
+    config = get_config(args.cfg_path)
+
+    pprint(config)
+    resume_id = args.resume_run_id
+
+    with read_write(config):
+        config.exp.logger.resume_id = resume_id
+        
+    trainer = BCTrainer(config)
 
     if not args.eval:
         trainer.train()
     else:
         with read_write(config):
-            config.bc.mode = 'eval'
             config.habitat_baselines.wb.group = 'eval'
             config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
             # config.habitat.dataset.split = 'val_hard'
