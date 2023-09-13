@@ -1,6 +1,8 @@
 from typing import Dict, Optional, Tuple
 
 import cv2
+from habitat_baselines.common.obs_transformers import apply_obs_transforms_batch
+from habitat_baselines.utils.common import batch_obs
 import numpy as np
 import torch
 from gym import spaces
@@ -118,7 +120,7 @@ class EAINet(Net):
                 resnet_baseplanes=resnet_baseplanes,
                 resnet_ngroups=resnet_baseplanes // 2,
                 vit_use_fc_norm=vit_use_fc_norm,
-                vit_global_pool=vit_global_pool,
+vit_global_pool=vit_global_pool,
                 vit_use_cls=vit_use_cls,
                 vit_mask_ratio=vit_mask_ratio,
                 avgpooled_image=avgpooled_image,
@@ -370,3 +372,35 @@ class OldEAIPolicy(NetPolicy):
             drop_path_rate=0,
             scale_obs=1
         )
+
+    @staticmethod
+    def _construct_state_tensors(num_environments, device):
+        rnn_hx = torch.zeros((num_environments, 2, 512), device=device)
+        prev_actions = torch.zeros(num_environments, 1, device=device, dtype=torch.long)
+        not_done_masks = torch.ones(num_environments, 1, device=device, dtype=torch.bool)
+
+        return rnn_hx, prev_actions, not_done_masks 
+
+
+    def action_generator(self, num_envs, deterministic):
+        rnn_hx, prev_actions, not_done_masks = self._construct_state_tensors(num_envs, self.device)
+
+        while True:
+            observations, dones = yield
+
+            for i in range(num_envs):
+                if dones[i]:
+                    rnn_hx[i] = torch.zeros(rnn_hx.shape[1:])
+                    prev_actions[i] = torch.zeros(prev_actions.shape[1:])
+                    not_done_masks[i] = torch.ones(not_done_masks.shape[1:])
+            
+            batch = batch_obs(observations, self.device)
+            batch = apply_obs_transforms_batch(batch, self.obs_transforms)
+
+            policy_result = self.act(batch, rnn_hx, prev_actions, not_done_masks, deterministic=deterministic)
+            prev_actions.copy_(policy_result.actions)
+            rnn_hx = policy_result.rnn_hidden_states
+
+            yield policy_result.actions
+        
+        

@@ -1,0 +1,16 @@
+defaults:
+  - base_nav_llama@
+    
+_target_: "nav_llama"
+freeze_vit: True
+freeze_qformer: True
+freeze_lora: True
+freeze_llama_proj: False
+  
+low_resource: False
+  
+vis_processor:
+  _target_: "alpro_video_train"
+  image_size: 224
+  n_frms: 8
+  

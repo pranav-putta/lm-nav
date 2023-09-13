@@ -1,4 +1,5 @@
 import argparse
+from functools import partial
 import gc
 import tarfile
 import numpy as np
@@ -12,31 +13,31 @@ import habitat
 import copy
 import time
 import os
-from lmnav.common.writer import get_writer
-from lmnav.common.registry import registry as llama_registry
+from lmnav.common.registry import registry 
+from lmnav.common.writer import BaseLogger
 
-from lmnav.data_gen import start_data_gen_process
+from lmnav.dataset.data_gen import start_data_gen_process
+from lmnav.config.default import get_config
+from lmnav.dataset.filter_methods import *
+from lmnav.common.actor_setups import *
 
 import torchvision.transforms as transforms
 
 class OfflineDataGenerator:
 
-    def __init__(self, cfg_path):
-        self.cfg_path = cfg_path
-        self.config = habitat.get_config(self.cfg_path)
+    def __init__(self, run):
+        self.config = get_config(run)
         self.num_gpus = torch.cuda.device_count()
         self.buffer = []
         self.N = 0
         self.latest_generator_stats = {}
         
-        self.writer = get_writer(self.config, None)
+        self.writer: BaseLogger = registry.get_logger_class(self.config.exp.logger._target_)(self.config.exp.logger)
         self.img_transform = transforms.Compose([transforms.Resize((224, 224), antialias=True)])
 
         
-    def initialize_data_generator(self, gpu_id):
-        exp_folder = self.config.data_gen.exp_folder
+    def initialize_data_generator(self, exp_folder, max_buffer_len, gpu_id):
         os.makedirs(exp_folder, exist_ok=True)
-        max_buffer_len = self.config.data_gen.ckpt_freq
         
         # update N if there are already generated files in bfufer
         files = os.listdir(exp_folder)
@@ -45,13 +46,15 @@ class OfflineDataGenerator:
         cfg = copy.deepcopy(self.config)        
 
         with read_write(cfg):
+            cfg.exp.device = f'cuda:{gpu_id}'
             cfg.habitat_baselines.torch_gpu_id = gpu_id
             cfg.habitat.simulator.habitat_sim_v0.gpu_device_id = gpu_id
 
-        device = torch.device(f'cuda:{gpu_id}')
+        filter_fn = partial(registry.get_fn(cfg.generator.filter_method._target_), cfg.generator.filter_method)
+        setup_policy = registry.get_fn(self.config.generator.policy._target_)
 
-        process, conn = start_data_gen_process(device, cfg, deterministic=False) 
-        return cfg, process, conn
+        process, conn, queue = start_data_gen_process(cfg, setup_policy, filter_fn, cfg.generator.deterministic) 
+        return cfg, process, conn, queue
          
     
     def reformat_episode(self, episode_stats, raw_episode):
@@ -73,16 +76,17 @@ class OfflineDataGenerator:
         
     def generate(self):
         print(f"Starting generation with {self.num_gpus} gpus")
-        self.cfgs, self.processes, self.conns = zip(*[self.initialize_data_generator(i) for i in range(self.num_gpus)]) 
-        max_buffer_len = self.config.data_gen.ckpt_freq
-        exp_folder = self.config.data_gen.exp_folder
-
+        max_buffer_len = self.config.generator.ckpt_freq
+        exp_folder = os.path.join(self.config.exp.root_dir, self.config.exp.name)
+        
+        self.cfgs, self.processes, self.conns, self.queues = zip(*[self.initialize_data_generator(exp_folder, max_buffer_len, i) for i in range(self.num_gpus)]) 
+        
         step = 0
-        while self.N < self.config.data_gen.num_episodes:
+        while self.N < self.config.generator.num_episodes:
             # TODO; update this to organize data by scene 
-            for conn in self.conns:
-                while conn.poll():
-                    generator_stats, episode_stats, episode = conn.recv()
+            for queue in self.queues:
+                while not queue.empty():
+                    generator_stats, episode_stats, episode = queue.get()
                     self.latest_generator_stats = generator_stats
 
                     # reformat episode

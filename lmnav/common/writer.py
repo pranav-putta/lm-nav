@@ -3,21 +3,15 @@ from omegaconf import OmegaConf
 import wandb
 import os
 from urllib.parse import unquote, urlparse
+from lmnav.common.registry import registry
 
-def get_writer(cfg, resume_run_id):
-    writer_type = cfg.bc.writer
+from lmnav.config.default_structured_configs import WBLoggerConfig
 
-    if writer_type == 'console':
-        return ConsoleWriter(cfg, resume_run_id)
-    elif writer_type == 'wb':
-        return WandBWriter(cfg, resume_run_id)
-    else:
-        raise NotImplementedError()
     
 
-class BaseWriter(ABC):
+class BaseLogger(ABC):
     
-    def __init__(self, config, resume_run_id):
+    def __init__(self, config):
         pass
 
     @abstractmethod
@@ -33,7 +27,9 @@ class BaseWriter(ABC):
         pass
 
 
-class ConsoleWriter(BaseWriter):
+
+@registry.register_logger('console')
+class ConsoleLogger(BaseLogger):
 
     def write(self, log_dict):
         print(log_dict)
@@ -42,23 +38,27 @@ class ConsoleWriter(BaseWriter):
         pass
 
     def load_dataset(self, name):
-        dirpath = f'data/datasets/{name}'
-        files = [path for path in os.listdir(dirpath)]
+        name = name.split(':')[0]
+        dirpath = f'data/datasets/lmnav/{name}'
+        files = [os.path.join(dirpath, path) for path in os.listdir(dirpath)]
         return files
 
-class WandBWriter(BaseWriter):
+@registry.register_logger('wb')
+class WandBLogger(BaseLogger):
 
-    def __init__(self, config, resume_run_id):
+    def __init__(self, config: WBLoggerConfig):
         wb_kwargs = {}
-        if config.habitat_baselines.wb.project_name != "":
-            wb_kwargs["project"] = config.habitat_baselines.wb.project_name
-        if config.habitat_baselines.wb.run_name != "":
-            wb_kwargs["name"] = config.habitat_baselines.wb.run_name
-        if config.habitat_baselines.wb.entity != "":
-            wb_kwargs["entity"] = config.habitat_baselines.wb.entity
-        if config.habitat_baselines.wb.group != "":
-            wb_kwargs["group"] = config.habitat_baselines.wb.group
-
+        if config.project != "":
+            wb_kwargs["project"] = config.project
+        if config.name != "":
+            wb_kwargs["name"] = config.name
+        if config.group != "":
+            wb_kwargs["group"] = config.group
+        if config.tags is not None:
+            wb_kwargs["tags"] = config.tags
+        if config.notes is not None:
+            wb_kwargs["notes"] = config.notes
+            
         slurm_info_dict = {
             k[len("SLURM_") :]: v
             for k, v in os.environ.items()
@@ -69,9 +69,8 @@ class WandBWriter(BaseWriter):
                 "Requested to log with wandb, but wandb is not installed."
             )
 
-        # TODO: add resume behavior
-        if resume_run_id is not None:
-            wb_kwargs["id"] = resume_run_id
+        if config.resume_id is not None:
+            wb_kwargs["id"] = config.resume_id
             wb_kwargs["resume"] = "must"
         
         self.run = wandb.init(  # type: ignore[attr-defined]
