@@ -56,7 +56,7 @@ class NavLLAMA(Blip2Base):
         device_8bit=0,  # the device of 8bit model should be set when loading and cannot be changed anymore.
         freeze_llama_proj=True,
         llama_proj_model='',
-        lora_train_llama=False,
+        freeze_lora=False,
         lora_config=None,
         qformer_compressor_cfg=None,
     ):
@@ -173,7 +173,7 @@ class NavLLAMA(Blip2Base):
                 param.requires_grad = True
             logging.info('LLAMA proj is not frozen')
 
-        if lora_train_llama:
+        if not freeze_lora:
             # wrap llama model in peft model and run fine-tuning
             if lora_config is None:
                 raise ValueError("Training LLAMA with LoRA requires specifiying a config with the parameters: [rank, alpha, dropout]")
@@ -408,9 +408,9 @@ class NavLLAMA(Blip2Base):
         end_sym = cfg.get("end_sym", '\n')
         
         freeze_llama_proj = cfg.get("freeze_llama_proj", True)
+        freeze_lora = cfg.get("freeze_lora", True)
 
         llama_proj_model = cfg.get("llama_proj_model", '')
-        lora_train_llama = cfg.get("lora_train_llama", False)
         lora_config = cfg.get('lora_config', None)
 
         qformer_compressor_cfg = cfg.get('qformer_compressor_cfg', None)
@@ -435,7 +435,7 @@ class NavLLAMA(Blip2Base):
             device_8bit=device_8bit,
             freeze_llama_proj=freeze_llama_proj,
             llama_proj_model=llama_proj_model,
-            lora_train_llama=lora_train_llama,
+            freeze_lora=freeze_lora,
             lora_config=lora_config,
             qformer_compressor_cfg=qformer_compressor_cfg
         )
