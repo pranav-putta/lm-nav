@@ -435,6 +435,7 @@ def main():
         with read_write(config):
             config.habitat_baselines.wb.group = 'eval'
             config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
+            config.habitat_baselines.num_environments = config.eval.num_envs
             # config.habitat.dataset.split = 'val_hard'
      
         trainer.eval()
