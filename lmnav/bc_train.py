@@ -1,4 +1,6 @@
 import pickle
+from hydra.utils import get_class
+
 import time
 import einops
 import gc
@@ -120,8 +122,9 @@ class BCTrainer:
         
         # set up optimizer
         optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
-        self.optim = torch.optim.Adam(params=optim_params, lr=self.config.train.lr)
-
+        self.optim = torch.optim.Adam(params=optim_params, lr=self.config.train.lr_schedule.lr)
+        self.lr_scheduler = get_class(self.config.train.lr_schedule._target_)(optimizer=self.optim, gamma=self.config.train.lr_schedule.gamma)
+        
         # set up writer and scatter all relevant data to worker nodes
         if rank0_only(): 
             self.writer = registry.get_logger_class(self.config.exp.logger._target_)(self.config)
@@ -134,8 +137,8 @@ class BCTrainer:
 
         # set up dataset
         self.dataset = OfflineEpisodeDataset(files=data_files)
-        effective_batch_size = self.config.train.bc_epochs * self.config.train.batch_size * self.config.train.grad_accums
-        self.data_loader = DataLoader(self.dataset, batch_size=effective_batch_size, shuffle=True, collate_fn=lambda x: x, num_workers=4)
+        self.data_loader = DataLoader(self.dataset, batch_size=self.config.train.episodes_per_batch,
+                                      shuffle=True, collate_fn=lambda x: x, num_workers=1)
         self.data_loader = iter(self.data_loader)
                    
 
@@ -219,10 +222,12 @@ class BCTrainer:
         gc.collect()
             
         avg_loss = total_loss / (num_bc_epochs * num_grad_accums)
+        current_lr = self.lr_scheduler.get_last_lr()
 
         return {
             'loss': avg_loss,
-            'epoch': epoch
+            'epoch': epoch,
+            'lr': current_lr
         }
         
         
@@ -251,6 +256,7 @@ class BCTrainer:
         save_obj = {
             "model": state_dict,
             "optimizer": self.optim.state_dict(),
+            "lr_scheduler": self.lr_scheduler.state_dict(),
             "config": OmegaConf.to_container(self.config),
             "epoch": epoch
         }
@@ -269,6 +275,8 @@ class BCTrainer:
 
         for epoch in range(epochs):
             stats = self.train_epoch(epoch)
+            self.lr_scheduler.step()
+            
             torch.distributed.barrier()
             stats_keys = sorted(stats.keys())
             stats = torch.tensor([stats[key] for key in stats_keys],
@@ -284,7 +292,6 @@ class BCTrainer:
 
                 if epoch % self.config.train.ckpt_freq == 0:
                     self.save_checkpoint(epoch)
-                   
 
                     
     def save_episode_video(self, episode, num_episodes, video_dir, ckpt_idx):

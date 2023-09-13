@@ -116,13 +116,29 @@ class BaseRunnerConfig:
     num_envs: int = MISSING
 
 @dataclass
+class BaseLRConfig:
+    lr: float = MISSING
+
+@dataclass
+class ConstantLRConfig(BaseLRConfig):
+    pass
+
+@dataclass
+class ExponentialLRConfig(BaseLRConfig):
+    _target_: str = 'torch.optim.lr_scheduler.ExponentialLR'
+    lr: float = MISSING
+    gamma: float = MISSING
+
+
+@dataclass
 class TrainRunnerConfig(BaseRunnerConfig):
     epochs: int = MISSING
     batch_size: int = MISSING
-    lr: float = MISSING
     ckpt_freq: int = 50
+    episodes_per_batch: int = MISSING
     max_trajectory_length: int = MISSING
     grad_accums: int = MISSING
+    lr_schedule: BaseLRConfig = MISSING
 
 @dataclass
 class BCTrainRunnerConfig(TrainRunnerConfig):
@@ -154,6 +170,10 @@ cs.store(group='policy/nav_llama', name='base_nav_llama', node=BaseNavLLaMAPolic
 
 cs.store(group='dataset', name='base', node=BaseDatasetConfig)
 cs.store(group='dataset', name='offline_episode', node=OfflineEpisodeDatasetConfig)
+
+cs.store(group='lr', name='base', node=BaseLRConfig)
+cs.store(group='lr', name='const', node=ConstantLRConfig)
+cs.store(group='lr', name='exponential', node=ExponentialLRConfig)
 
 cs.store(group='runner', name='base', node=BaseRunnerConfig)
 cs.store(group='runner', name='base_train', node=TrainRunnerConfig)
