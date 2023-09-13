@@ -129,7 +129,7 @@ def start_data_gen_process(config, setup_teacher, filter_fn, deterministic=False
     """
     ctx = mp.get_context('forkserver')
     parent_conn, child_conn = ctx.Pipe()
-    queue = ctx.Queue()
+    queue = ctx.Queue(100)
 
     f = partial(collect_episodes, config=config, setup_teacher=setup_teacher, filter_fn=filter_fn,
                                   deterministic=deterministic, q=queue, conn=child_conn)

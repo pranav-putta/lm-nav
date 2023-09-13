@@ -43,7 +43,7 @@ generator:
   
 
 habitat_baselines:
-  num_environments: 12
+  num_environments: 10
   rl:
     policy:
       obs_transforms:

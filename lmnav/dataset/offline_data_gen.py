@@ -96,6 +96,8 @@ class OfflineDataGenerator:
                     self.buffer.append(formatted_episode) 
 
                     del episode
+                    del episode_stats
+                    del generator_stats
 
                     
             while len(self.buffer) >= max_buffer_len:
