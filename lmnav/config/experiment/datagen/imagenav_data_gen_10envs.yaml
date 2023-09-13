@@ -1,29 +1,33 @@
-# @package _global_
+ # @package _global_
 
 defaults:
-  - /env/10envs
+  # setup habitat
+  - /env@habitat_baselines: habitat_baselines
+  - /env@habitat: habitat
+  - /dataset/imagenav/hm3d_1env
+   
+    # setup experiment misc.
   - /exp: base
   - /logger@exp.logger: wb  
+
+    # set up generator
   - /generator: base
-  - /policy@generator.policy: old_eai_policy
+  - /policy/old_eai_policy@generator.policy: old_eai_policy
   - /generator/filter_method: dtg
   - /habitat_baselines/rl/policy/obs_transforms:
     - resize_shortest_edge_base 
   - _self_
 
 exp:
-  name: "offline_10envs"
-  root_dir: "experiments/"
+  name: "offline_00744"
+  root_dir: "data/datasets/lmnav"
   logger:
     project: "lmnav"
-    name: "lmnav imagenav 10 envs"
+    name: "lmnav imagenav 744"
     group: "datagen"
   
 generator:
   num_episodes: 100000
-  store_artifact: 
-    name: "offline_10envs" 
-    dirpath: "data/datasets/lmnav"
   deterministic: False
   ckpt_freq: 1
   filter_method:
@@ -32,6 +36,11 @@ generator:
   policy:
     _target_: "policies.old_eai_policy"
     ckpt: "ckpts/uLHP.300.pth"
+  
+  store_artifact:
+    name: "offline_00744_actprobs"
+    dirpath: "data/datasets/lmnav"
+  
 
 habitat_baselines:
   num_environments: 20

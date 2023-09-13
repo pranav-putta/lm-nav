@@ -23,7 +23,7 @@ exp:
   root_dir: "data/datasets/lmnav"
   logger:
     project: "lmnav"
-    name: "lmnav imagenav 744"
+    name: "lmnav imagenav 744 with action probs"
     group: "datagen"
   
 generator:
