@@ -407,5 +407,8 @@ class OldEAIPolicy(NetPolicy):
             
             prev_actions.copy_(actions)
 
+            del observations
+            del dones
+
             yield (actions, dist.probs)        
         

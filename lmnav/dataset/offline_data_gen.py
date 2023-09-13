@@ -22,8 +22,6 @@ from lmnav.config.default import get_config
 from lmnav.dataset.filter_methods import *
 from lmnav.common.actor_setups import *
 
-import torchvision.transforms as transforms
-
 class OfflineDataGenerator:
 
     def __init__(self, run):
@@ -34,7 +32,6 @@ class OfflineDataGenerator:
         self.latest_generator_stats = {}
         
         self.writer: BaseLogger = registry.get_logger_class(self.config.exp.logger._target_)(self.config)
-        self.img_transform = transforms.Compose([transforms.Resize((224, 224), antialias=True)])
 
         
     def initialize_data_generator(self, exp_folder, max_buffer_len, gpu_id):
@@ -118,6 +115,8 @@ class OfflineDataGenerator:
                     pickle.dump(data, f)
                
                 self.N += max_buffer_len
+
+                del data
                 gc.collect()
                 
 
