@@ -27,7 +27,7 @@ exp:
   root_dir: "experiments/"
   logger:
     project: "lmnav"
-    name: "lmnav imagenav linear"
+    name: "lmnav lora 10envs"
     group: "train"
 
 train:
@@ -48,3 +48,7 @@ eval:
   save_videos: True
   deterministic: False
   num_envs: 10
+  dataset: 
+    artifact: "offline_10envs:latest"
+ 
+

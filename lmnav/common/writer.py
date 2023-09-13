@@ -72,6 +72,7 @@ class WandBLogger(BaseLogger):
         if config.resume_id is not None:
             wb_kwargs["id"] = config.resume_id
             wb_kwargs["resume"] = "must"
+            print(f"Attempting to resume {config.resume_id}")
         
         self.run = wandb.init(  # type: ignore[attr-defined]
             config={

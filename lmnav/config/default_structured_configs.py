@@ -123,6 +123,7 @@ class EvalRunnerConfig(BaseRunnerConfig):
     num_episodes: int = MISSING
     save_videos: bool = MISSING
     deterministic: bool = MISSING
+    dtg_threshold: float = 1.0
     
 
 cs = ConfigStore.instance()

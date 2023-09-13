@@ -7,4 +7,5 @@
 ckpts/
 videos/
 wandb/
+*.egg-info
 

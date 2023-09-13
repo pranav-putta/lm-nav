@@ -420,8 +420,6 @@ def main():
     args = parser.parse_args()
 
     config = get_config(args.cfg_path)
-
-    pprint(config)
     resume_id = args.resume_run_id
 
     with read_write(config):
@@ -436,6 +434,7 @@ def main():
             config.habitat_baselines.wb.group = 'eval'
             config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
             config.habitat_baselines.num_environments = config.eval.num_envs
+            config.exp.logger.group = 'eval'
             # config.habitat.dataset.split = 'val_hard'
      
         trainer.eval()
