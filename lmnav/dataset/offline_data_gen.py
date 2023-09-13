@@ -32,7 +32,7 @@ class OfflineDataGenerator:
         self.N = 0
         self.latest_generator_stats = {}
         
-        self.writer: BaseLogger = registry.get_logger_class(self.config.exp.logger._target_)(self.config.exp.logger)
+        self.writer: BaseLogger = registry.get_logger_class(self.config.exp.logger._target_)(self.config)
         self.img_transform = transforms.Compose([transforms.Resize((224, 224), antialias=True)])
 
         
@@ -76,8 +76,9 @@ class OfflineDataGenerator:
         
     def generate(self):
         print(f"Starting generation with {self.num_gpus} gpus")
-        max_buffer_len = self.config.generator.ckpt_freq
-        exp_folder = os.path.join(self.config.exp.root_dir, self.config.exp.name)
+        generator_cfg = self.config.generator
+        max_buffer_len = generator_cfg.ckpt_freq
+        exp_folder = os.path.join(generator_cfg.store_artifact.dirpath, generator_cfg.store_artifact.name)
         
         self.cfgs, self.processes, self.conns, self.queues = zip(*[self.initialize_data_generator(exp_folder, max_buffer_len, i) for i in range(self.num_gpus)]) 
         

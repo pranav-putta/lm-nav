@@ -13,7 +13,7 @@ defaults:
 
 exp:
   name: "offline_10envs"
-  root_dir: "data/datasets/lmnav"
+  root_dir: "experiments/"
   logger:
     project: "lmnav"
     name: "lmnav imagenav 10 envs"
@@ -21,7 +21,9 @@ exp:
   
 generator:
   num_episodes: 100000
-  artifact: "offline_10envs"
+  store_artifact: 
+    name: "offline_10envs" 
+    dirpath: "data/datasets/lmnav"
   deterministic: False
   ckpt_freq: 1
   filter_method:

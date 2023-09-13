@@ -6,6 +6,7 @@ from urllib.parse import unquote, urlparse
 from lmnav.common.registry import registry
 
 from lmnav.config.default_structured_configs import WBLoggerConfig
+from tqdm import tqdm
 
     
 
@@ -23,7 +24,15 @@ class BaseLogger(ABC):
         pass
 
     @abstractmethod
-    def load_dataset(self, name):
+    def load_dataset(self, artifact):
+        pass
+
+    @abstractmethod
+    def load_model(self, artifact):
+        pass
+
+    @abstractmethod
+    def load_model_versions(self, artifact):
         pass
 
 
@@ -43,10 +52,17 @@ class ConsoleLogger(BaseLogger):
         files = [os.path.join(dirpath, path) for path in os.listdir(dirpath)]
         return files
 
+    def load_model(self, artifact):
+        raise NotImplementedError
+
+    def load_model_versions(self, artifact):
+        raise NotImplementedError
+
 @registry.register_logger('wb')
 class WandBLogger(BaseLogger):
 
-    def __init__(self, config: WBLoggerConfig):
+    def __init__(self, cfg):
+        config = cfg.exp.logger
         wb_kwargs = {}
         if config.project != "":
             wb_kwargs["project"] = config.project
@@ -77,7 +93,7 @@ class WandBLogger(BaseLogger):
         self.run = wandb.init(  # type: ignore[attr-defined]
             config={
                 "slurm": slurm_info_dict,
-                **OmegaConf.to_container(config),  # type: ignore[arg-type]
+                **OmegaConf.to_container(cfg),  # type: ignore[arg-type]
             },
             **wb_kwargs,
         ) 
@@ -92,8 +108,27 @@ class WandBLogger(BaseLogger):
         artifact.add_reference(filepath)
         wandb.log_artifact(artifact)
 
-    def load_dataset(self, name):
+    def load_dataset(self, dataset_cfg):
+        name = f"{dataset_cfg.artifact.name}:{dataset_cfg.artifact.version}" 
         artifact = wandb.use_artifact(name)
         files = [unquote(urlparse(v.ref).path) for k, v in artifact.manifest.entries.items()]
         return files
+
+    def load_model(self, artifact):
+        name = f"{artifact.name}:{artifact.version}"
+        artifact = wandb.use_artifact(name)
+        files = [unquote(urlparse(v.ref).path) for k, v in artifact.manifest.entries.items()]
+        assert len(files) == 1, 'there was more than 1 file for checkpoint'
+        return files[0]
+    
+    def load_model_versions(self, artifact):
+        latest = f"{artifact.name}:latest"
+        latest_artifact = wandb.use_artifact(latest)
+        latest_version = int(latest_artifact.source_version[1:])
+        
+        return [f'v{i}' for i in range(latest_version)]            
+            
+        
+
+    
         

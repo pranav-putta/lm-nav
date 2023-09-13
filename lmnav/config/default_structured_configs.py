@@ -31,6 +31,13 @@ class ExperimentConfig:
     root_dir: str = 'experiments/'
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger: LoggerConfig = MISSING
+
+### ARTIFACT CONFIG ###
+@dataclass
+class ArtifactConfig:
+    name: str = MISSING
+    version: str = MISSING
+    dirpath: str = MISSING
     
 
 ### POLICY CONFIGS ###
@@ -80,28 +87,32 @@ class DTGFitlerMethodConfig(BaseFilterMethodConfig):
 @dataclass
 class EpisodeGeneratorConfig:
     num_episodes: int = MISSING
-    artifact: str = MISSING
     policy: BasePolicyConfig = MISSING
     filter_method: BaseFilterMethodConfig = MISSING
     deterministic: bool = MISSING
     ckpt_freq: int = 1
+    store_artifact: ArtifactConfig = MISSING
     
 ### DATASET CONFIGS ###
 @dataclass
 class BaseDatasetConfig:
     _target_: str = MISSING
+    artifact: ArtifactConfig = MISSING
 
 @dataclass
 class OfflineEpisodeDatasetConfig(BaseDatasetConfig):
     _target_: str = "datasets.offline_episode"
-    artifact: str = 'offline_00744:latest'
     
     
 ### TRAINER CONFIGS ###
+   
 @dataclass
 class BaseRunnerConfig:
     policy: BasePolicyConfig = MISSING
     dataset: BaseDatasetConfig = MISSING
+    
+    pretrained_artifact: ArtifactConfig = MISSING
+    
     num_envs: int = MISSING
 
 @dataclass

@@ -65,9 +65,9 @@ class BCTrainer:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.rank = 0
         self.is_distributed = False
+        self.eval_dir = os.path.join(self.exp_folder, 'eval')
         
-        
-        self.writer = registry.get_logger_class(self.config.exp.logger._target_)(self.config.exp.logger)
+        self.writer = registry.get_logger_class(self.config.exp.logger._target_)(self.config)
 
         self.agent = self.setup_student()
         self.agent.eval()
@@ -124,8 +124,8 @@ class BCTrainer:
 
         # set up writer and scatter all relevant data to worker nodes
         if rank0_only(): 
-            self.writer = registry.get_logger_class(self.config.exp.logger._target_)(self.config.exp.logger)
-            data_files = self.writer.load_dataset(self.config.train.dataset.artifact)
+            self.writer = registry.get_logger_class(self.config.exp.logger._target_)(self.config)
+            data_files = self.writer.load_dataset(self.config.train.dataset)
             self.artifact_store.set("data_files", ';'.join(data_files))
         else:
             self.artifact_store.wait(["data_files"])
@@ -308,27 +308,29 @@ class BCTrainer:
 
 
     def eval(self):
-        eval_folder = os.path.join(self.exp_folder, 'eval')
-        ckpt_path_pattern = os.path.join(os.path.join(self.exp_folder, 'ckpts'), self.config.eval.ckpt)
-        ckpt_paths = glob.glob(ckpt_path_pattern)
+        self.initialize_eval()
+        
+        if self.config.eval.pretrained_artifact.version == '*':
+            versions = self.writer.load_model_versions(self.config.eval.pretrained_artifact)
+        else:
+            versions = [self.config.eval.pretrained_artifact.version]
 
-        # go through each ckpt and get previous stats
-        for i in range(len(ckpt_paths)):
-            stats_path = os.path.join(eval_folder, os.path.basename(ckpt_paths[i]), 'stats.pkl')
+        versions = reversed(sorted(versions))  
+        envs, env_spec = _init_envs(self.config)
+        for version in versions:
+            with read_write(self.config):
+                self.config.eval.pretrained_artifact.version = version
+            ckpt_path = self.writer.load_model(self.config.eval.pretrained_artifact)
+            stats_path = os.path.join(self.eval_dir, os.path.basename(ckpt_path), 'stats.pkl')
+            
             if os.path.exists(stats_path):
                 with open(stats_path, 'rb') as f:
                     prev_stats = pickle.load(f)
-                ckpt_paths[i] = (ckpt_paths[i], prev_stats)  
             else:
-                ckpt_paths[i] = (ckpt_paths[i], None)
-        
-        ckpt_paths = reversed(sorted(list(ckpt_paths), key=lambda x: int(x[0].split(".")[1])))
-        envs, env_spec = _init_envs(self.config)
-        self.initialize_eval()
+                prev_stats = None
 
-        for ckpt_path, stats in ckpt_paths:
-            self.eval_checkpoint(ckpt_path, stats, envs)
-        
+            self.eval_checkpoint(ckpt_path, prev_stats, envs)
+            
         
     def eval_checkpoint(self, ckpt_path, prev_stats, envs):
         print(f"Starting evaluation for {ckpt_path}")
@@ -338,7 +340,7 @@ class BCTrainer:
 
         # construct directory to save stats
         ckpt_name = os.path.basename(ckpt_path)
-        eval_dir = os.path.join(self.exp_folder, 'eval', ckpt_name)
+        eval_dir = os.path.join(self.eval_dir, ckpt_name)
         video_dir = os.path.join(eval_dir, 'videos')
         os.makedirs(eval_dir, exist_ok=True)
         

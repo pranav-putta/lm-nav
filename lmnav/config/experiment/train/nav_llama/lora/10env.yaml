@@ -39,16 +39,21 @@ train:
   lr: 1e-4
   max_trajectory_length: 22    
   dataset: 
-    artifact: "offline_10envs:latest"
- 
+    artifact: 
+      name: "offline_10envs"
+      version: "latest"
+
 eval:
   policy: ${..train.policy}
-  ckpt: "ckpt.*.pth"
   num_episodes: 50
   save_videos: True
   deterministic: False
   num_envs: 10
   dataset: 
-    artifact: "offline_10envs:latest"
- 
-
+    artifact:
+      name: "offline_10envs"
+      version: "latest"
+  pretrained_artifact:
+    name: ${...exp.name}
+    version: "latest"
+  
