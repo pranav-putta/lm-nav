@@ -12,6 +12,7 @@ defaults:
     
   # set up train
   - /runner@train: bc
+  - /lr@train.lr_schedule: constant
   - /policy/nav_llama@train.policy: lora 
   - /dataset@train.dataset: offline_episode
     
@@ -23,28 +24,38 @@ defaults:
 
 
 exp:
-  name: "lmnav_imagenav_linear"
+  name: "lmnav_imagenav_1env"
   root_dir: "experiments/"
   logger:
     project: "lmnav"
-    name: "lmnav imagenav linear"
+    name: "lmnav lora 1env lr=2.5e-5"
     group: "train"
+    tags: ['lora']
 
 train:
   batch_size: 2
-  num_envs: 10
   epochs: 10_000
   bc_epochs: 10
   grad_accums: 6
-  lr: 1e-4
+  episodes_per_batch: 10
+  lr_schedule:
+    lr: 2.5e-5
   max_trajectory_length: 22    
   dataset:
-    artifact: "offline_00744:latest"
- 
+    artifact:
+      name: "offline_00744"
+      version: "latest"
+        
 eval:
   policy: ${..train.policy}
-  ckpt: "ckpt.*.pth"
   num_episodes: 50
   save_videos: True
   deterministic: False
   num_envs: 10
+  dataset:
+    artifact:
+      name: "offline_00744"
+      version: "latest"
+  pretrained_artifact:
+    name: ${...exp.name}
+        
