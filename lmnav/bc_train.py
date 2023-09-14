@@ -124,8 +124,15 @@ class BCTrainer:
         # set up optimizer
         optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
         self.optim = torch.optim.Adam(params=optim_params, lr=self.config.train.lr_schedule.lr)
-        self.lr_scheduler = get_class(self.config.train.lr_schedule._target_)(optimizer=self.optim, gamma=self.config.train.lr_schedule.gamma)
         
+        # TODO; automate this with registry
+        if self.config.train.lr_schedule._target_ == "exponential":
+            self.lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=self.optim, gamma=self.config.train.lr_schedule.gamma)
+        elif self.config.train.lr_schedule._target_ == "constant":
+            self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=self.optim, lr_lambda=[lambda _: 1])
+        else:
+            raise ValueError(f"{self.config.train.lr_schedule._target_} lr scheduler not found")
+
         # set up writer and scatter all relevant data to worker nodes
         if rank0_only(): 
             self.writer = registry.get_logger_class(self.config.exp.logger._target_)(self.config)

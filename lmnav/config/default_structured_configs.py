@@ -123,12 +123,11 @@ class BaseLRConfig:
 
 @dataclass
 class ConstantLRConfig(BaseLRConfig):
-    pass
+    _target_: str = 'constant'
 
 @dataclass
 class ExponentialLRConfig(BaseLRConfig):
-    _target_: str = 'torch.optim.lr_scheduler.ExponentialLR'
-    lr: float = MISSING
+    _target_: str = 'exponential'
     gamma: float = MISSING
 
 

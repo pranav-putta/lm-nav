@@ -158,8 +158,10 @@ class NavLLAMA(Blip2Base):
 
 
         logging.info('Loading LLAMA proj')
+        # TODO fix this
+        hidden_size = 768 if not self.use_qformer else self.Qformer.config.hidden_size
         self.llama_proj = nn.Linear(
-            self.Qformer.config.hidden_size, self.llama_model.config.hidden_size
+            hidden_size, self.llama_model.config.hidden_size
         )
         if llama_proj_model:
             print("load llama proj weight: {}".format(llama_proj_model))
@@ -236,7 +238,7 @@ class NavLLAMA(Blip2Base):
     def embed_visual(self, imgs):
         device = imgs.device
         B, _, T, _, _ = imgs.size()
-        image = einops.rearrange(image, 'b c t h w -> (b t) c h w')
+        image = einops.rearrange(imgs, 'b c t h w -> (b t) c h w')
         with self.maybe_autocast():
             image_embeds = self.ln_vision(self.visual_encoder(image)).to(device)
             image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(device)
@@ -248,8 +250,8 @@ class NavLLAMA(Blip2Base):
             # just embed them through EVA VIT
             inputs_llama, atts_llama = image_embeds, image_atts
         
-        inputs_llama = einops.rearrange(inputs_llama, '(b t) q h -> b t q h', b=batch_size)
-        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=batch_size)
+        inputs_llama = einops.rearrange(inputs_llama, '(b t) q h -> b t q h', b=B)
+        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=B)
            
         return inputs_llama, atts_llama
 
