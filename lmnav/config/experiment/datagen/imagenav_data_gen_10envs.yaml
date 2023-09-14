@@ -4,7 +4,7 @@ defaults:
   # setup habitat
   - /env@habitat_baselines: habitat_baselines
   - /env@habitat: habitat
-  - /dataset/imagenav/hm3d_1env
+  - /dataset/imagenav/hm3d_10env
    
     # setup experiment misc.
   - /exp: base
@@ -19,11 +19,11 @@ defaults:
   - _self_
 
 exp:
-  name: "offline_00744"
+  name: "offline_10envs_actprobs"
   root_dir: "data/datasets/lmnav"
   logger:
     project: "lmnav"
-    name: "lmnav imagenav 744"
+    name: "lmnav imagenav 10envs with act probs"
     group: "datagen"
   
 generator:
@@ -38,7 +38,7 @@ generator:
     ckpt: "ckpts/uLHP.300.pth"
   
   store_artifact:
-    name: "offline_00744_actprobs"
+    name: "offline_10envs_actprobs"
     dirpath: "data/datasets/lmnav"
   
 

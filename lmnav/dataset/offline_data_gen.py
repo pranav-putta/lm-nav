@@ -122,9 +122,10 @@ class OfflineDataGenerator:
                 self.N += max_buffer_len
                
 
-            time.sleep(10)
             step += 1
-            self.writer.write({'step': step, 
+            time.sleep(1)
+            if step % 10 == 0:
+                self.writer.write({'step': step, 
                                'num_episodes': self.N,
                                'buffer_len': len(self.buffer),
                                **self.latest_generator_stats })

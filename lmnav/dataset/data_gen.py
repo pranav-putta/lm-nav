@@ -117,7 +117,7 @@ def collect_episodes(config, setup_teacher, filter_fn, deterministic, conn, q):
                     'episode_id': current_episodes[i].episode_id
                 }
 
-                data = pickle.dumps((generator_stats, episode_stats, episodes[i]), protocol=0)
+                data = pickle.dumps((generator_stats, episode_stats, episodes[i]))
                 q.put(data)
 
             # reset state tensors
@@ -142,7 +142,7 @@ def start_data_gen_process(config, setup_teacher, filter_fn, deterministic=False
     """
     ctx = mp.get_context('forkserver')
     parent_conn, child_conn = ctx.Pipe()
-    queue = ctx.Queue(1)
+    queue = ctx.Queue(20)
 
     f = partial(collect_episodes, config=config, setup_teacher=setup_teacher, filter_fn=filter_fn,
                                   deterministic=deterministic, q=queue, conn=child_conn)
