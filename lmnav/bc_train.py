@@ -32,6 +32,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from typing import Any
 
 from torch.utils.data import DataLoader
+from lmnav.common.resumable_random_sampler import ResumableRandomSampler
 from lmnav.config.default import get_config
 
 from lmnav.dataset.data_gen import  _init_envs
@@ -137,10 +138,13 @@ class BCTrainer:
 
         # set up dataset
         self.dataset = OfflineEpisodeDataset(files=data_files)
+        self.sampler = ResumableRandomSampler(self.dataset)
         self.data_loader = DataLoader(self.dataset, batch_size=self.config.train.episodes_per_batch,
-                                      shuffle=True, collate_fn=lambda x: x, num_workers=1)
+                                      shuffle=True, collate_fn=lambda x: x, num_workers=1, sampler=self.sampler)
         self.data_loader = iter(self.data_loader)
-                   
+
+        self.epoch = 0
+
 
     def setup_student(self):
         model_config = self.config.train.policy
@@ -242,7 +246,20 @@ class BCTrainer:
         return t.to(device=orig_device)
         
 
-    def save_checkpoint(self, epoch):
+    def load_checkpoint(self, ckpt_path):
+        # load checkpoint
+        print(f"Loading model from checkpoint")
+        ckpt_state_dict = torch.load(ckpt_path)
+        self.agent.load_state_dict(ckpt_state_dict['model'], strict=False)
+        self.optim.load_state_dict(ckpt_state_dict['optimizer'])
+        self.lr_scheduler.load_state_dict(ckpt_state_dict['lr_scheduler'])
+        self.sampler.load_state_dict(ckpt_state_dict['sampler'])        
+
+        # TODO; check if saved and loaded configs are the same
+        self.epoch = ckpt_state_dict['epoch']
+
+        
+    def save_checkpoint(self):
         # only save parameters that have been updated
         param_grad_dict = {
             k: v.requires_grad for k, v in self.agent.named_parameters()
@@ -257,10 +274,11 @@ class BCTrainer:
             "model": state_dict,
             "optimizer": self.optim.state_dict(),
             "lr_scheduler": self.lr_scheduler.state_dict(),
+            "sampler": self.sampler.state_dict(),
             "config": OmegaConf.to_container(self.config),
-            "epoch": epoch
+            "epoch": self.epoch
         }
-        ckpt_num = epoch // self.config.train.ckpt_freq
+        ckpt_num = self.epoch // self.config.train.ckpt_freq
         ckpt_filepath = os.path.join(self.exp_folder, 'ckpts', f'ckpt.{ckpt_num}.pth')
         torch.save(save_obj, ckpt_filepath) 
 
@@ -270,11 +288,10 @@ class BCTrainer:
     def train(self):
         self.initialize_train()
         
-
         epochs, batch_size = self.config.train.epochs, self.config.train.batch_size
 
-        for epoch in range(epochs):
-            stats = self.train_epoch(epoch)
+        while self.epoch < epochs:
+            stats = self.train_epoch(self.epoch)
             self.lr_scheduler.step()
             
             torch.distributed.barrier()
@@ -290,8 +307,8 @@ class BCTrainer:
             if rank0_only():
                 self.writer.write(stats)
 
-                if epoch % self.config.train.ckpt_freq == 0:
-                    self.save_checkpoint(epoch)
+                if self.epoch % self.config.train.ckpt_freq == 0:
+                    self.save_checkpoint(self.epoch)
 
                     
     def save_episode_video(self, episode, num_episodes, video_dir, ckpt_idx):
