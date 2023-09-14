@@ -112,8 +112,6 @@ class BCTrainer:
             torch.manual_seed(self.config.habitat.seed)
             
             self.artifact_store = torch.distributed.PrefixStore("artifacts", tcp_store)
-
-           
          
         # set up student
         os.makedirs(self.exp_folder, exist_ok=True)
@@ -152,7 +150,16 @@ class BCTrainer:
 
         self.epoch = 0
 
+        if self.config.exp.logger.resume_id is not None and rank0_only():
+            ckpt_folder = os.path.join(self.exp_folder, 'ckpts')
+            ckpts = os.listdir(ckpt_folder)
+            latest_ckpt = list(sorted(ckpts, key=lambda x: int(x.split('.')[1])))[-1]
+            print(f"Resuming run. Starting from {latest_ckpt}")
+            self.load_checkpoint(os.path.join(ckpt_folder, latest_ckpt)) 
 
+        torch.distributed.barrier()
+           
+            
     def setup_student(self):
         model_config = self.config.train.policy
         model_cls = llama_registry.get_model_class(model_config._target_)
@@ -315,7 +322,9 @@ class BCTrainer:
                 self.writer.write(stats)
 
                 if self.epoch % self.config.train.ckpt_freq == 0:
-                    self.save_checkpoint(self.epoch)
+                    self.save_checkpoint()
+
+            self.epoch += 1
 
                     
     def save_episode_video(self, episode, num_episodes, video_dir, ckpt_idx):

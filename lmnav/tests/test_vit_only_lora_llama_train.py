@@ -33,8 +33,7 @@ def _init_components(cfg_path, device):
     print("Params with gradients")
     print(params_with_gradients)
 
-    return agent
-
+    return agent, vis_processor
 
 
 def construct_dummy_inputs(B, T):
@@ -45,9 +44,9 @@ def construct_dummy_inputs(B, T):
     return goals, rgbs, actions
 
 
-class TestLoraLLAMATrain(unittest.TestCase):
+class TestVITOnly(unittest.TestCase):
     
-    def test_lora_llama_step_loss(self):
+    def test_vit_only(self):
         cfg_path = "train/nav_llama/lora/1env_only_vit"
         device = 'cuda'
         B, T = 2, 20
@@ -61,6 +60,8 @@ class TestLoraLLAMATrain(unittest.TestCase):
         rgbs = rgbs.to(device)
         goals = goals.to(device) 
 
+        import pdb
+        pdb.set_trace()
         output = model.embed_visual(rgbs)
         loss = output.loss.item()
 

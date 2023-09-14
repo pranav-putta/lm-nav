@@ -1,13 +1,22 @@
 from functools import partial
+import pickle
 import os
-import multiprocessing as mp
+import torch.multiprocessing as mp
 import gc
+import torch
+import copy
+import pympler as muppy
+import numpy as np
 
 from habitat_baselines.common.env_spec import EnvironmentSpec
 from habitat_baselines.rl.ddppo.ddp_utils import (
     is_slurm_batch_job,
 )
 import hydra
+from pympler import tracker,summary
+from pympler import muppy
+
+sum1 = summary.summarize(muppy.get_objects())
 
 def _init_envs(config=None, is_eval: bool = False):
     # Quiet the Habitat simulator logging
@@ -48,6 +57,8 @@ def collect_episodes(config, setup_teacher, filter_fn, deterministic, conn, q):
     step = 0
 
     actor = teacher.action_generator(envs.num_envs, deterministic=deterministic)
+
+ 
     
     while True:
         if conn.poll():
@@ -76,44 +87,51 @@ def collect_episodes(config, setup_teacher, filter_fn, deterministic, conn, q):
 
         # insert episode into list
         for i, episode in enumerate(episodes):
-            episode.append({'observation': observations[i],
-                            'reward': rewards_l[i],
-                            'info': infos[i],
-                            'action': step_data[i],
-                            'probs': probs[i].cpu() })
+            episode.append({
+               'observation': {k: torch.from_numpy(v).clone() for k, v in observations[i].items()},
+                'reward': rewards_l[i],
+                'info': {k: torch.from_numpy(v).clone() if isinstance(v, np.ndarray) else v for k, v in infos[i].items()},
+                'action': step_data[i],
+                'probs': probs[i].cpu()
+            })
 
         
         # check if any episodes finished and archive it into dataset
         for i, done in enumerate(dones):
-            if done:
-                total_episodes += 1
+            if not done:
+                continue
+
+            sum2 = summary.summarize(muppy.get_objects())
+            summary.print_(summary.get_diff(sum1, sum2))
+           
+            total_episodes += 1
+            
+            if filter_fn(episodes[i]):
+                num_succ_episodes += 1
                 
-                if filter_fn(episodes[i]):
-                    num_succ_episodes += 1
-                    
-                    # log generator stats
-                    generator_stats = {
-                        'generator_step': step,
-                        'generator_episode_num': num_succ_episodes,
-                        'generator_episode_len': len(episodes[i]),
-                        'generator_running_accuracy': num_succ_episodes / total_episodes
-                    }
+                # log generator stats
+                generator_stats = {
+                    'generator_step': step,
+                    'generator_episode_num': num_succ_episodes,
+                    'generator_episode_len': len(episodes[i]),
+                    'generator_running_accuracy': num_succ_episodes / total_episodes
+                }
 
-                    episode_stats = {
-                        'scene_id': current_episodes[i].scene_id,
-                        'episode_id': current_episodes[i].episode_id
-                    }
+                episode_stats = {
+                    'scene_id': current_episodes[i].scene_id,
+                    'episode_id': current_episodes[i].episode_id
+                }
 
-                    q.put((generator_stats, episode_stats, episodes[i]))
-                    
-                # reset state tensors
-                episodes[i] = []
+                data = pickle.dumps((generator_stats, episode_stats, episodes[i]), protocol=0)
+                q.put(data)
+
+            # reset state tensors
+            episodes[i] = []
+                
     
         observations = next_observations
         step += 1
 
-        gc.collect()
-        
 
 def start_data_gen_process(config, setup_teacher, filter_fn, deterministic=False):
     """
@@ -129,11 +147,10 @@ def start_data_gen_process(config, setup_teacher, filter_fn, deterministic=False
     """
     ctx = mp.get_context('forkserver')
     parent_conn, child_conn = ctx.Pipe()
-    queue = ctx.Queue(100)
+    queue = ctx.Queue(1)
 
     f = partial(collect_episodes, config=config, setup_teacher=setup_teacher, filter_fn=filter_fn,
                                   deterministic=deterministic, q=queue, conn=child_conn)
     p = ctx.Process(target=f)
     p.start()
     return p, parent_conn, queue
-
