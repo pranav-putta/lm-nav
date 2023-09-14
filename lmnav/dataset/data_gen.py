@@ -16,8 +16,6 @@ import hydra
 from pympler import tracker,summary
 from pympler import muppy
 
-sum1 = summary.summarize(muppy.get_objects())
-
 def _init_envs(config=None, is_eval: bool = False):
     # Quiet the Habitat simulator logging
     os.environ["MAGNUM_LOG"] = "quiet"
@@ -101,9 +99,6 @@ def collect_episodes(config, setup_teacher, filter_fn, deterministic, conn, q):
             if not done:
                 continue
 
-            sum2 = summary.summarize(muppy.get_objects())
-            summary.print_(summary.get_diff(sum1, sum2))
-           
             total_episodes += 1
             
             if filter_fn(episodes[i]):
