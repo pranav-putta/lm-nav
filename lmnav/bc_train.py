@@ -140,7 +140,7 @@ class BCTrainer:
         self.dataset = OfflineEpisodeDataset(files=data_files)
         self.sampler = ResumableRandomSampler(self.dataset)
         self.data_loader = DataLoader(self.dataset, batch_size=self.config.train.episodes_per_batch,
-                                      shuffle=True, collate_fn=lambda x: x, num_workers=1, sampler=self.sampler)
+                                      collate_fn=lambda x: x, num_workers=1, sampler=self.sampler)
         self.data_loader = iter(self.data_loader)
 
         self.epoch = 0
