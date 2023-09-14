@@ -59,6 +59,7 @@ class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
     use_grad_checkpoint: bool = False
     vit_precision: str = "fp16"
     num_query_token: int = 32
+    use_qformer: bool = True
 
     freeze_vit: bool = True
     freeze_qformer: bool = True
@@ -173,7 +174,7 @@ cs.store(group='dataset', name='base', node=BaseDatasetConfig)
 cs.store(group='dataset', name='offline_episode', node=OfflineEpisodeDatasetConfig)
 
 cs.store(group='lr', name='base', node=BaseLRConfig)
-cs.store(group='lr', name='const', node=ConstantLRConfig)
+cs.store(group='lr', name='constant', node=ConstantLRConfig)
 cs.store(group='lr', name='exponential', node=ExponentialLRConfig)
 
 cs.store(group='runner', name='base', node=BaseRunnerConfig)
