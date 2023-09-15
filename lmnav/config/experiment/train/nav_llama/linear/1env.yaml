@@ -37,7 +37,8 @@ train:
   bc_epochs: 10
   grad_accums: 6
   lr: 1e-4
-  max_trajectory_length: 22    
+  policy:
+    max_trajectory_length: 22    
   dataset:
     artifact: "offline_00744:latest"
 

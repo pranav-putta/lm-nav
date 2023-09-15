@@ -39,7 +39,8 @@ train:
   episodes_per_batch: 10
   lr_schedule:
     lr: 2.5e-5
-  max_trajectory_length: 22    
+  policy:
+    max_trajectory_length: 22    
   dataset:
     artifact: 
       name: "offline_00744"

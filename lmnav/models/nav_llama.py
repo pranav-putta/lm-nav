@@ -39,13 +39,15 @@ class NavLLAMA(Blip2Base):
         freeze_llama_proj,
         low_resource,
         lora_config,
-        llama_model
+        llama_model,
+        max_trajectory_length
     ):
         super().__init__()
         
         self.vis_encoder = vis_encoder
         self.tokenizer = self.init_tokenizer()
         self.low_resource = low_resource
+        self.max_trajectory_length = max_trajectory_length
            
         logging.info('Loading LLAMA Tokenizer')
         self.llama_tokenizer = LlamaTokenizer.from_pretrained(llama_model, use_fast=False)
@@ -208,10 +210,12 @@ class NavLLAMA(Blip2Base):
         
 
 
-    def action_generator(self, num_envs, T, vis_processor, deterministic=False):
+    def action_generator(self, num_envs, deterministic=False):
         """
             action generator function, takes in the next rgb, goal, and action 
         """
+        T = self.max_trajectory_length
+        vis_processor = self.vis_encoder.vis_processor
         
         episodes = [ [] for _ in range(num_envs) ] 
         
@@ -231,14 +235,14 @@ class NavLLAMA(Blip2Base):
                                 })
 
             
-            partial_episodes = [e[-(T - 1):] for e in episodes]
-            rgbs, goals, actions = extract_inputs_from_dataset(partial_episodes)
+            episodes = [e[-(T - 1):] for e in episodes]
+            rgbs, goals, actions = extract_inputs_from_dataset(episodes)
 
             rgbs_t = self.pad_sequences(rgbs, dim=0)
             actions_t = self.pad_sequences(actions, dim=0)
             goals_t = self.pad_sequences(goals, dim=0)
             mask_t = torch.ones_like(actions_t).to(self.device)
-            lens = [len(e) for e in partial_episodes]
+            lens = [len(e) for e in episodes]
             max_len = max(lens)
 
             rgbs_t, goals_t, actions_t = apply_transforms_inputs(vis_processor, rgbs_t, goals_t, actions_t)
@@ -249,7 +253,7 @@ class NavLLAMA(Blip2Base):
 
             # project onto the action space
             actions = []
-            for i in range(len(partial_episodes)):
+            for i in range(len(episodes)):
                 act_logits = logits[i, -act_pos_delta[i], act_tkn_ids]
                 act_logits = F.softmax(act_logits)
 

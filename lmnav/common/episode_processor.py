@@ -12,6 +12,12 @@ idx2class = {
     3: 'right'
 }
 
+def apply_transforms_actions(actions):
+    # process actions into tokens
+    actions = actions.tolist()
+    actions = [[idx2class[act] for act in acts_t] for acts_t in actions]
+    return actions
+    
 def apply_transforms_inputs(vis_processor, rgbs, goals, actions):
     """
     rgbs: torch.Tensor[B T C H W] -> [B C T H W]
@@ -29,10 +35,7 @@ def apply_transforms_inputs(vis_processor, rgbs, goals, actions):
 
     # separate goal and rgb
     goals, rgbs = imgs[:, :, 0:1], imgs[:, :, 1:]
-
-    # process actions into tokens
-    actions = actions.tolist()
-    actions = [[idx2class[act] for act in acts_t] for acts_t in actions]
+    actions = apply_transforms_actions(actions)
 
     return rgbs, goals, actions
 

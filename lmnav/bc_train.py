@@ -1,14 +1,11 @@
 import pickle
-from hydra.utils import get_class
 
-import time
 import einops
 import gc
-import glob
 
 from pprint import pprint
 from habitat.utils.visualizations.utils import observations_to_image
-from habitat_baselines.utils.common import batch_obs, generate_video
+from habitat_baselines.utils.common import generate_video
 from habitat_sim.utils.datasets_download import argparse
 from habitat_baselines.utils.info_dict import extract_scalars_from_info
 
@@ -16,9 +13,6 @@ import numpy as np
 import random
 from hydra.utils import instantiate
 
-from collections import namedtuple
-
-import habitat
 from habitat import logger
 from habitat.config import read_write
 from habitat_baselines.rl.ddppo.ddp_utils import (init_distrib_slurm, get_distrib_size, rank0_only)
@@ -30,18 +24,14 @@ import os
 import torch.distributed
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from typing import Any
-
 from torch.utils.data import DataLoader
 from lmnav.common.resumable_random_sampler import ResumableRandomSampler
 from lmnav.config.default import get_config
 
 from lmnav.dataset.data_gen import  _init_envs
-from lmnav.common.config import Config as NavLLAMAConfig
 from lmnav.models import *
 from lmnav.dataset.offline_episode_dataset import OfflineEpisodeDataset
 from lmnav.processors import *
-from lmnav.common.registry import registry as llama_registry
 from lmnav.common.episode_processor import apply_transforms_inputs, construct_subsequences, extract_inputs_from_dataset 
 
 from lmnav.common.registry import registry
@@ -375,7 +365,7 @@ class BCTrainer:
         print(f"Starting evaluation for {ckpt_path}")
         
         N_episodes = self.config.eval.num_episodes
-        T = self.config.train.max_trajectory_length
+        T = self.agent.max_trajectory_length
 
         # construct directory to save stats
         ckpt_name = os.path.basename(ckpt_path)

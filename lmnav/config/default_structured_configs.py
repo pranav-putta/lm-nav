@@ -95,7 +95,7 @@ class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
     lora_config: Optional[dict] = None
 
     llama_model: str = "meta-llama/Llama-2-7b-chat-hf"
-    
+    max_trajectory_length: int = MISSING
 
 ### FILTER CONFIGS ###
 @dataclass
@@ -159,13 +159,20 @@ class TrainRunnerConfig(BaseRunnerConfig):
     batch_size: int = MISSING
     ckpt_freq: int = 50
     episodes_per_batch: int = MISSING
-    max_trajectory_length: int = MISSING
     grad_accums: int = MISSING
-    lr_schedule: BaseLRConfig = MISSING
 
 @dataclass
 class BCTrainRunnerConfig(TrainRunnerConfig):
     bc_epochs: int = 10 
+    lr_schedule: BaseLRConfig = MISSING
+
+@dataclass
+class PPOTrainRunnerConfig(TrainRunnerConfig):
+    ppo_epochs: int = 2
+    actor_lr_schedule: BaseLRConfig = MISSING
+    critic_lr_schedule: BaseLRConfig = MISSING
+    num_rollout_steps: int = 64
+    deterministic: bool = False
 
 @dataclass
 class EvalRunnerConfig(BaseRunnerConfig):
