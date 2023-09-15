@@ -40,39 +40,61 @@ class ArtifactConfig:
     dirpath: str = MISSING
     
 
-### POLICY CONFIGS ###
+### MODEL CONFIGS ###
 @dataclass
-class BasePolicyConfig:
+class BaseModelConfig:
     _target_: str = MISSING
+
+
+@dataclass
+class BaseVisualEncoderConfig(BaseModelConfig):
+    _target_: str = MISSING
+    vis_processor: Optional[dict] = None
+    image_size: int = 224
+
+@dataclass
+class QformerVisualEncoderConfig(BaseVisualEncoderConfig):
+    _target_: str = "lmnav.models.vis_encoders.QformerVisualEncoder"
+    vit_precision: str = "fp16"
+    vit_model: str = "eva_clip_g"
+    drop_path_rate: int = 0
+    use_grad_checkpoint: bool = False
+    num_query_token: int = 32
+    freeze_vit: bool = True
+    freeze_qformer: bool = True
+    qformer_compressor_cfg: Optional[dict] = None
+    qformer_model: str = "https://storage.googleapis.com/sfr-vision-language-research/LAVIS/models/BLIP2/blip2_pretrained_flant5xxl.pth"
+
+@dataclass
+class CLIPVisualEncoderConfig(BaseVisualEncoderConfig):
+    _target_:str = "lmnav.models.vis_encoders.CLIPVisualEncoder"
+    vit_precision: str = "fp16"
+    vit_model: str = "openai/clip-vit-large-patch14"
+    freeze_vit: bool = True
+    
+    
+@dataclass
+class BasePolicyConfig(BaseModelConfig):
+    pass
 
 @dataclass
 class OldEAIPolicyConfig(BasePolicyConfig):
     _target_: str = "old_eai_policy"
     ckpt: str = MISSING
 
+    
 @dataclass
 class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
-    _target_: str = "lin_nav_llama"
-    model_type: str = "pretrain_vicuna"
-    image_size: int = 224
-    drop_path_rate: int = 0
-    use_grad_checkpoint: bool = False
-    vit_precision: str = "fp16"
-    num_query_token: int = 32
-    use_qformer: bool = True
+    _target_: str = "lmnav.models.nav_llama.NavLLAMA"
 
-    freeze_vit: bool = True
-    freeze_qformer: bool = True
-    freeze_lora: bool = True
-    freeze_qformer_compression: bool = True
+    vis_encoder: BaseVisualEncoderConfig = MISSING
+
     freeze_llama_proj: bool = False
+    
     low_resource: bool = False
-    lora_config: dict = MISSING
-    qformer_compressor_cfg: dict = MISSING
+    lora_config: Optional[dict] = None
 
     llama_model: str = "meta-llama/Llama-2-7b-chat-hf"
-    equip_audio_branch: bool = False
-    vis_processor: dict = MISSING
     
 
 ### FILTER CONFIGS ###
@@ -165,9 +187,13 @@ cs.store(group='generator', name='base', node=EpisodeGeneratorConfig)
 cs.store(group='generator/filter_method', name='base', node=BaseFilterMethodConfig)
 cs.store(group='generator/filter_method', name='dtg', node=DTGFitlerMethodConfig)
 
-cs.store(group='policy', name='base', node=BasePolicyConfig)
-cs.store(group='policy/old_eai_policy', name='old_eai_policy', node=OldEAIPolicyConfig)
-cs.store(group='policy/nav_llama', name='base_nav_llama', node=BaseNavLLaMAPolicyConfig)
+cs.store(group='models/policy', name='base', node=BasePolicyConfig)
+cs.store(group='models/policy/old_eai_policy', name='old_eai_policy', node=OldEAIPolicyConfig)
+cs.store(group='models/policy/nav_llama', name='base_nav_llama', node=BaseNavLLaMAPolicyConfig)
+
+cs.store(group='models/vis_encoder', name='base', node=BaseVisualEncoderConfig)
+cs.store(group='models/vis_encoder', name='qformer', node=QformerVisualEncoderConfig)
+cs.store(group='models/vis_encoder', name='clip', node=CLIPVisualEncoderConfig)
 
 cs.store(group='dataset', name='base', node=BaseDatasetConfig)
 cs.store(group='dataset', name='offline_episode', node=OfflineEpisodeDatasetConfig)

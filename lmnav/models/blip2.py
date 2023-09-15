@@ -22,7 +22,6 @@ from lmnav.common.utils import is_url
 from lmnav.common.logger import MetricLogger
 from lmnav.models.base_model import BaseModel
 from lmnav.models.Qformer import BertConfig, BertLMHeadModel
-from lmnav.models.eva_vit import create_eva_vit_g
 from transformers import BertTokenizer
 
 
@@ -58,16 +57,6 @@ class Blip2Base(BaseModel):
         query_tokens.data.normal_(mean=0.0, std=encoder_config.initializer_range)
         return Qformer, query_tokens
 
-    @classmethod
-    def init_vision_encoder(
-        cls, model_name, img_size, drop_path_rate, use_grad_checkpoint, precision
-    ):
-        assert model_name == "eva_clip_g", "vit model must be eva_clip_g for current version of MiniGPT-4"
-        visual_encoder = create_eva_vit_g(
-            img_size, drop_path_rate, use_grad_checkpoint, precision
-        )
-        ln_vision = LayerNorm(visual_encoder.num_features)
-        return visual_encoder, ln_vision
 
     def load_from_pretrained(self, url_or_filename):
         if is_url(url_or_filename):

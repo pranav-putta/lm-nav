@@ -1,0 +1,27 @@
+defaults:
+  - base_nav_llama@
+  - /models/vis_encoder@vis_encoder: qformer
+    
+freeze_llama_proj: False
+low_resource: False
+  
+lora_config:
+  rank: 8
+  alpha: 32
+  dropout: 0.1
+
+vis_encoder:
+  freeze_vit: True
+  freeze_qformer: True
+  vis_processor:
+    _target_: "alpro_video_train"
+    image_size: 224
+    n_frms: 8
+  qformer_compressor_cfg:
+    num_latents: 4
+    depth: 1
+    self_per_cross_attn: 2
+    cross_heads: 1
+    latent_heads: 8
+    cross_dim_head: 64
+    latent_dim_head: 64

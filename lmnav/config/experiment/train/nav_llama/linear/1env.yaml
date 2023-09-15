@@ -12,7 +12,7 @@ defaults:
     
   # set up train
   - /runner@train: bc
-  - /policy/nav_llama@train.policy: linear 
+  - /models/policy/nav_llama/qformer@train.policy: linear 
   - /dataset@train.dataset: offline_episode
     
   # set up eval

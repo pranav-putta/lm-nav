@@ -13,9 +13,7 @@ from omegaconf import OmegaConf
 from lmnav.common.registry import registry
 from lmnav.models.base_model import BaseModel
 from lmnav.models.blip2 import Blip2Base
-from lmnav.models.video_llama import VideoLLAMA
 from lmnav.models.nav_llama import NavLLAMA
-from lmnav.models.video_nav_llama import VideoNavLLAMA
 from lmnav.processors.base_processor import BaseProcessor
 
 
@@ -23,9 +21,7 @@ __all__ = [
     "load_model",
     "BaseModel",
     "Blip2Base",
-    "VideoLLAMA",
     "NavLLAMA",
-    "VideoNavLLAMA"
 ]
 
 

@@ -21,10 +21,7 @@ from lmnav.models.ImageBind.models.imagebind_model import ImageBindModel,Modalit
 from lmnav.models.ImageBind.models import imagebind_model
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 
-from lmnav.models.perceiver import Perceiver
 
-# from flamingo_pytorch import PerceiverResampler
-@registry.register_model("nav_llama")
 class NavLLAMA(Blip2Base):
     """
     Extension from BLIP2 GPT-LLAMA model to operate over navigation space.
@@ -38,97 +35,18 @@ class NavLLAMA(Blip2Base):
 
     def __init__(
         self,
-        vit_model="eva_clip_g",
-        q_former_model="https://storage.googleapis.com/sfr-vision-language-research/LAVIS/models/BLIP2/blip2_pretrained_flant5xxl.pth",
-        img_size=224,
-        drop_path_rate=0,
-        use_grad_checkpoint=False,
-        vit_precision="fp16",
-        freeze_vit=True,
-        freeze_qformer=True,
-        num_query_token=32,
-        llama_model="",
-        prompt_path="",
-        prompt_template="",
-        max_txt_len=32,
-        end_sym='\n',
-        low_resource=False,  # use 8 bit and put vit in cpu
-        device_8bit=0,  # the device of 8bit model should be set when loading and cannot be changed anymore.
-        freeze_llama_proj=True,
-        llama_proj_model='',
-        freeze_lora=False,
-        lora_config=None,
-        qformer_compressor_cfg=None,
-        use_qformer=True
+        vis_encoder,
+        freeze_llama_proj,
+        low_resource,
+        lora_config,
+        llama_model
     ):
         super().__init__()
-
+        
+        self.vis_encoder = vis_encoder
         self.tokenizer = self.init_tokenizer()
         self.low_resource = low_resource
-
-        print('Loading VIT')
-        self.visual_encoder, self.ln_vision = self.init_vision_encoder(
-            vit_model, img_size, drop_path_rate, use_grad_checkpoint, vit_precision
-        )
-        if freeze_vit:
-            for name, param in self.visual_encoder.named_parameters():
-                param.requires_grad = False
-            self.visual_encoder = self.visual_encoder.eval()
-            self.visual_encoder.train = disabled_train
-            for name, param in self.ln_vision.named_parameters():
-                param.requires_grad = False
-            self.ln_vision = self.ln_vision.eval()
-            self.ln_vision.train = disabled_train
-            logging.info("freeze vision encoder")
-        print('Loading VIT Done')
-
-        self.use_qformer = use_qformer
-        if use_qformer:
-            print('Loading Q-Former')
-            self.Qformer, self.query_tokens = self.init_Qformer(
-                num_query_token, self.visual_encoder.num_features
-            )
-            self.Qformer.cls = None
-            self.Qformer.bert.embeddings.word_embeddings = None
-            self.Qformer.bert.embeddings.position_embeddings = None
-            for layer in self.Qformer.bert.encoder.layer:
-                layer.output = None
-                layer.intermediate = None
-            self.load_from_pretrained(url_or_filename=q_former_model)
-
-            if freeze_qformer:
-                for name, param in self.Qformer.named_parameters():
-                    param.requires_grad = False
-                self.Qformer = self.Qformer.eval()
-                self.Qformer.train = disabled_train
-                self.query_tokens.requires_grad = False
-                logging.info("freeze Qformer")
-            logging.info('Loading Q-Former Done')
-
-            # check if we will compress q former tokens through a perceiver
-            self.qformer_compressor_cfg = qformer_compressor_cfg
-            if qformer_compressor_cfg is not None:
-                print('Loading Qformer Compression Perceiver')
-                self.qformer_compressor = Perceiver(
-                    input_channels=self.Qformer.config.hidden_size,
-                    input_axis=1,
-                    num_freq_bands=64,
-                    max_freq=64.,
-                    depth=qformer_compressor_cfg.depth,
-                    num_latents=qformer_compressor_cfg.num_latents,
-                    latent_dim=self.Qformer.config.hidden_size,
-                    cross_heads=qformer_compressor_cfg.cross_heads,
-                    latent_heads=qformer_compressor_cfg.latent_heads,
-                    cross_dim_head=qformer_compressor_cfg.cross_dim_head,
-                    latent_dim_head=qformer_compressor_cfg.latent_dim_head,
-                    final_classifier_head=False,
-                    attn_dropout=0.1,
-                    ff_dropout=0.1,
-                    weight_tie_layers=False,
-                    fourier_encode_data=True,
-                    self_per_cross_attn=qformer_compressor_cfg.self_per_cross_attn,
-                )
-            
+           
         logging.info('Loading LLAMA Tokenizer')
         self.llama_tokenizer = LlamaTokenizer.from_pretrained(llama_model, use_fast=False)
         if self.llama_tokenizer.pad_token is None:
@@ -144,7 +62,7 @@ class NavLLAMA(Blip2Base):
                 llama_model,
                 torch_dtype=torch.bfloat16,
                 load_in_8bit=True,
-                device_map={'': device_8bit}
+                device_map={'': 0}
             )
         else:
             self.llama_model = LlamaForCausalLM.from_pretrained(
@@ -158,18 +76,11 @@ class NavLLAMA(Blip2Base):
 
 
         logging.info('Loading LLAMA proj')
-        # TODO fix this
-        hidden_size = 768 if not self.use_qformer else self.Qformer.config.hidden_size
         self.llama_proj = nn.Linear(
-            hidden_size, self.llama_model.config.hidden_size
+            self.vis_encoder.hidden_size, self.llama_model.config.hidden_size
         )
-        if llama_proj_model:
-            print("load llama proj weight: {}".format(llama_proj_model))
-            llama_proj_weight = torch.load(llama_proj_model, map_location="cpu")
-            msg = model.load_state_dict(llama_proj_weight['model'], strict=False)
 
         if freeze_llama_proj:
-            #  todo frozen  llama_proj
             for name, param in self.llama_proj.named_parameters():
                 param.requires_grad = False
             logging.info('LLAMA proj is frozen')
@@ -178,11 +89,11 @@ class NavLLAMA(Blip2Base):
                 param.requires_grad = True
             logging.info('LLAMA proj is not frozen')
 
-        if not freeze_lora:
-            # wrap llama model in peft model and run fine-tuning
-            if lora_config is None:
-                raise ValueError("Training LLAMA with LoRA requires specifiying a config with the parameters: [rank, alpha, dropout]")
+        logging.info('Loading llama_proj Done')
 
+        if lora_config is not None:
+            # wrap llama model in peft model and run fine-tuning
+            print("Wrapping LLaMA in LoRA params")
             peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM,
                                      inference_mode=False,
                                      r=lora_config.rank,
@@ -191,69 +102,11 @@ class NavLLAMA(Blip2Base):
             self.llama_model = get_peft_model(self.llama_model, peft_config)
                    
 
-        logging.info('Loading llama_proj Done')
-
-        self.max_txt_len = max_txt_len
-        self.end_sym = end_sym
-
-        if prompt_path:
-            with open(prompt_path, 'r') as f:
-                raw_prompts = f.read().splitlines()
-            filted_prompts = [raw_prompt for raw_prompt in raw_prompts if "<ImageHere>" in raw_prompt]
-            self.prompt_list = [prompt_template.format(p) for p in filted_prompts]
-            print('Load {} training prompts'.format(len(self.prompt_list)))
-            print('Prompt Example \n{}'.format(random.choice(self.prompt_list)))
-        else:
-            self.prompt_list = []
-
-
     def vit_to_cpu(self):
         self.ln_vision.to("cpu")
         self.ln_vision.float()
         self.visual_encoder.to("cpu")
         self.visual_encoder.float()
-
-    def encode_Qformer_visual(self, image_embeds, image_atts):
-        with self.maybe_autocast():
-            query_tokens = self.query_tokens.expand(image_embeds.shape[0], -1, -1)
-            query_output = self.Qformer.bert(
-                query_embeds=query_tokens,
-                encoder_hidden_states=image_embeds,
-                encoder_attention_mask=image_atts,
-                return_dict=True,
-            )
-            
-            q_hidden_state = query_output.last_hidden_state
-
-            # check if compressor exists
-            if self.qformer_compressor_cfg is not None:
-                q_hidden_state = self.qformer_compressor(q_hidden_state)
-            
-            inputs_llama = self.llama_proj(q_hidden_state)
-            atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(image_embeds.device)
-            
-        return inputs_llama, atts_llama
-    
-   
-    def embed_visual(self, imgs):
-        device = imgs.device
-        B, _, T, _, _ = imgs.size()
-        image = einops.rearrange(imgs, 'b c t h w -> (b t) c h w')
-        with self.maybe_autocast():
-            image_embeds = self.ln_vision(self.visual_encoder(image)).to(device)
-            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(device)
-
-        if self.use_qformer:
-            # embed images through qformer
-            inputs_llama, atts_llama = self.encode_Qformer_visual(image_embeds, image_atts)
-        else:
-            # just embed them through EVA VIT
-            inputs_llama, atts_llama = image_embeds, image_atts
-        
-        inputs_llama = einops.rearrange(inputs_llama, '(b t) q h -> b t q h', b=B)
-        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=B)
-           
-        return inputs_llama, atts_llama
 
     def tokenize_actions(self, actions):
         action_tkns = [self.llama_tokenizer(' '.join(act), return_tensors='pt', add_special_tokens=False) for act in actions]
@@ -266,7 +119,20 @@ class NavLLAMA(Blip2Base):
         action_embds = torch.cat(action_embds, dim=0)
         return action_embds
 
+    def embed_visual(self, imgs):
+        B, _, T, _, _ = imgs.size()
+        image = einops.rearrange(imgs, 'b c t h w -> (b t) c h w')
+        image_embeds, image_atts = self.vis_encoder.embed_visual(image)
+        
+        inputs_llama = self.llama_proj(image_embeds)
+        atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(image_embeds.device)
 
+        inputs_llama = einops.rearrange(inputs_llama, '(b t) q h -> b t q h', b=B)
+        atts_llama = einops.rearrange(atts_llama, '(b t) h -> b t h', b=B)
+
+        return inputs_llama, atts_llama
+
+    
     def prompt1_wrap(self, prompt, rgbs, goals, actions, masks):
         rgbs_embd, rgbs_attn = self.embed_visual(rgbs)
         goals_embd, goals_attn = self.embed_visual(goals)
@@ -394,72 +260,3 @@ class NavLLAMA(Blip2Base):
 
             yield actions
             
-       
-
-    @classmethod
-    def from_config(cls, cfg):
-        vit_model = cfg.get("vit_model", "eva_clip_g")
-        q_former_model = cfg.get("q_former_model", "https://storage.googleapis.com/sfr-vision-language-research/LAVIS/models/BLIP2/blip2_pretrained_flant5xxl.pth")
-        img_size = cfg.get("image_size")
-        num_query_token = cfg.get("num_query_token")
-        llama_model = cfg.get("llama_model")
-
-        drop_path_rate = cfg.get("drop_path_rate", 0)
-        use_grad_checkpoint = cfg.get("use_grad_checkpoint", False)
-        vit_precision = cfg.get("vit_precision", "fp16")
-        freeze_vit = cfg.get("freeze_vit", True)
-        freeze_qformer = cfg.get("freeze_qformer", True)
-        low_resource = cfg.get("low_resource", False)
-        device_8bit = cfg.get("device_8bit", 0)
-
-        prompt_path = cfg.get("prompt_path", "")
-        prompt_template = cfg.get("prompt_template", "")
-        max_txt_len = cfg.get("max_txt_len", 32)
-        end_sym = cfg.get("end_sym", '\n')
-        
-        freeze_llama_proj = cfg.get("freeze_llama_proj", True)
-        freeze_lora = cfg.get("freeze_lora", True)
-
-        llama_proj_model = cfg.get("llama_proj_model", '')
-        lora_config = cfg.get('lora_config', None)
-
-        qformer_compressor_cfg = cfg.get('qformer_compressor_cfg', None)
-        use_qformer = cfg.get('use_qformer', True)
-
-
-        model = cls(
-            vit_model=vit_model,
-            q_former_model=q_former_model,
-            img_size=img_size,
-            drop_path_rate=drop_path_rate,
-            use_grad_checkpoint=use_grad_checkpoint,
-            vit_precision=vit_precision,
-            freeze_vit=freeze_vit,
-            freeze_qformer=freeze_qformer,
-            num_query_token=num_query_token,
-            llama_model=llama_model,
-            prompt_path=prompt_path,
-            prompt_template=prompt_template,
-            max_txt_len=max_txt_len,
-            end_sym=end_sym,
-            low_resource=low_resource,
-            device_8bit=device_8bit,
-            freeze_llama_proj=freeze_llama_proj,
-            llama_proj_model=llama_proj_model,
-            freeze_lora=freeze_lora,
-            lora_config=lora_config,
-            qformer_compressor_cfg=qformer_compressor_cfg,
-            use_qformer=use_qformer
-        )
-
-        ckpt_path = cfg.get("ckpt", "")  # load weights of MiniGPT-4
-        if ckpt_path:
-            print("Load first Checkpoint: {}".format(ckpt_path))
-            ckpt = torch.load(ckpt_path, map_location="cpu")
-            msg = model.load_state_dict(ckpt['model'], strict=False)
-        ckpt_path_2 = cfg.get("ckpt_2", "")  
-        if ckpt_path_2:
-            print("Load second Checkpoint: {}".format(ckpt_path_2))
-            ckpt = torch.load(ckpt_path_2, map_location="cpu")
-            msg = model.load_state_dict(ckpt['model'], strict=False)
-        return model

@@ -1,6 +1,8 @@
 import unittest
 from collections import namedtuple
 
+from hydra.utils import instantiate
+
 from lmnav.common.config import Config
 from lmnav.common.registry import registry
 from lmnav.config.default import get_config
@@ -11,15 +13,10 @@ from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 from lmnav.common.episode_processor import apply_transforms_inputs
 
 import torch
-import einops
 
 def _init_components(cfg_path, device):
     config = get_config(cfg_path)
-    model_config = config.train.policy
-    model_cls = registry.get_model_class(model_config._target_)
-    model = model_cls.from_config(model_config).to(device)
-
-    vis_processor = registry.get_processor_class(model_config.vis_processor._target_).from_config(model_config.vis_processor)
+    model = instantiate(config.train.policy)
 
     agent = model.to(device)
     agent.train()
@@ -33,7 +30,7 @@ def _init_components(cfg_path, device):
     print("Params with gradients")
     print(params_with_gradients)
 
-    return agent, vis_processor
+    return agent
 
 
 def construct_dummy_inputs(B, T):
@@ -47,11 +44,12 @@ def construct_dummy_inputs(B, T):
 class TestVITOnly(unittest.TestCase):
     
     def test_vit_only(self):
-        cfg_path = "train/nav_llama/lora/1env_only_vit"
+        cfg_path = "train/nav_llama/lora/1env_clip"
         device = 'cuda'
         B, T = 2, 20
 
-        model, vis_processor = _init_components(cfg_path, device)
+        model = _init_components(cfg_path, device)
+        vis_processor = model.vis_encoder.vis_processor
         goals, rgbs, actions = construct_dummy_inputs(B, T)
         rgbs, goals, actions = apply_transforms_inputs(vis_processor, rgbs, goals, actions)
 
@@ -60,13 +58,9 @@ class TestVITOnly(unittest.TestCase):
         rgbs = rgbs.to(device)
         goals = goals.to(device) 
 
-        import pdb
-        pdb.set_trace()
-        output = model.embed_visual(rgbs)
-        loss = output.loss.item()
+        output, atts = model.embed_visual(rgbs)
 
-        self.assertTrue(loss >= 0)
-
+        print(output.shape)
     
 if __name__ == '__main__':
     unittest.main()

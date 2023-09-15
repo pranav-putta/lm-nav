@@ -16,9 +16,9 @@ defaults:
     
   # set up train
   - /runner@train: bc
-  - /policy/nav_llama@train.policy: lora
+  - /models/policy/nav_llama/qformer@train.policy: lora
   - /dataset@train.dataset: offline_episode
-  - override /policy/nav_llama@train.policy: q_compression 
+  - override /models/policy/nav_llama/qformer@train.policy: q_compression 
     
    
   - _self_

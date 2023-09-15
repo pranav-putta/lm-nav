@@ -12,7 +12,7 @@ defaults:
 
     # set up generator
   - /generator: base
-  - /policy/old_eai_policy@generator.policy: old_eai_policy
+  - /models/policy/old_eai_policy@generator.policy: old_eai_policy
   - /generator/filter_method: dtg
   - /habitat_baselines/rl/policy/obs_transforms:
     - resize_shortest_edge_base 

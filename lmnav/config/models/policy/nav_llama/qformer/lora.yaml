@@ -1,0 +1,22 @@
+defaults:
+  - /models/policy/nav_llama/base_nav_llama@
+  - /models/vis_encoder@vis_encoder: qformer
+ 
+_target_: "lmnav.models.nav_llama.NavLLAMA"
+
+freeze_llama_proj: False
+low_resource: False
+  
+lora_config:
+  rank: 8
+  alpha: 32
+  dropout: 0.1
+
+vis_encoder:
+  freeze_vit: True
+  freeze_qformer: True
+  vis_processor:
+    _target_: "lmnav.processors.video_processor.AlproVideoTrainProcessor"
+    image_size: 224
+    n_frms: 8
+ 

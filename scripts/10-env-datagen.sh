@@ -4,7 +4,7 @@
 #SBATCH --error logs/10e-datagen.err
 #SBATCH --gres gpu:8
 #SBATCH --nodes 1
-#SBATCH --cpus-per-task 7
+#SBATCH --cpus-per-task 12
 #SBATCH --ntasks-per-node 8
 #SBATCH --partition long
 #SBATCH --signal USR1@600

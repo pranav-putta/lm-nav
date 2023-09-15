@@ -9,44 +9,42 @@ defaults:
   # set up experiment misc.
   - /exp: base
   - /logger@exp.logger: console
-    
-  # set up train
-  - /runner@train: bc
-  - /lr@train.lr_schedule: exponential
-  - /policy/nav_llama@train.policy: lora 
-  - /dataset@train.dataset: offline_episode
-    
+   
   # set up eval
   - /runner@eval: eval
   - /dataset@eval.dataset: offline_episode
-    
+
+  # set up train
+  - /runner@train: bc
+  - /lr@train.lr_schedule: exponential
+  - /dataset@train.dataset: offline_episode
+  - /models/policy/nav_llama/clip@train.policy: lora 
+ 
   - _self_
 
 
 exp:
-  name: "lmnav_imagenav_linear"
+  name: "lmnav_imagenav_clip"
   root_dir: "experiments/"
   logger:
     project: "lmnav"
-    name: "lmnav imagenav linear"
+    name: "lmnav imagenav clip"
     group: "train"
 
 train:
   batch_size: 2
-  num_envs: 10
   epochs: 10_000
-  bc_epochs: 10
+  bc_epochs: 2
   grad_accums: 6
+  episodes_per_batch: 24
   lr_schedule:
     lr: 2.5e-4
     gamma: 0.9995
-  max_trajectory_length: 22    
+  max_trajectory_length: 200    
   dataset:
     artifact: 
       name: "offline_00744"
       version: "latest"
-  policy:
-    use_qformer: False
  
 eval:
   policy: ${..train.policy}

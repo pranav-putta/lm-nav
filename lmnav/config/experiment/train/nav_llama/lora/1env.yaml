@@ -13,7 +13,7 @@ defaults:
   # set up train
   - /runner@train: bc
   - /lr@train.lr_schedule: constant
-  - /policy/nav_llama@train.policy: lora 
+  - /models/policy/nav_llama/qformer@train.policy: lora 
   - /dataset@train.dataset: offline_episode
     
   # set up eval
