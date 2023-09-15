@@ -14,6 +14,7 @@ from habitat_baselines.utils.info_dict import extract_scalars_from_info
 
 import numpy as np
 import random
+from hydra.utils import instantiate
 
 from collections import namedtuple
 
@@ -161,11 +162,9 @@ class BCTrainer:
            
             
     def setup_student(self):
-        model_config = self.config.train.policy
-        model_cls = llama_registry.get_model_class(model_config._target_)
-        model = model_cls.from_config(model_config).to(self.device)
+        model = instantiate(self.config.train.policy)
 
-        self.vis_processor = llama_registry.get_processor_class(model_config.vis_processor._target_).from_config(model_config.vis_processor)
+        self.vis_processor = model.vis_encoder.vis_processor
 
         agent = model.to(self.device)
         agent.train()
