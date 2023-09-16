@@ -102,11 +102,17 @@ class NavLLAMA(Blip2Base):
             self.llama_model = get_peft_model(self.llama_model, peft_config)
                    
 
+    @property
+    def hidden_size(self):
+        return self.llama_model.config.hidden_size
+    
+    
     def vit_to_cpu(self):
         self.ln_vision.to("cpu")
         self.ln_vision.float()
         self.visual_encoder.to("cpu")
         self.visual_encoder.float()
+    
 
     def tokenize_actions(self, actions):
         action_tkns = [self.llama_tokenizer(' '.join(act), return_tensors='pt', add_special_tokens=False) for act in actions]
