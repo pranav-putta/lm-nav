@@ -43,6 +43,8 @@ class RolloutStorage:
         to fill the space when histories are of different length
         2. Keep one continuous episode accumulation with state history max, and
         use [sep] tokens to differentiate between trajectories
+         > this doesn't work actually, any past trajectory is screwed up
+            becaues the positional embedding needs to be shifted
 
         Again, this assumes that self.max_steps = model max trajectory
         """

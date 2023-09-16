@@ -1,16 +1,17 @@
-import argparse
 import os
+import argparse
 import torch
 import random
 import torch.distributed
 import torch.nn.functional as F
+from torch import nn
 from omegaconf import OmegaConf
 
 import numpy as np
 
 from pprint import pprint
 from lmnav.dataset.data_gen import  _init_envs
-from lmnav.common.episode_processor import apply_transforms_inputs, construct_subsequences, extract_inputs_from_dataset 
+from lmnav.common.episode_processor import apply_transforms_inputs 
 
 from habitat import logger
 from hydra.utils import instantiate
@@ -18,6 +19,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from lmnav.config.default import get_config
 from lmnav.common.rollout_storage import RolloutStorage
 from lmnav.common.registry import registry
+from lmnav.models.value_head import ValueHead
+from lmnav.models.ppo_agent import PPOAgent
+from lmnav.common.lr_utils import get_lr_schedule_lambda
 
 from habitat.config import read_write
 from habitat_baselines.rl.ddppo.ddp_utils import (init_distrib_slurm, get_distrib_size, rank0_only)
@@ -70,57 +74,52 @@ class PPOTrainer:
         
         self.envs, _ = _init_envs(self.config) 
         
-        self.actor = self.setup_actor()
-        self.critic = self.setup_critic()
+        self.model = self.setup_actor_critic()
         self.action_generator = self.environment_sample_generator()
 
         # TODO; update img size to something from config
         self.rollouts = RolloutStorage(self.envs.num_envs, self.config.train.num_rollout_steps)
         self.epoch = 0
-        self.lr_scheduler = None
         self.writer = registry.get_logger_class(self.config.exp.logger._target_)(self.config)
 
-        optim_params = list(filter(lambda p: p.requires_grad, self.actor.parameters()))
-        self.optim = torch.optim.Adam(params=optim_params, lr=self.config.train.lr_schedule.lr)
+        actor_optim_params = list(filter(lambda p: p.requires_grad, self.model.actor.parameters()))
+        critic_optim_params = list(filter(lambda p: p.requires_grad, self.model.critic.parameters()))
+        self.optim = torch.optim.Adam(params=[
+            {'params': actor_optim_params, 'lr': self.config.train.lr_schedule.actor.lr},
+            {'params': critic_optim_params, 'lr': self.config.train.lr_schedule.critic.lr}
+        ])
         
-        if self.config.train.lr_schedule._target_ == "exponential":
-            self.lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=self.optim, gamma=self.config.train.lr_schedule.gamma)
-        elif self.config.train.lr_schedule._target_ == "constant":
-            self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=self.optim, lr_lambda=[lambda _: 1])
-        else:
-            raise ValueError(f"{self.config.train.lr_schedule._target_} lr scheduler not found")
-
+        self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=self.optim,
+                                                              lr_lambda=[get_lr_schedule_lambda(self.config.train.lr_schedule.actor),
+                                                                         get_lr_schedule_lambda(self.config.train.lr_schedule.critic)])
         
-       
-
-    def setup_actor(self):
-        model = instantiate(self.config.train.policy)
-
-        self.vis_processor = model.vis_encoder.vis_processor
-
-        actor = model.to(self.device)
-        actor.train()
+        
+    def setup_actor_critic(self):
+        """
+        Sets up the actor and critic modules, wraps them in DDP if distributed is set
+        """
+        actor = instantiate(self.config.train.policy.actor)
+        critic = instantiate(self.config.train.policy.critic, in_dim=actor.hidden_size)
+        model = PPOAgent(actor, critic)
+        model = model.to(self.device)
+        
+        self.vis_processor = actor.vis_encoder.vis_processor
         
         if self.is_distributed:
             print(f"Setting up DDP on GPU {self.rank}")
-            actor = DDP(actor, device_ids=[self.rank])
+            model = DDP(model, device_ids=[self.rank])
 
-        num_params = sum([param.numel() for param in actor.parameters()])
-        num_trainable_params = sum([param.numel() for param in actor.parameters() if param.requires_grad])
-        
-        print(f"Done setting up student! Total params: {num_params}. Trainable Params: {num_trainable_params}")
-        
-        params_with_gradients = [name for name, param in model.named_parameters() if param.requires_grad]
         if rank0_only():
+            num_params = sum([param.numel() for param in model.parameters()])
+            num_trainable_params = sum([param.numel() for param in model.parameters() if param.requires_grad])
+            print(f"Done setting up student! Total params: {num_params}. Trainable Params: {num_trainable_params}")
+            
+            params_with_gradients = [name for name, param in model.named_parameters() if param.requires_grad]
             print("Params with gradients")
             pprint(params_with_gradients)
 
-        return actor
-
-    
-    def setup_critic(self):
-        return None
-
+        return model
+        
     def _all_reduce(self, t):
         if not self.is_distributed:
             return t
@@ -130,14 +129,15 @@ class PPOTrainer:
         torch.distributed.all_reduce(t)
 
         return t.to(device=orig_device)
+    
  
     def save_checkpoint(self):
         # only save parameters that have been updated
         param_grad_dict = {
-            k: v.requires_grad for k, v in self.actor.named_parameters()
+            k: v.requires_grad for k, v in self.model.named_parameters()
         }
 
-        state_dict = self.actor.state_dict()
+        state_dict = self.model.state_dict()
         for k in list(state_dict.keys()):
             if k in param_grad_dict.keys() and not param_grad_dict[k]:
                 del state_dict[k]
@@ -160,10 +160,13 @@ class PPOTrainer:
     def environment_sample_generator(self):
         # we use an abstract action generator fn so that different models
         # can preserve their state in the way that makes sense for them
-        action_generator = self.actor.action_generator(envs.num_envs, self.config.train.deterministic)
+        action_generator = self.model.action_generator(self.envs.num_envs, self.config.train.deterministic)
 
         observations = self.envs.reset()
         dones = [False for _ in range(self.envs.num_envs)]
+        
+        # insert initial obsevations
+        self.rollouts.insert(observations)
         
         while True:
             with torch.no_grad():
@@ -181,7 +184,6 @@ class PPOTrainer:
             
         
     def train_epoch(self, epoch):
-        
         # first collect environment samples
         next(self.action_generator)        
          
@@ -190,13 +192,16 @@ class PPOTrainer:
         p_idxs = torch.randperm(len(rgbs)).view(self.config.train.ppo_epochs,
                                                 self.config.train.grad_accums,
                                                 self.config.train.batch_size)
+
+        total_loss = 0
         for ppo_epoch in range(self.config.train.ppo_epochs):
             for g in range(self.config.train.grad_accums):
                 idxs = p_idxs[ppo_epoch, g]
                 
                  # construct batch
                 rgbs_t, goals_t, actions_t = map(lambda t: [t[i] for i in idxs], (rgbs, goals, actions))
-                T = self.config.train.policy.max_trajectory_length 
+                T = self.config.train.policy.actor.max_trajectory_length 
+                
                 # pad inputs to T
                 mask_t = torch.stack([torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])]) for t in rgbs_t])
                 mask_t = mask_t.bool()
@@ -206,19 +211,37 @@ class PPOTrainer:
                 rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
 
                 if g < self.config.train.grad_accums - 1:
-                    with self.actor.no_sync():
+                    with self.model.no_sync():
                         # perform ppo update
-                        pass
+                        outputs = self.model(rgbs_t, goals_t, actions_t, mask_t)
+                        loss = outputs.loss
+                        total_loss += loss.item()
+                        loss.backward()
+                        
                 else:
-                    # perform ppo update
-                    pass
+                    outputs = self.model(rgbs_t, goals_t, actions_t, mask_t)
+                    loss = outputs.loss
+                    total_loss += loss.item()
+                    
+                    loss.backward()
+                    self.optim.step()
+                    self.optim.zero_grad()
            
                 rgbs_t.to('cpu')
                 goals_t.to('cpu')
                     
+            
+            avg_loss = total_loss / (self.config.train.ppo_epochs * self.config.train.grad_accums)
+            actor_lr = self.lr_scheduler.get_last_lr()[0]
+            critic_lr = self.lr_scheduler.get_last_lr()[1]
+            
             return {
-                # return stats here
+                'loss': avg_loss,
+                'epoch': epoch,
+                'actor_lr': actor_lr,
+                'critic_lr': critic_lr
             }
+    
     
     def train(self):
         self.initialize_train()

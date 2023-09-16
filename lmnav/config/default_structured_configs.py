@@ -77,6 +77,21 @@ class CLIPVisualEncoderConfig(BaseVisualEncoderConfig):
 class BasePolicyConfig(BaseModelConfig):
     pass
 
+
+@dataclass
+class ValueHeadPolicyConfig(BasePolicyConfig):
+    _target_: str = "lmnav.models.value_head.ValueHead"
+    in_dim: int = MISSING
+    p_dropout: float = 0.2    
+
+
+@dataclass
+class ActorCriticPolicyConfig(BasePolicyConfig):
+    _target_: str = "lmnav.models.actor_critic.ActorCriticModel"
+    actor: BasePolicyConfig = MISSING
+    critic: BasePolicyConfig = MISSING
+
+
 @dataclass
 class OldEAIPolicyConfig(BasePolicyConfig):
     _target_: str = "old_eai_policy"
@@ -129,28 +144,33 @@ class OfflineEpisodeDatasetConfig(BaseDatasetConfig):
     
     
 ### TRAINER CONFIGS ###
-   
-@dataclass
-class BaseRunnerConfig:
-    policy: BasePolicyConfig = MISSING
-    dataset: BaseDatasetConfig = MISSING
-    
-    pretrained_artifact: ArtifactConfig = MISSING
-    
-    num_envs: int = MISSING
-
 @dataclass
 class BaseLRConfig:
     lr: float = MISSING
 
+    
 @dataclass
 class ConstantLRConfig(BaseLRConfig):
     _target_: str = 'constant'
 
+    
 @dataclass
 class ExponentialLRConfig(BaseLRConfig):
     _target_: str = 'exponential'
     gamma: float = MISSING
+
+@dataclass
+class ActorCriticLRConfig(BaseLRConfig):
+    _target_: str = 'group'
+    actor: BaseLRConfig = MISSING
+    critic: BaseLRConfig = MISSING
+    
+@dataclass
+class BaseRunnerConfig:
+    policy: BasePolicyConfig = MISSING
+    pretrained_artifact: ArtifactConfig = MISSING
+    
+    num_envs: int = MISSING
 
 
 @dataclass
@@ -158,11 +178,12 @@ class TrainRunnerConfig(BaseRunnerConfig):
     epochs: int = MISSING
     batch_size: int = MISSING
     ckpt_freq: int = 50
-    episodes_per_batch: int = MISSING
     grad_accums: int = MISSING
 
 @dataclass
 class BCTrainRunnerConfig(TrainRunnerConfig):
+    dataset: BaseDatasetConfig = MISSING
+    episodes_per_batch: int = MISSING
     bc_epochs: int = 10 
     lr_schedule: BaseLRConfig = MISSING
 
@@ -173,6 +194,11 @@ class PPOTrainRunnerConfig(TrainRunnerConfig):
     critic_lr_schedule: BaseLRConfig = MISSING
     num_rollout_steps: int = 64
     deterministic: bool = False
+
+@dataclass
+class PPOTrainRunnerConfig(TrainRunnerConfig):
+    policy: ActorCriticPolicyConfig = MISSING
+    lr_schedule: ActorCriticLRConfig = MISSING
 
 @dataclass
 class EvalRunnerConfig(BaseRunnerConfig):

@@ -1,0 +1,56 @@
+# @package _global_
+
+defaults:
+  # set up habitat 
+  - /env@habitat_baselines: habitat_baselines
+  - /env@habitat: habitat 
+  - /dataset/imagenav/hm3d_1env
+    
+  # set up experiment misc.
+  - /exp: base
+  - /logger@exp.logger: console
+    
+  # set up train
+  - /runner@train: ppo
+  - /lr@train.lr_schedule: constant
+  - /models/policy/nav_llama/qformer@train.policy: lora 
+    
+  # set up eval
+  - /runner@eval: eval
+  - /dataset@eval.dataset: offline_episode
+    
+  - _self_
+
+
+exp:
+  name: "lmnav_imagenav_1env"
+  root_dir: "experiments/"
+  logger:
+    project: "lmnav"
+    name: "lmnav lora 1env lr=2.5e-5"
+    group: "train"
+    tags: ['lora']
+
+train:
+  batch_size: 2
+  epochs: 10_000
+  bc_epochs: 10
+  grad_accums: 6
+  episodes_per_batch: 10
+  lr_schedule:
+    lr: 2.5e-5
+  max_trajectory_length: 22    
+  num_envs: 10
+        
+eval:
+  policy: ${..train.policy}
+  num_episodes: 50
+  save_videos: True
+  deterministic: False
+  num_envs: 10
+  dataset:
+    artifact:
+      name: "offline_00744"
+      version: "latest"
+  pretrained_artifact:
+    name: ${...exp.name}
