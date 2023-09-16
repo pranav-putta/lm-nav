@@ -178,7 +178,7 @@ class BCTrainer:
     
     def train_epoch(self, epoch):
         num_samples = self.config.train.batch_size
-        max_state_length = self.config.train.max_trajectory_length
+        max_state_length = self.agent.max_trajectory_length
         num_bc_epochs = self.config.train.bc_epochs
         num_grad_accums = self.config.train.grad_accums
 
@@ -197,7 +197,7 @@ class BCTrainer:
                 idxs = p_idxs[bc_epoch, i] 
                 # construct batch
                 rgbs_t, goals_t, actions_t = map(lambda t: [t[i] for i in idxs], (rgbs, goals, actions))
-                T = max_state_length # TODO update this to max length, but for testing keep at T
+                T = max_state_length 
                 # pad inputs to T
                 mask_t = torch.stack([torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])]) for t in rgbs_t])
                 mask_t = mask_t.bool()

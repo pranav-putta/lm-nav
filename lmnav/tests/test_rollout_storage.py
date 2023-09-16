@@ -19,7 +19,7 @@ class TestRolloutStorage(unittest.TestCase):
         self.T = 22
         self.max_steps = 22
         self.goals, self.rgbs, self.actions = construct_dummy_inputs(self.B)
-        self.rollout_storage = RolloutStorage(self.B, self.max_steps, 224)
+        self.rollout_storage = RolloutStorage(self.B, self.max_steps)
 
         # do initial observation insertion
         self.rollout_storage.insert({'rgb': self.rgbs, 'imagegoal': self.goals}) 

@@ -2,12 +2,12 @@ import torch
 
 class RolloutStorage:
 
-    def __init__(self, num_envs, max_steps, img_size):
+    def __init__(self, num_envs, max_steps):
         self.num_envs = num_envs
         self.max_steps = max_steps
         
-        self.rgbs = torch.zeros(num_envs, max_steps + 1, 3, img_size, img_size, dtype=torch.int8) 
-        self.goals = torch.zeros(num_envs, max_steps + 1, 3, img_size, img_size, dtype=torch.int8)
+        self.rgbs = torch.zeros(num_envs, max_steps + 1, 3, 640, 480, dtype=torch.int8) 
+        self.goals = torch.zeros(num_envs, max_steps + 1, 3, 640, 480, dtype=torch.int8)
         self.actions = torch.zeros(num_envs, max_steps + 1, dtype=torch.int8)
         self.dones = torch.zeros(num_envs, max_steps + 1,  dtype=torch.bool)
         self.rewards = torch.zeros(num_envs, max_steps + 1, dtype=torch.float16)
@@ -35,11 +35,14 @@ class RolloutStorage:
         
         self.current_step_idx = 0
 
-    def _construct_episodes_tensor(self):
+    def generate_samples(self):
         """
         TODO; is there a better way to do this??
-        reshapes the rollouts into partial episodes since we can't use
-        hidden states well with transformers;they can't be parallelized well
+
+        1. Take episode sequences with history and apply mask or [sep] tokens
+        to fill the space when histories are of different length
+        2. Keep one continuous episode accumulation with state history max, and
+        use [sep] tokens to differentiate between trajectories
 
         Again, this assumes that self.max_steps = model max trajectory
         """
@@ -53,18 +56,8 @@ class RolloutStorage:
             slices = [slice(ends[i], ends[i + 1] + 1) for i in range(len(ends) - 1)] 
             
             for s in slices:
-                print(s)
-                print(self.rgbs[b, s].shape)
                 samples.append(tuple(map(lambda t: t[b, s], (self.rgbs, self.goals, self.rewards, self.actions))))
         
         rgbs, goals, actions, rewards = zip(*samples)
-        print([t.shape for t in rgbs]) 
-        
-    def generate_samples(self, batch_size):
-        # TODO; this currently assumes that self.max_steps is = model max trajectory length.
-        # in the future, we need to add hidden_state vectors to store previous states
-        # the hidden_state vectors also need to be adaptable
-        pass
-
-        
+        return rgbs, goals, actions, rewards
 
