@@ -12,7 +12,9 @@ defaults:
     
   # set up train
   - /runner@train: ppo
-  - /lr@train.lr_schedule: constant
+  - /lr@train.lr_schedule: actor_critic
+  - /lr@train.lr_schedule.actor: constant
+  - /lr@train.lr_schedule.critic: constant
   - /models/policy/nav_llama/qformer@train.policy: lora 
     
   # set up eval
@@ -32,15 +34,24 @@ exp:
     tags: ['lora']
 
 train:
+  epochs: 10_000
+  num_envs: 10
   batch_size: 120
   minibatch_size: 2
+  num_grad_accums: 6
 
-  epochs: 10_000
-  episodes_per_batch: 10
+  max_rollout_steps: 64
+  ppo_epochs: 2
+
+  policy:
+    
+    
   lr_schedule:
-    lr: 2.5e-5
-  max_trajectory_length: 22    
-  num_envs: 10
+    actor:
+      lr: 2.5e-5
+    critic:
+      lr: 2.5e-5
+        
         
 eval:
   policy: ${..train.policy}

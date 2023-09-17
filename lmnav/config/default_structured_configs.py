@@ -172,9 +172,9 @@ class BaseRunnerConfig:
 @dataclass
 class TrainRunnerConfig(BaseRunnerConfig):
     epochs: int = MISSING
-    num_grad_accums: int = MISSING
-    minibatch_size: int = MISSING
     batch_size: int = MISSING
+    minibatch_size: int = MISSING
+    num_grad_accums: int = MISSING
     ckpt_freq: int = 50
 
 @dataclass
@@ -224,10 +224,12 @@ cs.store(group='dataset', name='offline_episode', node=OfflineEpisodeDatasetConf
 cs.store(group='lr', name='base', node=BaseLRConfig)
 cs.store(group='lr', name='constant', node=ConstantLRConfig)
 cs.store(group='lr', name='exponential', node=ExponentialLRConfig)
+cs.store(group='lr', name='actor_critic', node=ActorCriticLRConfig)
 
 cs.store(group='runner', name='base', node=BaseRunnerConfig)
 cs.store(group='runner', name='base_train', node=TrainRunnerConfig)
 cs.store(group='runner', name='bc', node=BCTrainRunnerConfig)
 cs.store(group='runner', name='eval', node=EvalRunnerConfig)
+cs.store(group='runner', name='ppo', node=PPOTrainRunnerConfig)
 
 
