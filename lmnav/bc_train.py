@@ -150,8 +150,7 @@ class BCTrainer:
         self.data_loader = iter(self.data_loader)
 
         self.epoch = 0
-
-        if self.config.exp.logger.resume_id is not None and rank0_only():
+        if self.config.exp.logger.resume_id is not None:
             ckpt_folder = os.path.join(self.exp_folder, 'ckpts')
             ckpts = os.listdir(ckpt_folder)
             latest_ckpt = list(sorted(ckpts, key=lambda x: int(x.split('.')[1])))[-1]
@@ -236,7 +235,6 @@ class BCTrainer:
         del rgbs
         del goals
         del actions
-        gc.collect()
             
         avg_loss = total_loss / (num_bc_epochs * num_grad_accums)
         current_lr = self.lr_scheduler.get_last_lr()[0]
