@@ -8,13 +8,14 @@ defaults:
     
   # set up experiment misc.
   - /exp: base
-  - /logger@exp.logger: wb
+  - /logger@exp.logger: console
     
   # set up train
-  - /runner@train: bc
-  - /lr@train.lr_schedule: constant
+  - /runner@train: ppo
+  - /lr@train.lr_schedule: actor_critic
+  - /lr@train.lr_schedule.actor: constant
+  - /lr@train.lr_schedule.critic: constant
   - /models/policy/nav_llama/qformer@train.policy: lora 
-  - /dataset@train.dataset: offline_episode
     
   # set up eval
   - /runner@eval: eval
@@ -24,28 +25,28 @@ defaults:
 
 
 exp:
-  name: "lmnav_imagenav_1env"
-  root_dir: "experiments/"
-  logger:
-    project: "lmnav"
-    name: "lmnav lora 1env lr=2.5e-5"
-    group: "train"
-    tags: ['lora']
+  group: "1env"
+  job_type: "rl"
+  tags: ["lora"]
 
 train:
+  steps: 10_000
+  num_envs: 10
   batch_size: 120
   minibatch_size: 2
+  num_grad_accums: 6
 
-  epochs: 10_000
-  episodes_per_batch: 10
+  max_rollout_steps: 64
+  ppo_epochs: 2
+
   lr_schedule:
-    lr: 2.5e-5
-  policy:
-    max_trajectory_length: 22    
-  dataset:
-    artifact:
-      name: "offline_00744"
-      version: "latest"
+    actor:
+      lr: 2.5e-5
+    critic:
+      lr: 2.5e-5
+    
+  store_artifact:
+    name: ${...exp.name}
         
 eval:
   policy: ${..train.policy}
@@ -57,6 +58,4 @@ eval:
     artifact:
       name: "offline_00744"
       version: "latest"
-  pretrained_artifact:
-    name: ${...exp.name}
-        
+  load_artifact: ${...exp.store_artifact}

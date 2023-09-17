@@ -12,9 +12,13 @@ from tqdm import tqdm
 
 class BaseLogger(ABC):
     
-    def __init__(self, config):
+    def __init__(self):
         pass
 
+    @abstractmethod
+    def open(self, cfg):
+        pass
+        
     @abstractmethod
     def write(self, log_dict):
         pass
@@ -37,16 +41,19 @@ class BaseLogger(ABC):
 
 
 
-@registry.register_logger('console')
 class ConsoleLogger(BaseLogger):
 
+    def open(self, cfg):
+        pass
+        
     def write(self, log_dict):
         print(log_dict)
         
     def save_artifact(self, name, atype, filepath):
-        pass
+        pass 
 
-    def load_dataset(self, name):
+    def load_dataset(self, dataset_cfg):
+        name = f"{dataset_cfg.artifact.name}:{dataset_cfg.artifact.version}" 
         name = name.split(':')[0]
         dirpath = f'data/datasets/lmnav/{name}'
         files = [os.path.join(dirpath, path) for path in os.listdir(dirpath)]
@@ -58,11 +65,10 @@ class ConsoleLogger(BaseLogger):
     def load_model_versions(self, artifact):
         raise NotImplementedError
 
-@registry.register_logger('wb')
 class WandBLogger(BaseLogger):
 
-    def __init__(self, cfg):
-        config = cfg.exp.logger
+    def open(self, cfg):
+        config = cfg.exp
         wb_kwargs = {}
         if config.project != "":
             wb_kwargs["project"] = config.project
@@ -74,6 +80,8 @@ class WandBLogger(BaseLogger):
             wb_kwargs["tags"] = config.tags
         if config.notes is not None:
             wb_kwargs["notes"] = config.notes
+        if config.job_type is not None:
+            wb_kwargs['job_type'] = config.job_type
             
         slurm_info_dict = {
             k[len("SLURM_") :]: v

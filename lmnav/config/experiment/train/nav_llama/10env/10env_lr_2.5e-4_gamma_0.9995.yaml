@@ -4,15 +4,16 @@ defaults:
   # set up habitat 
   - /env@habitat_baselines: habitat_baselines
   - /env@habitat: habitat 
-  - /dataset/imagenav/hm3d_1env
+  - /dataset/imagenav/hm3d_10env
     
   # set up experiment misc.
   - /exp: base
-  - /logger@exp.logger: console
+  - /logger@exp.logger: wb
     
   # set up train
   - /runner@train: bc
-  - /models/policy/nav_llama/qformer@train.policy: linear 
+  - /lr@train.lr_schedule: exponential
+  - /models/policy/nav_llama/qformer@train.policy: lora 
   - /dataset@train.dataset: offline_episode
     
   # set up eval
@@ -23,29 +24,38 @@ defaults:
 
 
 exp:
-  name: "lmnav_imagenav_linear"
+  name: "lmnav_imagenav_10envs_lr_2.5e-4_gamma_0.9995"
   root_dir: "experiments/"
   logger:
     project: "lmnav"
-    name: "lmnav imagenav linear"
+    name: "lmnav lora 10envs lr schedule lr=2.5e-4, gamma=0.9995"
     group: "train"
+    tags: ['lora', 'exp_lr_sched']
 
 train:
   batch_size: 120
   minibatch_size: 2
-  epochs: 10_000
-  lr: 1e-4
+  num_grad_accums: 6
+
+  steps: 10_000
+  episodes_per_batch: 10
+  lr_schedule:
+    lr: 2.5e-4
+    gamma: 0.9995
   policy:
     max_trajectory_length: 22    
-  dataset:
-    artifact: "offline_00744:latest"
+  dataset: 
+    artifact: 
+      name: "offline_10envs"
+      version: "latest"
 
- 
 eval:
   policy: ${..train.policy}
-  ckpt: "ckpt.*.pth"
   num_episodes: 50
   save_videos: True
   deterministic: False
   num_envs: 10
-    
+  pretrained_artifact:
+    name: ${...exp.name}
+    version: "latest"
+  

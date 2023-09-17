@@ -6,6 +6,7 @@
 """
 
 import io
+import torch.distributed
 import tracemalloc
 import json
 import logging
@@ -448,4 +449,13 @@ def display_snapshot(snapshot, key_type='lineno', limit=10):
     total = sum(stat.size for stat in top_stats)
     print("Total allocated size: %.1f KiB" % (total / 1024))
 
+def all_reduce(is_distributed, device, t):
+    if not is_distributed:
+        return t
+
+    orig_device = t.device
+    t = t.to(device)
+    torch.distributed.all_reduce(t)
+
+    return t.to(device=orig_device)
 

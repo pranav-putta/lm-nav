@@ -5,31 +5,30 @@ from typing import Optional
 from omegaconf import MISSING
 import torch
 
-### LOGGER CONFIGS ###
 @dataclass
 class LoggerConfig:
     _target_: str = MISSING
-    project: str = 'lmnav'
-    name: Optional[str] = MISSING
-    group: str = MISSING
-    tags: Optional[list] = None
-    notes: Optional[str] = None
-    resume_id: Optional[str] = None
     
-
 @dataclass
 class WBLoggerConfig(LoggerConfig):
-    _target_: str = 'wb'
+    _target_: str = 'lmnav.common.writer.WandBLogger'
 
 @dataclass
 class ConsoleLoggerConfig(LoggerConfig):
-    _target_: str = 'console'
+    _target_: str = 'lmnav.common.writer.ConsoleLogger'
 
 @dataclass
 class ExperimentConfig:
-    name: str = MISSING
-    root_dir: str = 'experiments/'
+    name: Optional[str] = None
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    root_dir: str = 'experiments/'
+    project: str = 'lmnav'
+    group: str = MISSING
+    job_type: str = MISSING
+    tags: Optional[list] = None
+    notes: Optional[str] = None
+    resume_id: Optional[str] = None
+
     logger: LoggerConfig = MISSING
 
 ### ARTIFACT CONFIG ###
@@ -166,12 +165,14 @@ class ActorCriticLRConfig(BaseLRConfig):
 @dataclass
 class BaseRunnerConfig:
     policy: BasePolicyConfig = MISSING
-    pretrained_artifact: ArtifactConfig = MISSING
+    dataset: BaseDatasetConfig = MISSING
+    load_artifact: Optional[ArtifactConfig] = None
+    store_artifact: Optional[ArtifactConfig] = None
     num_envs: int = MISSING
 
 @dataclass
 class TrainRunnerConfig(BaseRunnerConfig):
-    epochs: int = MISSING
+    steps: int = MISSING
     batch_size: int = MISSING
     minibatch_size: int = MISSING
     num_grad_accums: int = MISSING
@@ -179,7 +180,6 @@ class TrainRunnerConfig(BaseRunnerConfig):
 
 @dataclass
 class BCTrainRunnerConfig(TrainRunnerConfig):
-    dataset: BaseDatasetConfig = MISSING
     episodes_per_batch: int = MISSING
     lr_schedule: BaseLRConfig = MISSING
 

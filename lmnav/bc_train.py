@@ -1,7 +1,6 @@
 import pickle
 
 import einops
-import gc
 
 from pprint import pprint
 from habitat.utils.visualizations.utils import observations_to_image
@@ -25,8 +24,10 @@ import torch.distributed
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from torch.utils.data import DataLoader
+from lmnav.common.lr_utils import get_lr_schedule_lambda
 from lmnav.common.resumable_random_sampler import ResumableRandomSampler
 from lmnav.config.default import get_config
+from lmnav.common.utils import all_reduce
 
 from lmnav.dataset.data_gen import  _init_envs
 from lmnav.models import *
@@ -34,7 +35,6 @@ from lmnav.dataset.offline_episode_dataset import OfflineEpisodeDataset
 from lmnav.processors import *
 from lmnav.common.episode_processor import apply_transforms_inputs, construct_subsequences, extract_inputs_from_dataset 
 
-from lmnav.common.registry import registry
 from lmnav.common.writer import *
 from lmnav.dataset.offline_episode_dataset import *
 
@@ -42,14 +42,28 @@ from lmnav.dataset.offline_episode_dataset import *
 os.environ["MAGNUM_LOG"] = "quiet"
 os.environ["HABITAT_SIM_LOG"] = "quiet"
 
-os.chdir('/srv/flash1/pputta7/projects/lm-nav')
-
-
 class BCTrainer:
     
     def __init__(self, config):
         self.config = config
-        self.exp_folder = os.path.join(self.config.exp.root_dir, self.config.exp.name)
+        self.exp_folder = os.path.join(self.config.exp.root_dir,
+                                       self.config.exp.group,
+                                       self.config.exp.job_type,
+                                       self.config.exp.name)
+        self.writer = instantiate(self.config.exp.logger)
+
+    def validate_config(self):
+        """
+        validates that config parameters are constrained properly
+        """ 
+        batch_size = self.config.train.batch_size
+        minibatch_size = self.config.train.minibatch_size
+        num_minibatches = batch_size // minibatch_size
+        num_grad_accums = self.config.train.num_grad_accums
+
+        assert batch_size % minibatch_size == 0, 'batch must be evenly partitioned into minibatch sizes'
+        assert num_minibatches % num_grad_accums == 0, '# of grad accums must divide num_minibatches equally'
+
         
     def initialize_eval(self):
         """
@@ -60,22 +74,23 @@ class BCTrainer:
         self.rank = 0
         self.is_distributed = False
         self.eval_dir = os.path.join(self.exp_folder, 'eval')
-        
-        self.writer = registry.get_logger_class(self.config.exp.logger._target_)(self.config)
 
         self.agent = self.setup_student()
         self.agent.eval()
-
         
+        self.writer.open(self.config)
+
+
     def initialize_train(self):
         """
         Initializes distributed controller for DDP, starts data generator process
         """
+        self.validate_config()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         local_rank, world_rank, world_size = get_distrib_size()
         self.is_distributed = world_size > 1 or True
-        
+
         if self.is_distributed:
             self.device = torch.device(f"cuda:{local_rank}")
             torch.cuda.set_device(self.device)
@@ -84,12 +99,12 @@ class BCTrainer:
             backend = self.config.habitat_baselines.rl.ddppo.distrib_backend
             print(f"Starting distributed controller using {backend}")
             local_rank, tcp_store = init_distrib_slurm(backend)
-            
+
             self.rank = local_rank
 
             if rank0_only():
                 logger.info(f"Initialized DDP-BC with {torch.distributed.get_world_size()} workers")
-                
+
             # update gpu ids for this process
             with read_write(self.config):
                 self.config.device = f'cuda:{local_rank}'
@@ -101,46 +116,45 @@ class BCTrainer:
             random.seed(self.config.habitat.seed)
             np.random.seed(self.config.habitat.seed)
             torch.manual_seed(self.config.habitat.seed)
-            
+
             self.artifact_store = torch.distributed.PrefixStore("artifacts", tcp_store)
-         
+
         # set up student
         os.makedirs(self.exp_folder, exist_ok=True)
         os.makedirs(os.path.join(self.exp_folder, 'ckpts'), exist_ok=True)
 
         self.agent = self.setup_student()
-        
+
         # set up optimizer
         optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
         self.optim = torch.optim.Adam(params=optim_params, lr=self.config.train.lr_schedule.lr)
-        
-        # TODO; automate this with registry
-        if self.config.train.lr_schedule._target_ == "exponential":
-            self.lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=self.optim, gamma=self.config.train.lr_schedule.gamma)
-        elif self.config.train.lr_schedule._target_ == "constant":
-            self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=self.optim, lr_lambda=[lambda _: 1])
-        else:
-            raise ValueError(f"{self.config.train.lr_schedule._target_} lr scheduler not found")
+        self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=self.optim,
+                                                              lr_lambda=[get_lr_schedule_lambda(self.config.train.lr_schedule)])
 
         # set up writer and scatter all relevant data to worker nodes
         if rank0_only(): 
-            self.writer = registry.get_logger_class(self.config.exp.logger._target_)(self.config)
+            self.writer.open(self.config) 
             data_files = self.writer.load_dataset(self.config.train.dataset)
             self.artifact_store.set("data_files", ';'.join(data_files))
         else:
             self.artifact_store.wait(["data_files"])
             data_files = self.artifact_store.get("data_files").decode('utf-8').split(';')
 
-
         # set up dataset
         self.dataset = OfflineEpisodeDataset(files=data_files)
         self.sampler = ResumableRandomSampler(self.dataset)
         self.data_loader = DataLoader(self.dataset, batch_size=self.config.train.episodes_per_batch,
                                       collate_fn=lambda x: x, num_workers=1, sampler=self.sampler)
-        self.data_loader = iter(self.data_loader)
 
-        self.epoch = 0
-        if self.config.exp.logger.resume_id is not None:
+        self.step, self.epoch = 0, 0
+        self.cumstats = {
+            'step': 0,
+            'epoch': 0,
+            'metrics/total_frames': 0
+        }
+
+        if self.config.exp.resume_id is not None:
+            # TODO; update this with wandb maybe?
             ckpt_folder = os.path.join(self.exp_folder, 'ckpts')
             ckpts = os.listdir(ckpt_folder)
             latest_ckpt = list(sorted(ckpts, key=lambda x: int(x.split('.')[1])))[-1]
@@ -148,8 +162,8 @@ class BCTrainer:
             self.load_checkpoint(os.path.join(ckpt_folder, latest_ckpt)) 
 
         torch.distributed.barrier()
-           
-            
+
+
     def setup_student(self):
         model = instantiate(self.config.train.policy)
 
@@ -157,16 +171,16 @@ class BCTrainer:
 
         agent = model.to(self.device)
         agent.train()
-        
+
         if self.is_distributed:
             print(f"Setting up DDP on GPU {self.rank}")
             agent = DDP(agent, device_ids=[self.rank])
 
         num_params = sum([param.numel() for param in agent.parameters()])
         num_trainable_params = sum([param.numel() for param in agent.parameters() if param.requires_grad])
-        
+
         print(f"Done setting up student! Total params: {num_params}. Trainable Params: {num_trainable_params}")
-        
+
         params_with_gradients = [name for name, param in model.named_parameters() if param.requires_grad]
         if rank0_only():
             print("Params with gradients")
@@ -174,36 +188,52 @@ class BCTrainer:
 
         return agent
 
-    
-    def train_epoch(self, epoch):
-        assert self.config.train.batch_size % self.config.train.minibatch_size == 0, "batch size must be divisble by minibatch size"
-        T = self.agent.max_trajectory_length
+
+    def update_stats(self, episode_stats):
+        stats_keys = sorted(episode_stats.keys())
+        episode_stats = torch.tensor([episode_stats[key] for key in stats_keys],
+                                     device='cpu',
+                                     dtype=torch.float32)
+        episode_stats = all_reduce(self.is_distributed, self.device, episode_stats)
+        episode_stats /= torch.distributed.get_world_size()
+
+        episode_stats = { k: episode_stats[i].item() for i, k in enumerate(stats_keys) }
+
+        self.cumstats['step'] = self.step
+        self.cumstats['epoch'] = self.epoch
+        self.cumstats['metrics/total_frames'] += int(episode_stats['metrics/frames'] * torch.distributed.get_world_size())
+
+        return {
+            **self.cumstats,
+            **episode_stats
+        }
+
+
+    def train_bc_step(self, episodes):
+        T = self.config.train.policy.max_trajectory_length
         batch_size = self.config.train.batch_size
         minibatch_size = self.config.train.minibatch_size
-        assert batch_size % minibatch_size == 0, 'batch must be evenly partitioned into minibatche sizes'
         num_minibatches = batch_size // minibatch_size
         num_grad_accums = self.config.train.num_grad_accums
-        assert minibatch_size % num_grad_accums == 0, '# of grad accums must divide minibatch equally'
 
-        episodes = next(self.data_loader)
         rgbs = [einops.rearrange(episode['rgb'], 't h w c -> t c h w') for episode in episodes]
         goals = [einops.rearrange(episode['imagegoal'], 't h w c -> t c h w') for episode in episodes]
         actions = [episode['action'] for episode in episodes]
 
-        stats = { 'loss': 0.0, 'num_steps': 0 }
-        
+        stats = { 'learner/loss': 0.0, 'metrics/frames': 0 }
+
         rgbs, goals, actions = construct_subsequences(batch_size, T, rgbs, goals, actions)
         batch_idxs = torch.randperm(len(rgbs)).view(num_minibatches, minibatch_size)
-       
+
         for mb in range(0, num_minibatches, num_grad_accums):
-            
+
             for g in range(num_grad_accums):
                 mb_idxs = batch_idxs[mb + g] 
-            
+
                 # construct batch
                 rgbs_t, goals_t, actions_t = map(lambda t: [t[i] for i in mb_idxs], (rgbs, goals, actions))
-                stats['num_steps'] += sum([t.shape[0] for t in rgbs_t]) 
-                
+                stats['metrics/frames'] += sum([t.shape[0] for t in rgbs_t]) 
+
                 # pad inputs to T
                 mask_t = torch.stack([torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])]) for t in rgbs_t])
                 mask_t = mask_t.bool()
@@ -211,43 +241,31 @@ class BCTrainer:
                 goals_t = torch.stack(goals_t) 
                 actions_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in actions_t])
                 rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
-                
+
                 if g < num_grad_accums - 1:
                     with self.agent.no_sync():
                         outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t)
                         loss = outputs.loss
-                        stats['loss'] += loss.item()
+                        stats['learner/loss'] += loss.item()
                         loss.backward()
                 else:
                     outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t)
                     loss = outputs.loss
-                    stats['loss'] += loss.item()
+                    stats['learner/loss'] += loss.item()
                     loss.backward()
-           
+
                 rgbs_t.to('cpu')
                 goals_t.to('cpu')
-                
+
             self.optim.step()
             self.optim.zero_grad()
- 
 
-        stats['loss'] /= num_grad_accums
-        stats['lr'] = self.lr_scheduler.get_last_lr()[0]
-        stats['epoch'] = epoch
+
+        stats['learner/loss'] /= num_minibatches
+        stats['learner/lr'] = self.lr_scheduler.get_last_lr()[0]
 
         return stats
-        
-        
-    def _all_reduce(self, t):
-        if not self.is_distributed:
-            return t
 
-        orig_device = t.device
-        t = t.to(self.device)
-        torch.distributed.all_reduce(t)
-
-        return t.to(device=orig_device)
-        
 
     def load_checkpoint(self, ckpt_path):
         # load checkpoint
@@ -259,9 +277,13 @@ class BCTrainer:
         self.sampler.load_state_dict(ckpt_state_dict['sampler'])        
 
         # TODO; check if saved and loaded configs are the same
-        self.epoch = ckpt_state_dict['epoch']
 
-        
+        # update cum stats
+        self.cumstats = ckpt_state_dict['stats']
+        self.step = self.cumstats['step']
+        self.epoch = self.cumstats['epoch']
+
+
     def save_checkpoint(self):
         # only save parameters that have been updated
         param_grad_dict = {
@@ -279,47 +301,42 @@ class BCTrainer:
             "lr_scheduler": self.lr_scheduler.state_dict(),
             "sampler": self.sampler.state_dict(),
             "config": OmegaConf.to_container(self.config),
-            "epoch": self.epoch
+            "stats": self.cumstats
         }
-        ckpt_num = self.epoch // self.config.train.ckpt_freq
+
+        ckpt_num = self.step // self.config.train.ckpt_freq
         ckpt_filepath = os.path.join(self.exp_folder, 'ckpts', f'ckpt.{ckpt_num}.pth')
         torch.save(save_obj, ckpt_filepath) 
 
-        self.writer.save_artifact(self.config.exp.name, 'model', os.path.abspath(ckpt_filepath))
+        artifact_name = f'{self.config.exp.group}-{self.config.exp.job_type}-{self.config.exp.name}'
+        self.writer.save_artifact(artifact_name, 'model', os.path.abspath(ckpt_filepath))
 
-        
     def train(self):
         self.initialize_train()
-        
-        epochs, batch_size = self.config.train.epochs, self.config.train.batch_size
 
-        while self.epoch < epochs:
-            stats = self.train_epoch(self.epoch)
-            self.lr_scheduler.step()
-            
-            torch.distributed.barrier()
-            stats_keys = sorted(stats.keys())
-            stats = torch.tensor([stats[key] for key in stats_keys],
-                                 device='cpu',
-                                 dtype=torch.float32)
-            stats = self._all_reduce(stats)
-            stats /= torch.distributed.get_world_size()
+        while self.step < self.config.train.steps:
 
-            stats = { k: stats[i].item() for i, k in enumerate(stats_keys) }
+            for batch in self.data_loader:
+                stats = self.train_bc_step(batch)
 
-            if rank0_only():
-                self.writer.write(stats)
+                self.lr_scheduler.step()
+                torch.distributed.barrier()
+                stats = self.update_stats(stats)
 
-                if self.epoch % self.config.train.ckpt_freq == 0:
-                    self.save_checkpoint()
+                if rank0_only():
+                    self.writer.write(stats)
+                    if self.step % self.config.train.ckpt_freq == 0:
+                        self.save_checkpoint()
+
+                self.step += 1
 
             self.epoch += 1
 
-                    
+
     def save_episode_video(self, episode, num_episodes, video_dir, ckpt_idx):
         obs_infos = [(step['observation'], step['info']) for step in episode]
         _, infos = zip(*obs_infos)
-        
+
         frames = [observations_to_image(obs, info) for obs, info in obs_infos]
         disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
 
@@ -338,7 +355,7 @@ class BCTrainer:
 
     def eval(self):
         self.initialize_eval()
-        
+
         if self.config.eval.pretrained_artifact.version == '*':
             versions = self.writer.load_model_versions(self.config.eval.pretrained_artifact)
         else:
@@ -351,7 +368,7 @@ class BCTrainer:
                 self.config.eval.pretrained_artifact.version = version
             ckpt_path = self.writer.load_model(self.config.eval.pretrained_artifact)
             stats_path = os.path.join(self.eval_dir, os.path.basename(ckpt_path), 'stats.pkl')
-            
+
             if os.path.exists(stats_path):
                 with open(stats_path, 'rb') as f:
                     prev_stats = pickle.load(f)
@@ -359,20 +376,20 @@ class BCTrainer:
                 prev_stats = None
 
             self.eval_checkpoint(ckpt_path, prev_stats, envs)
-            
-        
+
+
     def eval_checkpoint(self, ckpt_path, prev_stats, envs):
         print(f"Starting evaluation for {ckpt_path}")
-        
+
         N_episodes = self.config.eval.num_episodes
-        T = self.agent.max_trajectory_length
+        T = self.config.train.policy.max_trajectory_length
 
         # construct directory to save stats
         ckpt_name = os.path.basename(ckpt_path)
         eval_dir = os.path.join(self.eval_dir, ckpt_name)
         video_dir = os.path.join(eval_dir, 'videos')
         os.makedirs(eval_dir, exist_ok=True)
-        
+
         if self.config.eval.save_videos:
             os.makedirs(video_dir, exist_ok=True)
 
@@ -399,11 +416,11 @@ class BCTrainer:
             stats = prev_stats
 
         actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=self.config.eval.deterministic)
-        
+
         while stats[f'{ckpt_name}/total_episodes'] < N_episodes:
             next(actor)
             actions = actor.send((observations, dones)) 
-                        
+
             outputs = envs.step(actions)
             next_observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)] 
 
@@ -415,11 +432,11 @@ class BCTrainer:
                     'info': infos[i],
                     'action': actions[i]
                 })
-            
+
             for i, done in enumerate(dones):
                 if done:
                     stats[f'{ckpt_name}/total_episodes'] += 1
-                    
+
                     if episodes[i][-1]['info']['distance_to_goal'] < self.config.eval.dtg_threshold:
                         stats[f'{ckpt_name}/successful_episodes'] += 1
 
@@ -434,7 +451,6 @@ class BCTrainer:
                     # this is to tell actor generator to clear this episode from history
                     episodes[i] = []
 
-
             observations = next_observations
         
             with open(os.path.join(eval_dir, 'stats.pkl'), 'wb+') as f:
@@ -447,6 +463,7 @@ def main():
     parser = argparse.ArgumentParser(description="Example argparse for cfg_path")
     parser.add_argument('cfg_path', type=str, help="Path to the configuration file")
     parser.add_argument('--eval', action='store_true', help='Flag to enable evaluation mode')
+    parser.add_argument('--debug', action='store_true', help='Flag to enable debug mode')
     parser.add_argument('--resume_run_id', type=str, help="Writer run id to restart")
     args = parser.parse_args()
 
@@ -454,25 +471,24 @@ def main():
     resume_id = args.resume_run_id
 
     with read_write(config):
-        config.exp.logger.resume_id = resume_id
+        config.exp.resume_id = resume_id
+
+        if args.eval:
+            config.habitat_baselines.num_environments = config.eval.num_envs
+            config.exp.name = f'eval {config.exp.name}'
+            config.exp.job_type = 'eval'
+
+        if args.debug:
+            config.exp.job_type = 'debug'
         
     trainer = BCTrainer(config)
 
     if not args.eval:
         trainer.train()
     else:
-        with read_write(config):
-            config.habitat_baselines.wb.group = 'eval'
-            config.habitat_baselines.wb.run_name = f'eval {config.habitat_baselines.wb.run_name}'
-            config.habitat_baselines.num_environments = config.eval.num_envs
-            config.exp.logger.group = 'eval'
-            # config.habitat.dataset.split = 'val_hard'
-     
         trainer.eval()
 
 
 if __name__ == "__main__":
     main()
-    
-    
     

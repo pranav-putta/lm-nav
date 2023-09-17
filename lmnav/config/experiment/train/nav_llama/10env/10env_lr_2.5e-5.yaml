@@ -24,19 +24,19 @@ defaults:
 
 
 exp:
-  name: "lmnav_imagenav_10envs_lr_2.5e-4_gamma_0.9995"
+  name: "lmnav_imagenav_10envs_lr_2.5e-5"
   root_dir: "experiments/"
   logger:
     project: "lmnav"
-    name: "lmnav lora 10envs lr schedule lr=2.5e-4, gamma=0.9995"
+    name: "lmnav lora 10envs lr=2.5e-5"
     group: "train"
-    tags: ['lora', 'exp_lr_sched']
 
 train:
   batch_size: 120
   minibatch_size: 2
+  num_grad_accums: 6
 
-  epochs: 10_000
+  steps: 10_000
   episodes_per_batch: 10
   lr_schedule:
     lr: 2.5e-4
@@ -52,12 +52,8 @@ eval:
   policy: ${..train.policy}
   num_episodes: 50
   save_videos: True
-  deterministic: False
+  deterministic: True
   num_envs: 10
-  dataset: 
-    artifact:
-      name: "offline_10envs"
-      version: "latest"
   pretrained_artifact:
     name: ${...exp.name}
     version: "latest"

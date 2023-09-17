@@ -16,7 +16,7 @@ defaults:
 
   # set up train
   - /runner@train: bc
-  - /lr@train.lr_schedule: exponential
+  - /lr@train.lr_schedule: constant
   - /dataset@train.dataset: offline_episode
   - /models/policy/nav_llama/clip@train.policy: lora 
  
@@ -24,28 +24,28 @@ defaults:
 
 
 exp:
-  name: "lmnav_imagenav_clip"
-  root_dir: "experiments/"
-  logger:
-    project: "lmnav"
-    name: "lmnav imagenav clip"
-    group: "train"
+  group: "lmnav-1env"
+  job_type: "bc"
+  tags: ["lora", "clip"]
 
 train:
-  batch_size: 36
-  minibatch_size: 3
+  batch_size: 120
+  minibatch_size: 2
+  num_grad_accums: 6
 
-  epochs: 10_000
-  episodes_per_batch: 36
+  steps: 10_000
+  episodes_per_batch: 10
   lr_schedule:
-    lr: 2.5e-4
-    gamma: 0.9995
+    lr: 2.5e-5
   policy:
-    max_trajectory_length: 200    
+    max_trajectory_length: 22    
   dataset:
     artifact: 
       name: "offline_00744"
       version: "latest"
+  store_artifact:
+    name: ${...exp.name}
+
  
 eval:
   policy: ${..train.policy}
@@ -54,3 +54,4 @@ eval:
   save_videos: True
   deterministic: False
   num_envs: 10
+  load_artifact: ${..train.store_artifact}

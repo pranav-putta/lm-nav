@@ -4,7 +4,7 @@ defaults:
   # set up habitat 
   - /env@habitat_baselines: habitat_baselines
   - /env@habitat: habitat 
-  - /dataset/imagenav/hm3d_10env
+  - /dataset/imagenav/hm3d_1env
     
   # set up experiment misc.
   - /exp: base
@@ -12,7 +12,7 @@ defaults:
     
   # set up train
   - /runner@train: bc
-  - /lr@train.lr_schedule: exponential
+  - /lr@train.lr_schedule: constant
   - /models/policy/nav_llama/qformer@train.policy: lora 
   - /dataset@train.dataset: offline_episode
     
@@ -24,40 +24,32 @@ defaults:
 
 
 exp:
-  name: "lmnav_imagenav_10envs"
-  root_dir: "experiments/"
-  logger:
-    project: "lmnav"
-    name: "lmnav lora 10envs"
-    group: "train"
+  group: "lmnav-1env"
+  job_type: "bc"
+  tags: ["lora"]
 
 train:
   batch_size: 120
   minibatch_size: 2
+  num_grad_accums: 6
 
-  epochs: 10_000
+  steps: 10_000
   episodes_per_batch: 10
   lr_schedule:
-    lr: 2.5e-4
-    gamma: 0.9995
+    lr: 2.5e-5
   policy:
     max_trajectory_length: 22    
-  dataset: 
-    artifact: 
-      name: "offline_10envs"
+  dataset:
+    artifact:
+      name: "offline_00744"
       version: "latest"
-
+  store_artifact:
+    name: ${...exp.name}
+      
 eval:
   policy: ${..train.policy}
   num_episodes: 50
   save_videos: True
-  deterministic: True
+  deterministic: False
   num_envs: 10
-  dataset: 
-    artifact:
-      name: "offline_10envs"
-      version: "latest"
-  pretrained_artifact:
-    name: ${...exp.name}
-    version: "latest"
-  
+  load_artifact: ${..train.store_artifact}
