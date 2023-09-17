@@ -32,11 +32,10 @@ exp:
     group: "train"
 
 train:
-  batch_size: 2
-  num_envs: 10
+  batch_size: 120
+  minibatch_size: 2
+
   epochs: 10_000
-  bc_epochs: 10
-  grad_accums: 6
   episodes_per_batch: 10
   lr_schedule:
     lr: 2.5e-4

@@ -148,11 +148,9 @@ class OfflineEpisodeDatasetConfig(BaseDatasetConfig):
 class BaseLRConfig:
     lr: float = MISSING
 
-    
 @dataclass
 class ConstantLRConfig(BaseLRConfig):
     _target_: str = 'constant'
-
     
 @dataclass
 class ExponentialLRConfig(BaseLRConfig):
@@ -169,36 +167,28 @@ class ActorCriticLRConfig(BaseLRConfig):
 class BaseRunnerConfig:
     policy: BasePolicyConfig = MISSING
     pretrained_artifact: ArtifactConfig = MISSING
-    
     num_envs: int = MISSING
-
 
 @dataclass
 class TrainRunnerConfig(BaseRunnerConfig):
     epochs: int = MISSING
+    num_grad_accums: int = MISSING
+    minibatch_size: int = MISSING
     batch_size: int = MISSING
     ckpt_freq: int = 50
-    grad_accums: int = MISSING
 
 @dataclass
 class BCTrainRunnerConfig(TrainRunnerConfig):
     dataset: BaseDatasetConfig = MISSING
     episodes_per_batch: int = MISSING
-    bc_epochs: int = 10 
     lr_schedule: BaseLRConfig = MISSING
-
-@dataclass
-class PPOTrainRunnerConfig(TrainRunnerConfig):
-    ppo_epochs: int = 2
-    actor_lr_schedule: BaseLRConfig = MISSING
-    critic_lr_schedule: BaseLRConfig = MISSING
-    num_rollout_steps: int = 64
-    deterministic: bool = False
 
 @dataclass
 class PPOTrainRunnerConfig(TrainRunnerConfig):
     policy: ActorCriticPolicyConfig = MISSING
     lr_schedule: ActorCriticLRConfig = MISSING
+    max_rollout_steps: int = MISSING
+    ppo_epochs: int = MISSING
 
 @dataclass
 class EvalRunnerConfig(BaseRunnerConfig):

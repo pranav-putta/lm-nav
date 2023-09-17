@@ -209,12 +209,7 @@ class NavLLAMA(Blip2Base):
 
     @property
     def tokens_per_img(self):
-        if self.qformer_compressor_cfg is not None:
-            return self.qformer_compressor_cfg.num_latents
-        else:
-            return 32
-        
-
+        return self.vis_encoder.num_tokens
 
     def action_generator(self, num_envs, deterministic=False):
         """
@@ -263,7 +258,10 @@ class NavLLAMA(Blip2Base):
                 act_logits = logits[i, -act_pos_delta[i], act_tkn_ids]
                 act_logits = F.softmax(act_logits)
 
-                action = act_logits.argmax().cpu().item()
+                if deterministic:
+                    action = act_logits.argmax().cpu().item()
+                else:
+                    action = torch.multinomial(act_logits, 1).cpu().item()
                 actions.append(action)
 
                 episodes[i][-1]['action'] = action

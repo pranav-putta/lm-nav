@@ -177,27 +177,34 @@ class BCTrainer:
 
     
     def train_epoch(self, epoch):
-        num_samples = self.config.train.batch_size
-        max_state_length = self.agent.max_trajectory_length
-        num_bc_epochs = self.config.train.bc_epochs
-        num_grad_accums = self.config.train.grad_accums
+        assert self.config.train.batch_size % self.config.train.minibatch_size == 0, "batch size must be divisble by minibatch size"
+        T = self.agent.max_trajectory_length
+        batch_size = self.config.train.batch_size
+        minibatch_size = self.config.train.minibatch_size
+        assert batch_size % minibatch_size == 0, 'batch must be evenly partitioned into minibatche sizes'
+        num_minibatches = batch_size // minibatch_size
+        num_grad_accums = self.config.train.num_grad_accums
+        assert minibatch_size % num_grad_accums == 0, '# of grad accums must divide minibatch equally'
 
         episodes = next(self.data_loader)
         rgbs = [einops.rearrange(episode['rgb'], 't h w c -> t c h w') for episode in episodes]
         goals = [einops.rearrange(episode['imagegoal'], 't h w c -> t c h w') for episode in episodes]
         actions = [episode['action'] for episode in episodes]
 
-        total_loss = 0
-        total_samples = num_samples * num_bc_epochs * num_grad_accums
-        rgbs, goals, actions = construct_subsequences(total_samples, max_state_length, rgbs, goals, actions)
-        p_idxs = torch.randperm(len(rgbs)).view(num_bc_epochs, num_grad_accums, num_samples)
+        stats = { 'loss': 0.0, 'num_steps': 0 }
+        
+        rgbs, goals, actions = construct_subsequences(batch_size, T, rgbs, goals, actions)
+        batch_idxs = torch.randperm(len(rgbs)).view(num_minibatches, minibatch_size)
        
-        for bc_epoch in range(num_bc_epochs):
-            for i in range(num_grad_accums):
-                idxs = p_idxs[bc_epoch, i] 
+        for mb in range(0, num_minibatches, num_grad_accums):
+            
+            for g in range(num_grad_accums):
+                mb_idxs = batch_idxs[mb + g] 
+            
                 # construct batch
-                rgbs_t, goals_t, actions_t = map(lambda t: [t[i] for i in idxs], (rgbs, goals, actions))
-                T = max_state_length 
+                rgbs_t, goals_t, actions_t = map(lambda t: [t[i] for i in mb_idxs], (rgbs, goals, actions))
+                stats['num_steps'] += sum([t.shape[0] for t in rgbs_t]) 
+                
                 # pad inputs to T
                 mask_t = torch.stack([torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])]) for t in rgbs_t])
                 mask_t = mask_t.bool()
@@ -206,36 +213,30 @@ class BCTrainer:
                 actions_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in actions_t])
                 rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
                 
-                if i < num_grad_accums - 1:
+                if g < num_grad_accums - 1:
                     with self.agent.no_sync():
                         outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t)
                         loss = outputs.loss
-                        total_loss += loss.item()
+                        stats['loss'] += loss.item()
                         loss.backward()
                 else:
                     outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t)
                     loss = outputs.loss
-                    total_loss += loss.item()
+                    stats['loss'] += loss.item()
                     loss.backward()
-                    self.optim.step()
-                    self.optim.zero_grad()
-            
+           
                 rgbs_t.to('cpu')
                 goals_t.to('cpu')
+                
+            self.optim.step()
+            self.optim.zero_grad()
+ 
 
-        del rgbs
-        del goals
-        del actions
-        gc.collect()
-            
-        avg_loss = total_loss / (num_bc_epochs * num_grad_accums)
-        current_lr = self.lr_scheduler.get_last_lr()[0]
+        stats['loss'] /= num_grad_accums
+        stats['lr'] = self.lr_scheduler.get_last_lr()[0]
+        stats['epoch'] = epoch
 
-        return {
-            'loss': avg_loss,
-            'epoch': epoch,
-            'lr': current_lr
-        }
+        return stats
         
         
     def _all_reduce(self, t):

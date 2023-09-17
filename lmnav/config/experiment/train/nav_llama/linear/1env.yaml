@@ -31,11 +31,9 @@ exp:
     group: "train"
 
 train:
-  batch_size: 2
-  num_envs: 10
+  batch_size: 120
+  minibatch_size: 2
   epochs: 10_000
-  bc_epochs: 10
-  grad_accums: 6
   lr: 1e-4
   policy:
     max_trajectory_length: 22    

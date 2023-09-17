@@ -59,6 +59,10 @@ class VisualEncoder(BaseModel):
     def vis_processor(self):
         raise NotImplementedError('vis_processor needs to be implemented')
 
+    @property
+    def num_tokens(self):
+        raise NotImplementedError('num_tokens needs to be implemented')
+
 class QformerVisualEncoder(VisualEncoder):
     
     def __init__(self,
@@ -218,6 +222,14 @@ class QformerVisualEncoder(VisualEncoder):
 
         return msg
 
+    @property
+    def num_tokens(self):
+        if self.qformer_compressor_cfg is not None:
+            return self.qformer_compressor_cfg.num_latents
+        else:
+            return 32
+ 
+
 class CLIPVisualProcessor:
 
     def __init__(self, clip_processor):
@@ -270,6 +282,10 @@ class CLIPVisualEncoder(VisualEncoder):
     @property
     def hidden_size(self):
         return self.model.vision_model.config.hidden_size
+
+    @property
+    def num_tokens(self):
+        return 1
 
     
 
