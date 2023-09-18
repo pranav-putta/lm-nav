@@ -60,7 +60,7 @@ class ConsoleLogger(BaseLogger):
         return files
 
     def load_model(self, artifact):
-        raise NotImplementedError
+        return "/srv/flash1/pputta7/projects/lm-nav/experiments/lmnav-1env/bc/lora/ckpts/ckpt.0.pth"
 
     def load_model_versions(self, artifact):
         raise NotImplementedError

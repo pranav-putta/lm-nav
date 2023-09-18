@@ -17,13 +17,8 @@ def apply_transforms_actions(actions):
     actions = actions.tolist()
     actions = [[idx2class[act] for act in acts_t] for acts_t in actions]
     return actions
-    
-def apply_transforms_inputs(vis_processor, rgbs, goals, actions):
-    """
-    rgbs: torch.Tensor[B T C H W] -> [B C T H W]
-    goals: torch.Tensor[B 1 C H W] -> [B C 1 H W]
-    actions: torch.Tensor[B T] -> list[list[str]]
-    """
+
+def apply_transforms_images(vis_processor, rgbs, goals):
     B, T, _, _, _ = rgbs.shape
     imgs = torch.cat([goals, rgbs], dim=1)
     imgs = einops.rearrange(imgs, 'b t c h w -> c (b t) h w')
@@ -35,16 +30,25 @@ def apply_transforms_inputs(vis_processor, rgbs, goals, actions):
 
     # separate goal and rgb
     goals, rgbs = imgs[:, :, 0:1], imgs[:, :, 1:]
+    return rgbs, goals
+
+def apply_transforms_inputs(vis_processor, rgbs, goals, actions):
+    """
+    rgbs: torch.Tensor[B T C H W] -> [B C T H W]
+    goals: torch.Tensor[B 1 C H W] -> [B C 1 H W]
+    actions: torch.Tensor[B T] -> list[list[str]]
+    """
+    rgbs, goals =apply_transforms_images(vis_processor, rgbs, goals)
     actions = apply_transforms_actions(actions)
 
     return rgbs, goals, actions
 
 
 def extract_inputs_from_dataset(dataset):
-    goals = [torch.from_numpy(episode[0]['observation']['imagegoal']) for episode in dataset]
+    goals = [episode[0]['observation']['imagegoal'] for episode in dataset]
     goals = [einops.rearrange(goal, 'h w c -> 1 c h w') for goal in goals]
 
-    rgbs = [[torch.from_numpy(state['observation']['rgb']) for state in episode] for episode in dataset]
+    rgbs = [[state['observation']['rgb'] for state in episode] for episode in dataset]
     rgbs = [torch.stack(rgb_e) for rgb_e in rgbs]
     rgbs = [einops.rearrange(rgb_t, 't h w c -> t c h w') for rgb_t in rgbs]
 

@@ -33,6 +33,8 @@ from torchvision.datasets.utils import (
     extract_archive,
 )
 import linecache
+from torch import nn
+import torch.nn.functional as F
 
 
 def now():
@@ -458,4 +460,23 @@ def all_reduce(is_distributed, device, t):
     torch.distributed.all_reduce(t)
 
     return t.to(device=orig_device)
+
+def convert_weights_to_fp16(model: nn.Module):
+    """Convert applicable model parameters to fp16"""
+
+    def _convert_weights_to_fp16(l):
+        if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Linear)):
+            l.weight.data = l.weight.data.to(torch.bfloat16)
+            if l.bias is not None:
+                l.bias.data = l.bias.data.to(torch.bfloat16)
+    model.apply(_convert_weights_to_fp16)
+ 
+def logprobs_from_logits(logits, labels):
+    """
+    See: https://github.com/pytorch/pytorch/issues/563#issuecomment-330103591
+    """
+    logp = F.log_softmax(logits, dim=2)
+    logpy = torch.gather(logp, 2, labels.unsqueeze(2)).squeeze(-1)
+    return logpy
+
 

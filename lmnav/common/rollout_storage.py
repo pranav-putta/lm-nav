@@ -6,8 +6,8 @@ class RolloutStorage:
         self.num_envs = num_envs
         self.max_steps = max_steps
         
-        self.rgbs = torch.zeros(num_envs, max_steps + 1, 3, 640, 480, dtype=torch.int8) 
-        self.goals = torch.zeros(num_envs, max_steps + 1, 3, 640, 480, dtype=torch.int8)
+        self.rgbs = torch.zeros(num_envs, max_steps + 1, 32, 4096, dtype=torch.float32) 
+        self.goals = torch.zeros(num_envs, max_steps + 1, 32, 4096, dtype=torch.float32)
         self.actions = torch.zeros(num_envs, max_steps + 1, dtype=torch.int8)
         self.dones = torch.zeros(num_envs, max_steps + 1,  dtype=torch.bool)
         self.rewards = torch.zeros(num_envs, max_steps + 1, dtype=torch.float16)
@@ -15,10 +15,10 @@ class RolloutStorage:
         self.current_step_idx = -1
        
 
-    def insert(self, next_observation, dones=None, actions=None, rewards=None):
+    def insert(self, next_rgbs, next_goals, dones=None, actions=None, rewards=None):
         """ insert observations, dones, and actions into rollout storage tensors """
-        self.rgbs[:, self.current_step_idx + 1] = next_observation['rgb'] 
-        self.goals[:, self.current_step_idx + 1] = next_observation['imagegoal']
+        self.rgbs[:, self.current_step_idx + 1] = next_rgbs 
+        self.goals[:, self.current_step_idx + 1] = next_goals
 
         if dones is not None:
             self.dones[:, self.current_step_idx] = dones
@@ -51,14 +51,15 @@ class RolloutStorage:
         samples = []
         for b in range(self.num_envs):
             ends = torch.where(self.dones[b])[0].tolist()
-            if len(ends) >= 1 and ends[0] != 0:
-                ends = [0] + ends
-            if len(ends) >= 1 and ends[-1] != self.max_steps - 1:
+            # always make sure that ends includes the beginning/end of step list
+            ends = [-1] + ends
+            if ends[-1] != self.max_steps - 1:
                 ends = ends + [self.max_steps - 1]
-            slices = [slice(ends[i], ends[i + 1] + 1) for i in range(len(ends) - 1)] 
+                
+            slices = [slice(ends[i] + 1, ends[i + 1] + 1) for i in range(len(ends) - 1)] 
             
             for s in slices:
-                samples.append(tuple(map(lambda t: t[b, s], (self.rgbs, self.goals, self.rewards, self.actions))))
+                samples.append(tuple(map(lambda t: t[b, s], (self.rgbs, self.goals, self.actions, self.rewards))))
         
         rgbs, goals, actions, rewards = zip(*samples)
         return rgbs, goals, actions, rewards

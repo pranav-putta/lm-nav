@@ -1,12 +1,14 @@
 import logging
+import contextlib
 import random
+import time
 
 import torch.nn.functional as F
 
 import torch
 from torch.cuda.amp import autocast as autocast
 import torch.nn as nn
-from lmnav.common.episode_processor import apply_transforms_inputs, extract_inputs_from_dataset
+from lmnav.common.episode_processor import apply_transforms_actions, apply_transforms_images, apply_transforms_inputs, extract_inputs_from_dataset
 
 from lmnav.common.registry import registry
 from lmnav.models.blip2 import Blip2Base, disabled_train
@@ -40,10 +42,15 @@ class NavLLAMA(Blip2Base):
         low_resource,
         lora_config,
         llama_model,
-        max_trajectory_length
+        max_trajectory_length,
+        **kwargs
     ):
         super().__init__()
         
+        self.prompt1 = "You are a navigational agent tasked with exploring an indoor environment to find a goal image. \
+                       You can choose to move { left, right, forward, stop } at every step. The goal image is {}. \
+                       After every image, choose the best action. {}"
+
         self.vis_encoder = vis_encoder
         self.tokenizer = self.init_tokenizer()
         self.low_resource = low_resource
@@ -141,9 +148,7 @@ class NavLLAMA(Blip2Base):
         return inputs_llama, atts_llama
 
     
-    def prompt1_wrap(self, prompt, rgbs, goals, actions, masks):
-        rgbs_embd, rgbs_attn = self.embed_visual(rgbs)
-        goals_embd, goals_attn = self.embed_visual(goals)
+    def prompt1_wrap(self, prompt, rgbs_embd, goals_embd, actions, masks):
         action_tkns_t = self.tokenize_actions(actions)
         actions_embd = self.embed_actions(action_tkns_t)
         
@@ -176,23 +181,46 @@ class NavLLAMA(Blip2Base):
         return embds, tgts
 
 
+    def maybe_autocast(self, dtype=torch.float16):
+        # if on cpu, don't use autocast
+        # if on gpu, use autocast with dtype if provided, otherwise use torch.float16
+        enable_autocast = self.device != torch.device("cpu")
+
+        if enable_autocast:
+            return torch.cuda.amp.autocast(dtype=dtype)
+        else:
+            return contextlib.nullcontext()
+    
+
+    def forward_with_embds(self, rgb_embds, goal_embds, actions_t, mask_t):
+        rgb_t, goal_t, mask_t = map(lambda t: t.to(self.device), (rgb_embds, goal_embds, mask_t))
+        
+        mask_t = mask_t.to(torch.bool)
+        
+        actions_t = apply_transforms_actions(actions_t)
+        embd, _ = self.prompt1_wrap(self.prompt1, rgb_t, goal_t, actions_t, mask_t)
+        outputs = self.llama_model(inputs_embeds=embd,
+                                    return_dict=True,
+                                    output_hidden_states=True)
+
+        return outputs
+
+            
     def forward(self, rgbs_t, goals_t, actions_t, mask_t):
         """
         rgbs_t = [B, C, T, H, W]
         goals_t = [B, C, 1, H, W]
         actions_t = [B, T]
         """
-        
-        im_patch_token_id = self.IMAGE_PATCH_TOKEN_ID
-        prompt1 = "You are a navigational agent tasked with exploring an indoor environment to find a goal image. \
-           You can choose to move { left, right, forward, stop } at every step. The goal image is {}. \
-           After every image, choose the best action. {}"
+        # with self.maybe_autocast():
+        rgbs_t, goals_t, mask_t = map(lambda t: t.to(self.device), (rgbs_t, goals_t, mask_t))
+        rgbs_embd, rgbs_attn = self.embed_visual(rgbs_t)
+        goals_embd, goals_attn = self.embed_visual(goals_t)
         mask_t = mask_t.to(torch.bool)
         
-        embd, tgts = self.prompt1_wrap(prompt1, rgbs_t, goals_t, actions_t, mask_t)
+        embd, tgts = self.prompt1_wrap(self.prompt1, rgbs_embd, goals_embd, actions_t, mask_t)
         embd = embd.to(self.device)
         tgts = tgts.to(self.device)
-
         outputs = self.llama_model(inputs_embeds=embd,
                                     labels=tgts,
                                     return_dict=True)
@@ -224,30 +252,40 @@ class NavLLAMA(Blip2Base):
         act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
         
         while True:
-            observations, dones = yield
+            rgb_embds, goal_embds, dones = yield
             
             for i, episode in enumerate(episodes):
                 if dones[i]:
                     episode.clear()
 
                 episode.append({
-                                    'observation': observations[i],
-                                    'action': 0
-                                })
+                                'rgb_embds': rgb_embds[i],
+                                'goal_embds': goal_embds[i],
+                                'action': 0
+                            })
 
-            
             episodes = [e[-(T - 1):] for e in episodes]
-            rgbs, goals, actions = extract_inputs_from_dataset(episodes)
 
-            rgbs_t = self.pad_sequences(rgbs, dim=0)
-            actions_t = self.pad_sequences(actions, dim=0)
-            goals_t = self.pad_sequences(goals, dim=0)
-            mask_t = torch.ones_like(actions_t).to(self.device)
+            rgb_embds, goal_embds, actions = map(lambda key: [[step[key] for step in episode] for episode in episodes], ('rgb_embds', 'goal_embds', 'action'))
+            rgb_embds, goal_embds = map(lambda seq: [torch.stack(t, dim=0) for t in seq], (rgb_embds, goal_embds))
+            actions = [torch.tensor(t) for t in actions]
+            rgb_embds, goal_embds, actions_t = map(lambda t: self.pad_sequences(t, dim=0), (rgb_embds, goal_embds, actions))
+            goal_embds = goal_embds[:, 0:1] 
+            mask_t = torch.ones_like(actions_t, dtype=torch.bool).to(self.device)
+
+            actions_t = apply_transforms_actions(actions_t)
+            
             lens = [len(e) for e in episodes]
             max_len = max(lens)
-
-            rgbs_t, goals_t, actions_t = apply_transforms_inputs(vis_processor, rgbs_t, goals_t, actions_t)
-            outputs = self(rgbs_t, goals_t, actions_t, mask_t) 
+            
+            embd, tgts = self.prompt1_wrap(self.prompt1, rgb_embds, goal_embds, actions_t, mask_t)
+            
+            embd = embd.to(self.device)
+            tgts = tgts.to(self.device)
+            
+            outputs = self.llama_model(inputs_embeds=embd,
+                                        labels=tgts,
+                                        return_dict=True)
 
             act_pos_delta = [(self.tokens_per_img + 1) * (max_len - l) + 2 for l in lens]
             logits = outputs.logits

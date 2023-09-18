@@ -43,6 +43,8 @@ class ArtifactConfig:
 @dataclass
 class BaseModelConfig:
     _target_: str = MISSING
+    load_artifact: Optional[ArtifactConfig] = None
+    use_artifact_policy_config: bool = False
 
 
 @dataclass
@@ -78,17 +80,10 @@ class BasePolicyConfig(BaseModelConfig):
 
 
 @dataclass
-class ValueHeadPolicyConfig(BasePolicyConfig):
-    _target_: str = "lmnav.models.value_head.ValueHead"
-    in_dim: int = MISSING
+class LinearHeadPolicyConfig(BasePolicyConfig):
+    _target_: str = "lmnav.models.linear_head.LinearHead"
+    in_dim: Optional[int] = None
     p_dropout: float = 0.2    
-
-
-@dataclass
-class ActorCriticPolicyConfig(BasePolicyConfig):
-    _target_: str = "lmnav.models.actor_critic.ActorCriticModel"
-    actor: BasePolicyConfig = MISSING
-    critic: BasePolicyConfig = MISSING
 
 
 @dataclass
@@ -166,7 +161,6 @@ class ActorCriticLRConfig(BaseLRConfig):
 class BaseRunnerConfig:
     policy: BasePolicyConfig = MISSING
     dataset: BaseDatasetConfig = MISSING
-    load_artifact: Optional[ArtifactConfig] = None
     store_artifact: Optional[ArtifactConfig] = None
     num_envs: int = MISSING
 
@@ -185,10 +179,19 @@ class BCTrainRunnerConfig(TrainRunnerConfig):
 
 @dataclass
 class PPOTrainRunnerConfig(TrainRunnerConfig):
-    policy: ActorCriticPolicyConfig = MISSING
+    actor: BasePolicyConfig = MISSING
+    critic: BaseModelConfig = MISSING
+    
     lr_schedule: ActorCriticLRConfig = MISSING
-    max_rollout_steps: int = MISSING
+    num_rollout_steps: int = MISSING
     ppo_epochs: int = MISSING
+    cliprange_value: float = 0.2
+    cliprange: float = 0.2
+    vf_coef: float = 0.1
+    gamma: float = 1
+    lam: float = 0.95
+    ratio_threshold: float = 10.0
+    deterministic: bool = False
 
 @dataclass
 class EvalRunnerConfig(BaseRunnerConfig):
@@ -213,6 +216,7 @@ cs.store(group='generator/filter_method', name='dtg', node=DTGFitlerMethodConfig
 cs.store(group='models/policy', name='base', node=BasePolicyConfig)
 cs.store(group='models/policy/old_eai_policy', name='old_eai_policy', node=OldEAIPolicyConfig)
 cs.store(group='models/policy/nav_llama', name='base_nav_llama', node=BaseNavLLaMAPolicyConfig)
+cs.store(group='models', name='linear', node=LinearHeadPolicyConfig)
 
 cs.store(group='models/vis_encoder', name='base', node=BaseVisualEncoderConfig)
 cs.store(group='models/vis_encoder', name='qformer', node=QformerVisualEncoderConfig)

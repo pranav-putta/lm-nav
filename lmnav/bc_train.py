@@ -33,7 +33,7 @@ from lmnav.dataset.data_gen import  _init_envs
 from lmnav.models import *
 from lmnav.dataset.offline_episode_dataset import OfflineEpisodeDataset
 from lmnav.processors import *
-from lmnav.common.episode_processor import apply_transforms_inputs, construct_subsequences, extract_inputs_from_dataset 
+from lmnav.common.episode_processor import apply_transforms_inputs, construct_subsequences 
 
 from lmnav.common.writer import *
 from lmnav.dataset.offline_episode_dataset import *
@@ -127,10 +127,9 @@ class BCTrainer:
 
         # set up optimizer
         optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
-        self.optim = torch.optim.Adam(params=optim_params, lr=self.config.train.lr_schedule.lr)
+        self.optim = torch.optim.Adam(params=[{'params': optim_params, 'lr': self.config.train.lr_schedule.lr}])
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=self.optim,
                                                               lr_lambda=[get_lr_schedule_lambda(self.config.train.lr_schedule)])
-
         # set up writer and scatter all relevant data to worker nodes
         if rank0_only(): 
             self.writer.open(self.config) 
@@ -220,7 +219,7 @@ class BCTrainer:
         goals = [einops.rearrange(episode['imagegoal'], 't h w c -> t c h w') for episode in episodes]
         actions = [episode['action'] for episode in episodes]
 
-        stats = { 'learner/loss': 0.0, 'metrics/frames': 0 }
+        stats = { 'learner/loss': 0.0 }
 
         rgbs, goals, actions = construct_subsequences(batch_size, T, rgbs, goals, actions)
         batch_idxs = torch.randperm(len(rgbs)).view(num_minibatches, minibatch_size)
@@ -232,7 +231,6 @@ class BCTrainer:
 
                 # construct batch
                 rgbs_t, goals_t, actions_t = map(lambda t: [t[i] for i in mb_idxs], (rgbs, goals, actions))
-                stats['metrics/frames'] += sum([t.shape[0] for t in rgbs_t]) 
 
                 # pad inputs to T
                 mask_t = torch.stack([torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])]) for t in rgbs_t])
@@ -263,6 +261,7 @@ class BCTrainer:
 
         stats['learner/loss'] /= num_minibatches
         stats['learner/lr'] = self.lr_scheduler.get_last_lr()[0]
+        stats['metrics/frames'] = sum([episode['rgb'].shape[0] for episode in episodes])
 
         return stats
 
@@ -270,7 +269,7 @@ class BCTrainer:
     def load_checkpoint(self, ckpt_path):
         # load checkpoint
         print(f"Loading model from checkpoint")
-        ckpt_state_dict = torch.load(ckpt_path)
+        ckpt_state_dict = torch.load(ckpt_path, map_location=self.device)
         self.agent.load_state_dict(ckpt_state_dict['model'], strict=False)
         self.optim.load_state_dict(ckpt_state_dict['optimizer'])
         self.lr_scheduler.load_state_dict(ckpt_state_dict['lr_scheduler'])
@@ -309,6 +308,8 @@ class BCTrainer:
         torch.save(save_obj, ckpt_filepath) 
 
         artifact_name = f'{self.config.exp.group}-{self.config.exp.job_type}-{self.config.exp.name}'
+        artifact_name = artifact_name.replace('+', '_')
+        artifact_name = artifact_name.replace('=', '_')
         self.writer.save_artifact(artifact_name, 'model', os.path.abspath(ckpt_filepath))
 
     def train(self):
@@ -356,17 +357,17 @@ class BCTrainer:
     def eval(self):
         self.initialize_eval()
 
-        if self.config.eval.pretrained_artifact.version == '*':
-            versions = self.writer.load_model_versions(self.config.eval.pretrained_artifact)
+        if self.config.eval.load_artifact.version == '*':
+            versions = self.writer.load_model_versions(self.config.eval.load_artifact)
         else:
-            versions = [self.config.eval.pretrained_artifact.version]
+            versions = [self.config.eval.load_artifact.version]
 
         versions = reversed(sorted(versions))  
         envs, env_spec = _init_envs(self.config)
         for version in versions:
             with read_write(self.config):
-                self.config.eval.pretrained_artifact.version = version
-            ckpt_path = self.writer.load_model(self.config.eval.pretrained_artifact)
+                self.config.eval.load_artifact.version = version
+            ckpt_path = self.writer.load_model(self.config.eval.load_artifact)
             stats_path = os.path.join(self.eval_dir, os.path.basename(ckpt_path), 'stats.pkl')
 
             if os.path.exists(stats_path):

@@ -8,7 +8,7 @@ defaults:
     
   # set up experiment misc.
   - /exp: base
-  - /logger@exp.logger: console
+  - /logger@exp.logger: wb
     
   # set up train
   - /runner@train: bc

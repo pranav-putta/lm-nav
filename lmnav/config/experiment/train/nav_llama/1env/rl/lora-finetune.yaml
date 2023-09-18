@@ -1,0 +1,77 @@
+# @package _global_
+
+defaults:
+  # set up habitat 
+  - /env@habitat_baselines: habitat_baselines
+  - /env@habitat: habitat 
+  - /dataset/imagenav/hm3d_1env
+    
+  # set up experiment misc.
+  - /exp: base
+  - /logger@exp.logger: wb
+    
+  # set up train
+  - /runner@train: ppo
+  - /lr@train.lr_schedule: actor_critic
+  - /lr@train.lr_schedule.actor: constant
+  - /lr@train.lr_schedule.critic: constant
+  - /models@train.critic: linear
+    
+  # set up eval
+  - /runner@eval: eval
+  - /dataset@eval.dataset: offline_episode
+    
+  - _self_
+
+
+exp:
+  group: "lmnav-1env"
+  job_type: "rl"
+  tags: ["lora"]
+
+train:
+  steps: 10_000
+  num_envs: 10
+  batch_size: 120
+  minibatch_size: 2
+  num_grad_accums: 6
+
+  num_rollout_steps: 22
+  ppo_epochs: 2
+  deterministic: False
+
+  lr_schedule:
+    actor:
+      lr: 2.5e-5
+    critic:
+      lr: 2.5e-5
+    
+  actor:
+    use_artifact_policy_config: True 
+    load_artifact:
+      name: "lmnav-1env-bc-lora"
+      version: "latest"
+        
+  critic:
+    p_dropout: 0.1
+    
+      
+  store_artifact:
+    name: ${...exp.name}
+        
+eval:
+  num_episodes: 50
+  save_videos: True
+  deterministic: False
+  num_envs: 10
+  dataset:
+    artifact:
+      name: "offline_00744"
+      version: "latest"
+  policy:
+    use_artifact_policy_config: True
+    load_artifact: 
+      name: ${..train.store_artifact.name}
+      version: "latest"
+
+      

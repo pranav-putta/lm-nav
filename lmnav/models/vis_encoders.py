@@ -11,7 +11,7 @@ from lmnav.models.Qformer import BertConfig, BertLMHeadModel
 from lmnav.models.perceiver import Perceiver
 
 from lmnav.common.dist_utils import download_cached_file
-from lmnav.common.utils import is_url
+from lmnav.common.utils import is_url, convert_weights_to_fp16
 import contextlib
 
 import logging
@@ -25,16 +25,7 @@ class LayerNorm(nn.LayerNorm):
         ret = super().forward(x.type(torch.float32))
         return ret.type(orig_type)
 
-def convert_weights_to_fp16(model: nn.Module):
-    """Convert applicable model parameters to fp16"""
 
-    def _convert_weights_to_fp16(l):
-        if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Linear)):
-            l.weight.data = l.weight.data.to(torch.bfloat16)
-            if l.bias is not None:
-                l.bias.data = l.bias.data.to(torch.bfloat16)
-    model.apply(_convert_weights_to_fp16)
- 
 
 class VisualEncoder(BaseModel):
 
@@ -76,7 +67,8 @@ class QformerVisualEncoder(VisualEncoder):
                  freeze_vit,
                  freeze_qformer,
                  qformer_compressor_cfg,
-                 qformer_model):
+                 qformer_model,
+                 **kwargs):
         super().__init__() 
         
         print('Loading Qformer visual encoder...')
