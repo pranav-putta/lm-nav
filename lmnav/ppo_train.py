@@ -1,4 +1,7 @@
 from collections.abc import Mapping
+import pdb
+from tqdm import tqdm
+from torch.distributed.elastic.multiprocessing.errors import record
 from operator import add
 from collections import Counter
 from functools import reduce
@@ -14,7 +17,6 @@ from omegaconf import OmegaConf
 import time
 
 import numpy as np
-from tqdm import tqdm
 from habitat_baselines.utils.common import batch_obs
 
 from pprint import pprint
@@ -228,18 +230,14 @@ class PPOTrainer:
                                      device='cpu',
                                      dtype=torch.float32)
         episode_stats = all_reduce(self.is_distributed, self.device, episode_stats)
-        episode_stats /= torch.distributed.get_world_size()
 
+        # write stats if on rank 0
+        episode_stats /= self.world_size
         episode_stats = { k: episode_stats[i].item() for i, k in enumerate(stats_keys) }
-
         self.cumstats['step'] = self.step
         self.cumstats['metrics/total_frames'] += int(episode_stats['metrics/frames'] * torch.distributed.get_world_size())
-
-        return {
-            **self.cumstats,
-            **episode_stats
-        }
-    
+        return { **self.cumstats, **episode_stats }
+         
  
     def save_checkpoint(self):
         # only save parameters that have been updated
@@ -288,7 +286,7 @@ class PPOTrainer:
         action_generator = self.model.module.actor.action_generator(self.envs.num_envs, self.config.train.deterministic)
 
         observations = self.envs.reset()
-        with torch.no_grad():
+        with torch.no_grad(), self.model.no_sync():
             rgb_embds, goal_embds = self.embed_observations(observations)
         dones = [False for _ in range(self.envs.num_envs)]
         
@@ -296,7 +294,7 @@ class PPOTrainer:
         self.rollouts.insert(next_rgbs=rgb_embds, next_goals=goal_embds)
 
         while True:
-            with torch.no_grad():
+            with torch.no_grad(), self.model.no_sync():
                 it = range(self.config.train.num_rollout_steps)
                 it = tqdm(it, desc='generating rollout...') if self.verbose else it
                 
@@ -416,7 +414,7 @@ class PPOTrainer:
                 advantages_mean=masked_mean(advantages, mask).detach().item(),
                 ratio=torch.mean(ratio.detach()).item(),
             ),
-            "learner/returns": dict(mean=return_mean.detach(), var=return_var.detach()),
+            "learner/returns": dict(mean=return_mean.detach().item(), var=return_var.detach().item()),
             "learner/val": dict(
                 vpred=masked_mean(vpreds, mask).detach().item(),
                 error=masked_mean((vpreds - returns) ** 2, mask).detach().item(),
@@ -463,7 +461,6 @@ class PPOTrainer:
         return all_qs
     
     def train_ppo_step(self):
-        
         stats = { 'metrics/frames': 0, 'metrics/rollouts_wait_time': 0. }
         
         # first collect environment samples
@@ -474,7 +471,6 @@ class PPOTrainer:
         stats['metrics/rollouts_wait_time'] = rollouts_end_time - rollouts_start_time
         
         T = self.config.train.num_rollout_steps
-        batch_size = self.config.train.batch_size
         minibatch_size = self.config.train.minibatch_size
         num_grad_accums = self.config.train.num_grad_accums
         
@@ -513,7 +509,8 @@ class PPOTrainer:
         for _ in range(self.config.train.ppo_epochs):
             for mb in range(0, E, num_grad_accums * minibatch_size):                 
                 minibatches_left = E - mb * minibatch_size
-                for g in range(min(minibatches_left, num_grad_accums)):
+                num_grad_steps = min(minibatches_left, num_grad_accums)
+                for g in range(num_grad_steps):
                     mb_idxs = batch_idxs[mb + g: mb + g + minibatch_size]
                     minibatch = {
                         'rgbs': rgbs_t[mb_idxs],
@@ -530,7 +527,7 @@ class PPOTrainer:
                     
 
                     # TODO; add gradient parameter clipping
-                    if g < num_grad_accums - 1:
+                    if g < num_grad_steps - 1:
                         with self.model.no_sync():
                             logits, vpreds, logprobs = self.batched_forward_pass(minibatch['rgbs'], minibatch['goals'], minibatch['actions'], minibatch['masks'])
                             loss_p, loss_v, train_stats = self.compute_loss(
@@ -562,11 +559,10 @@ class PPOTrainer:
 
                     cum_train_stats = reduce(add, map(Counter, (cum_train_stats, train_stats))) 
                     
-                if self.config.train.max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.train.max_grad_norm)
+                # if self.config.train.max_grad_norm is not None:
+                    # torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.train.max_grad_norm)
                 self.optim.step()
                 self.optim.zero_grad()
-
             
         
         mask_t.to('cpu')
@@ -585,6 +581,7 @@ class PPOTrainer:
         self.initialize_train()
 
         while self.step < self.config.train.steps:
+            print('step', self.step, self.device)
             stats = self.train_ppo_step()
 
             self.lr_scheduler.step()
@@ -599,6 +596,7 @@ class PPOTrainer:
             self.step += 1
 
             
+@record
 def main():
     parser = argparse.ArgumentParser(description="Example argparse for cfg_path")
     parser.add_argument('cfg_path', type=str, help="Path to the configuration file")

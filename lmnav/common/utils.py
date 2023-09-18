@@ -458,8 +458,9 @@ def all_reduce(is_distributed, device, t):
     orig_device = t.device
     t = t.to(device)
     torch.distributed.all_reduce(t)
-
-    return t.to(device=orig_device)
+    
+    t= t.to(device=orig_device)
+    return t
 
 def convert_weights_to_fp16(model: nn.Module):
     """Convert applicable model parameters to fp16"""
