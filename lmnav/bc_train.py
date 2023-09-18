@@ -255,6 +255,8 @@ class BCTrainer:
                 rgbs_t.to('cpu')
                 goals_t.to('cpu')
 
+            if self.config.train.max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(self.agent.parameters(), self.config.train.max_grad_norm)
             self.optim.step()
             self.optim.zero_grad()
 

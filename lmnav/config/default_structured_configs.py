@@ -170,6 +170,7 @@ class TrainRunnerConfig(BaseRunnerConfig):
     batch_size: int = MISSING
     minibatch_size: int = MISSING
     num_grad_accums: int = MISSING
+    max_grad_norm: Optional[float] = 1.2
     ckpt_freq: int = 50
 
 @dataclass

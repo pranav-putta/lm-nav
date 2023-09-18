@@ -483,7 +483,6 @@ class PPOTrainer:
 
         # gather all episodes from other gpus
         stats['metrics/frames'] = collected_frames
-
         
 
         # construct batch
@@ -494,20 +493,11 @@ class PPOTrainer:
         actions_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in actions])
         rewards_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in rewards])
 
-        
-        start = time.time()
         rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(lambda t: self.all_gather(t), (rgbs_t, goals_t, actions_t, rewards_t, mask_t)) 
-        end = time.time()
-        if rank0_only():
-            print("Time taken to gather:", end - start)
-            print("Shape of gathered tensor: ", rgbs_d.shape, self.device)
-            
         # slice up the gathered data into equal sized pieces
         E = rgbs_d.shape[0] // self.world_size
-        print(self.device, "gets", E)
-        rgbs_t, goals_t, actions_t, rewards_t, mask_t = map(lambda t: t[self.rank * E:self.rank * E + E], (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
-        print(rgbs_t.shape, self.device)
-        
+        rgbs_t, goals_t, actions_t, rewards_t, mask_t = map(lambda t: t[self.rank * E:self.rank * E + E].clone(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
+        rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(lambda t: t.cpu(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
         
         with torch.no_grad(), self.model.no_sync():
             old_logits, values, old_logprobs = self.batched_forward_pass(rgbs_t, goals_t, actions_t, mask_t) 
@@ -515,12 +505,12 @@ class PPOTrainer:
             # TODO; add reference model kl penalty
             rewards_t = rewards_t.to(self.device)
             values, advantages, returns = self.compute_advantages(values, rewards_t)
-            batch_idxs = torch.randperm(len(rgbs))
-
+            
         E, T = rgbs_t.shape[:2]
+        batch_idxs = torch.randperm(E)
          
         cum_train_stats = {}
-        for i in range(self.config.train.ppo_epochs):
+        for _ in range(self.config.train.ppo_epochs):
             for mb in range(0, E, num_grad_accums * minibatch_size):                 
                 minibatches_left = E - mb * minibatch_size
                 for g in range(min(minibatches_left, num_grad_accums)):
@@ -572,6 +562,8 @@ class PPOTrainer:
 
                     cum_train_stats = reduce(add, map(Counter, (cum_train_stats, train_stats))) 
                     
+                if self.config.train.max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.train.max_grad_norm)
                 self.optim.step()
                 self.optim.zero_grad()
 
