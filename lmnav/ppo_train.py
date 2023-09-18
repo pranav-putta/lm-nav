@@ -1,6 +1,7 @@
 from collections.abc import Mapping
+from itertools import product
 import pdb
-from tqdm import tqdm
+# from tqdm import tqdm
 from torch.distributed.elastic.multiprocessing.errors import record
 from operator import add
 from collections import Counter
@@ -20,7 +21,7 @@ import numpy as np
 from habitat_baselines.utils.common import batch_obs
 
 from pprint import pprint
-from lmnav.common.utils import all_reduce
+from lmnav.common.utils import all_reduce, sum_dict
 from lmnav.dataset.data_gen import  _init_envs
 from lmnav.common.episode_processor import apply_transforms_inputs 
 from lmnav.common.episode_processor import apply_transforms_actions, apply_transforms_images, apply_transforms_inputs, extract_inputs_from_dataset
@@ -178,6 +179,7 @@ class PPOTrainer:
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=self.optim,
                                                               lr_lambda=[get_lr_schedule_lambda(self.config.train.lr_schedule.actor),
                                                                          get_lr_schedule_lambda(self.config.train.lr_schedule.critic)])
+        torch.distributed.barrier()
 
         
         
@@ -217,22 +219,16 @@ class PPOTrainer:
             num_trainable_params = sum([param.numel() for param in model.parameters() if param.requires_grad])
             print(f"Done setting up agent! Total params: {num_params}. Trainable Params: {num_trainable_params}")
             
-            params_with_gradients = [name for name, param in model.named_parameters() if param.requires_grad]
-            # print("Params with gradients")
-            # pprint(params_with_gradients)
-
         return model
         
 
     def update_stats(self, episode_stats):
         stats_keys = sorted(episode_stats.keys())
         episode_stats = torch.tensor([episode_stats[key] for key in stats_keys],
-                                     device='cpu',
+                                     device=self.device,
                                      dtype=torch.float32)
-        episode_stats = all_reduce(self.is_distributed, self.device, episode_stats)
-
+        all_reduce(self.is_distributed, self.device, episode_stats)
         # write stats if on rank 0
-        episode_stats /= self.world_size
         episode_stats = { k: episode_stats[i].item() for i, k in enumerate(stats_keys) }
         self.cumstats['step'] = self.step
         self.cumstats['metrics/total_frames'] += int(episode_stats['metrics/frames'] * torch.distributed.get_world_size())
@@ -296,7 +292,7 @@ class PPOTrainer:
         while True:
             with torch.no_grad(), self.model.no_sync():
                 it = range(self.config.train.num_rollout_steps)
-                it = tqdm(it, desc='generating rollout...') if self.verbose else it
+                # it = tqdm(it, desc='generating rollout...') if self.verbose else it
                 
                 for _ in it:
                     next(action_generator) 
@@ -370,7 +366,8 @@ class PPOTrainer:
                      mask,
                      advantages,
                      returns):
-        vpredclipped = self.clip_by_value(vpreds, values - self.config.train.cliprange_value, values + self.config.train.cliprange_value)
+        vpredclipped = self.clip_by_value(vpreds, values - self.config.train.cliprange_value, values +
+            self.config.train.cliprange_value)
 
         vf_losses1 = (vpreds - returns) ** 2
         vf_losses2 = (vpredclipped - returns) ** 2
@@ -380,7 +377,8 @@ class PPOTrainer:
         ratio = torch.exp(logprobs - old_logprobs)
 
         pg_losses = -advantages * ratio
-        pg_losses2 = -advantages * torch.clamp(ratio, 1.0 - self.config.train.cliprange, 1.0 + self.config.train.cliprange)
+        pg_losses2 = -advantages * torch.clamp(ratio, 1.0 - self.config.train.cliprange, 1.0 +
+            self.config.train.cliprange)
 
         pg_loss = masked_mean(torch.max(pg_losses, pg_losses2), mask)
         pg_clipfrac = masked_mean(torch.gt(pg_losses2, pg_losses).float(), mask)
@@ -445,19 +443,15 @@ class PPOTrainer:
         local_size = torch.tensor(q.shape[0], device=self.device)
         all_sizes = [torch.zeros_like(local_size) for _ in range(self.world_size)]
         torch.distributed.all_gather(all_sizes, local_size)
-        max_size = max(all_sizes)
 
-        size_diff = max_size.item() - local_size.item()
+        size_diff = max(all_sizes).item() - local_size.item()
         if size_diff:
             padding = torch.zeros((size_diff, *q.shape[1:]), device=self.device, dtype=q.dtype)
             q = torch.cat((q, padding))
 
         all_qs_padded = [torch.zeros_like(q) for _ in range(self.world_size)]
         torch.distributed.all_gather(all_qs_padded, q)
-        all_qs = []
-        for q, size in zip(all_qs_padded, all_sizes):
-            all_qs.append(q[:size])
-        all_qs = torch.cat(all_qs)
+        all_qs = torch.cat([q[:size] for q, size in zip(all_qs_padded, all_sizes)])
         return all_qs
     
     def train_ppo_step(self):
@@ -480,7 +474,6 @@ class PPOTrainer:
         # gather all episodes from other gpus
         stats['metrics/frames'] = collected_frames
         
-
         # construct batch
         mask_t = torch.stack([torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])]) for t in rgbs])
         mask_t = mask_t.bool()
@@ -494,6 +487,7 @@ class PPOTrainer:
         E = rgbs_d.shape[0] // self.world_size
         rgbs_t, goals_t, actions_t, rewards_t, mask_t = map(lambda t: t[self.rank * E:self.rank * E + E].clone(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
         rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(lambda t: t.cpu(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
+         
         
         with torch.no_grad(), self.model.no_sync():
             old_logits, values, old_logprobs = self.batched_forward_pass(rgbs_t, goals_t, actions_t, mask_t) 
@@ -505,74 +499,67 @@ class PPOTrainer:
         E, T = rgbs_t.shape[:2]
         batch_idxs = torch.randperm(E)
          
-        cum_train_stats = {}
-        for _ in range(self.config.train.ppo_epochs):
-            for mb in range(0, E, num_grad_accums * minibatch_size):                 
-                minibatches_left = E - mb * minibatch_size
-                num_grad_steps = min(minibatches_left, num_grad_accums)
-                for g in range(num_grad_steps):
-                    mb_idxs = batch_idxs[mb + g: mb + g + minibatch_size]
-                    minibatch = {
-                        'rgbs': rgbs_t[mb_idxs],
-                        'goals': goals_t[mb_idxs],
-                        'actions': actions_t[mb_idxs],
-                        'masks': mask_t[mb_idxs],
-                        'advantages': advantages[mb_idxs],
-                        'returns': returns[mb_idxs],
-                        'logprobs': old_logprobs[mb_idxs],
-                        'values': values[mb_idxs]
-                    }
-                    # move all to device
-                    minibatch = {k: v.to(self.device) for k, v in minibatch.items()}
-                    
+        cum_train_stats_l = []
+        for _, mb in product(range(self.config.train.ppo_epochs), 
+                             range(0, E, num_grad_accums * minibatch_size)):                 
 
-                    # TODO; add gradient parameter clipping
-                    if g < num_grad_steps - 1:
-                        with self.model.no_sync():
-                            logits, vpreds, logprobs = self.batched_forward_pass(minibatch['rgbs'], minibatch['goals'], minibatch['actions'], minibatch['masks'])
-                            loss_p, loss_v, train_stats = self.compute_loss(
-                                                    minibatch['logprobs'],
-                                                    minibatch['values'],
-                                                    logprobs,
-                                                    logits,
-                                                    vpreds,
-                                                    minibatch['masks'],
-                                                    minibatch['advantages'],
-                                                    minibatch['returns']
-                            ) 
-                            loss = loss_p + loss_v
-                            loss.backward() 
-                    else:
-                        logits, vpreds, logprobs = self.batched_forward_pass(minibatch['rgbs'], minibatch['goals'], minibatch['actions'], minibatch['masks'])
-                        loss_p, loss_v, train_stats = self.compute_loss(
-                                minibatch['logprobs'],
-                                minibatch['values'],
-                                logprobs,
-                                logits,
-                                vpreds,
-                                minibatch['masks'],
-                                minibatch['advantages'],
-                                minibatch['returns']
-                            ) 
-                        loss = loss_p + loss_v
-                        loss.backward()
+            minibatches_left = E - mb * minibatch_size
+            num_grad_steps = min(minibatches_left, num_grad_accums)
 
-                    cum_train_stats = reduce(add, map(Counter, (cum_train_stats, train_stats))) 
-                    
-                # if self.config.train.max_grad_norm is not None:
-                    # torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.train.max_grad_norm)
-                self.optim.step()
-                self.optim.zero_grad()
+            for g in range(num_grad_steps):
+                mb_idxs = batch_idxs[mb + g: mb + g + minibatch_size]
+                minibatch = {
+                    'rgbs': rgbs_t[mb_idxs],
+                    'goals': goals_t[mb_idxs],
+                    'actions': actions_t[mb_idxs],
+                    'masks': mask_t[mb_idxs],
+                    'advantages': advantages[mb_idxs],
+                    'returns': returns[mb_idxs],
+                    'logprobs': old_logprobs[mb_idxs],
+                    'values': values[mb_idxs]
+                }
+                # move all to device
+                minibatch = {k: v.to(self.device) for k, v in minibatch.items()}
+
+                def compute_loss():
+                    logits, vpreds, logprobs = self.batched_forward_pass(
+                        minibatch['rgbs'], 
+                        minibatch['goals'], 
+                        minibatch['actions'],
+                        minibatch['masks'])
+                    loss_p, loss_v, train_stats = self.compute_loss(
+                         minibatch['logprobs'],
+                         minibatch['values'],
+                         logprobs,
+                         logits,
+                         vpreds,
+                         minibatch['masks'],
+                         minibatch['advantages'],
+                         minibatch['returns']
+                    ) 
+                    loss = loss_p + loss_v
+                    loss.backward() 
+                    return train_stats
+
+                if g < num_grad_steps - 1:
+                    with self.model.no_sync():
+                        train_stats = compute_loss()
+                else:
+                    train_stats = compute_loss()
+
+                cum_train_stats_l.append(train_stats)
+                
+            if self.config.train.max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.train.max_grad_norm)
+            self.optim.step()
+            self.optim.zero_grad()
             
-        
-        mask_t.to('cpu')
-        rgbs_t.to('cpu')
-        goals_t.to('cpu')
-        actions_t.to('cpu')
-        rewards_t.to('cpu')
+        map(lambda t: t.to('cpu'), (mask_t, rgbs_t, goals_t, actions_t, rewards_t))        
+        dict_cum_train_stats = reduce(sum_dict, cum_train_stats_l)
+        dict_cum_train_stats = { k: v / len(cum_train_stats_l) for k, v in dict_cum_train_stats.items() }
 
         return {
-            **cum_train_stats,
+            **dict_cum_train_stats,
             **stats
         }
 
@@ -581,12 +568,12 @@ class PPOTrainer:
         self.initialize_train()
 
         while self.step < self.config.train.steps:
-            print('step', self.step, self.device)
             stats = self.train_ppo_step()
 
             self.lr_scheduler.step()
-            torch.distributed.barrier()
             stats = self.update_stats(stats)
+            
+            torch.distributed.barrier()
 
             if rank0_only():
                 self.writer.write(stats)

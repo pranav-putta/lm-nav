@@ -480,4 +480,7 @@ def logprobs_from_logits(logits, labels):
     logpy = torch.gather(logp, 2, labels.unsqueeze(2)).squeeze(-1)
     return logpy
 
+def sum_dict(d1, d2):
+    return {k: d1[k] + d2[k] for k in d1.keys() | d2.keys()}
+
 
