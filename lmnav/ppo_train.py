@@ -114,6 +114,7 @@ class PPOTrainer:
         self.validate_config()
         self.device = torch.device('cuda' if torch.cuda.is_available else 'cpu')
         local_rank, world_rank, world_size = get_distrib_size()
+        self.world_size = world_size
         self.is_distributed = world_size > 1 or True
         
         if self.is_distributed:
@@ -145,8 +146,9 @@ class PPOTrainer:
             self.artifact_store = torch.distributed.PrefixStore("artifacts", tcp_store)
          
             
-        self.writer.open(self.config)
-        
+        if rank0_only():
+            self.writer.open(self.config)
+            
         os.makedirs(self.exp_folder, exist_ok=True)
         os.makedirs(os.path.join(self.exp_folder, 'ckpts'), exist_ok=True)
         
@@ -185,7 +187,13 @@ class PPOTrainer:
         # don't construct a policy from scratch, rather pull it from artifact
         if actor_policy_cfg.use_artifact_policy_config:
             assert actor_policy_cfg.load_artifact is not None, 'use_artifact_policy_config=True, but load_artifact not specified!'
-            ckpt_path = self.writer.load_model(actor_policy_cfg.load_artifact)
+            if rank0_only():
+                ckpt_path = self.writer.load_model(actor_policy_cfg.load_artifact)
+                self.artifact_store.set("actor_policy_ckpt", ckpt_path)
+            else:
+                self.artifact_store.wait(["actor_policy_ckpt"])
+                ckpt_path = self.artifact_store.get("actor_policy_ckpt").decode('utf-8')
+                
             print(f"Loading actor policy from config: {ckpt_path}")
             ckpt_state_dict = torch.load(ckpt_path, map_location=self.device)
             actor_policy_cfg = OmegaConf.create(ckpt_state_dict['config']).train.policy
@@ -419,6 +427,41 @@ class PPOTrainer:
         }
         return pg_loss, self.config.train.vf_coef * vf_loss, flatten_dict(stats)
         
+    def all_gather(self, q):
+        """
+        Gathers tensor arrays of different lengths across multiple gpus. 
+        Assumes that q.shape[1:] is identical across gpus, and only pads dim=0
+        
+        Parameters
+        ----------
+            q : tensor array
+            ws : world size
+            device : current gpu device
+            
+        Returns
+        -------
+            all_q : list of gathered tensor arrays from all the gpus
+
+        """
+        q = q.to(self.device)
+        local_size = torch.tensor(q.shape[0], device=self.device)
+        all_sizes = [torch.zeros_like(local_size) for _ in range(self.world_size)]
+        torch.distributed.all_gather(all_sizes, local_size)
+        max_size = max(all_sizes)
+
+        size_diff = max_size.item() - local_size.item()
+        if size_diff:
+            padding = torch.zeros((size_diff, *q.shape[1:]), device=self.device, dtype=q.dtype)
+            q = torch.cat((q, padding))
+
+        all_qs_padded = [torch.zeros_like(q) for _ in range(self.world_size)]
+        torch.distributed.all_gather(all_qs_padded, q)
+        all_qs = []
+        for q, size in zip(all_qs_padded, all_sizes):
+            all_qs.append(q[:size])
+        all_qs = torch.cat(all_qs)
+        return all_qs
+    
     def train_ppo_step(self):
         
         stats = { 'metrics/frames': 0, 'metrics/rollouts_wait_time': 0. }
@@ -430,16 +473,18 @@ class PPOTrainer:
         rollouts_end_time = time.time()
         stats['metrics/rollouts_wait_time'] = rollouts_end_time - rollouts_start_time
         
-        
         T = self.config.train.num_rollout_steps
         batch_size = self.config.train.batch_size
         minibatch_size = self.config.train.minibatch_size
-        num_minibatches = batch_size // minibatch_size
         num_grad_accums = self.config.train.num_grad_accums
         
         collected_frames = sum([len(t) for t in rgbs])
         assert collected_frames == T * self.envs.num_envs
+
+        # gather all episodes from other gpus
         stats['metrics/frames'] = collected_frames
+
+        
 
         # construct batch
         mask_t = torch.stack([torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])]) for t in rgbs])
@@ -448,8 +493,14 @@ class PPOTrainer:
         goals_t = torch.stack([g[0:1] for g in goals]) 
         actions_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in actions])
         rewards_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in rewards])
+
         
-        with torch.no_grad():
+        rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(lambda t: self.all_gather(t), (rgbs_t, goals_t, actions_t, rewards_t, mask_t)) 
+        # slice up the gathered data into equal sized pieces
+        E = rgbs_d.shape[0] // self.world_size
+        rgbs_t, goals_t, actions_t, rewards_t, mask_t = map(lambda t: t[self.rank * E:self.rank + E], (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
+        
+        with torch.no_grad(), self.model.no_sync():
             old_logits, values, old_logprobs = self.batched_forward_pass(rgbs_t, goals_t, actions_t, mask_t) 
 
             # TODO; add reference model kl penalty
@@ -458,8 +509,9 @@ class PPOTrainer:
             batch_idxs = torch.randperm(len(rgbs))
 
         E, T = rgbs_t.shape[:2]
+         
         cum_train_stats = {}
-        for _ in range(self.config.train.ppo_epochs):
+        for i in range(self.config.train.ppo_epochs):
             for mb in range(0, E, num_grad_accums * minibatch_size):                 
                 minibatches_left = E - mb * minibatch_size
                 for g in range(min(minibatches_left, num_grad_accums)):

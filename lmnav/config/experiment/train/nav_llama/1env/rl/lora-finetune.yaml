@@ -36,7 +36,7 @@ train:
   minibatch_size: 2
   num_grad_accums: 6
 
-  num_rollout_steps: 22
+  num_rollout_steps: 5
   ppo_epochs: 2
   deterministic: False
 
