@@ -17,10 +17,6 @@ from lmnav.models.modeling_llama import LlamaForCausalLM
 from transformers import LlamaTokenizer,BertConfig
 # from transformers.models.bert.modeling_bert import BertEncoder
 import einops
-import copy
-from lmnav.models.Qformer import BertConfig, BertLMHeadModel
-from lmnav.models.ImageBind.models.imagebind_model import ImageBindModel,ModalityType
-from lmnav.models.ImageBind.models import imagebind_model
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 
 

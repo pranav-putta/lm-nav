@@ -495,10 +495,19 @@ class PPOTrainer:
         rewards_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in rewards])
 
         
+        start = time.time()
         rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(lambda t: self.all_gather(t), (rgbs_t, goals_t, actions_t, rewards_t, mask_t)) 
+        end = time.time()
+        if rank0_only():
+            print("Time taken to gather:", end - start)
+            print("Shape of gathered tensor: ", rgbs_d.shape, self.device)
+            
         # slice up the gathered data into equal sized pieces
         E = rgbs_d.shape[0] // self.world_size
-        rgbs_t, goals_t, actions_t, rewards_t, mask_t = map(lambda t: t[self.rank * E:self.rank + E], (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
+        print(self.device, "gets", E)
+        rgbs_t, goals_t, actions_t, rewards_t, mask_t = map(lambda t: t[self.rank * E:self.rank * E + E], (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
+        print(rgbs_t.shape, self.device)
+        
         
         with torch.no_grad(), self.model.no_sync():
             old_logits, values, old_logprobs = self.batched_forward_pass(rgbs_t, goals_t, actions_t, mask_t) 
