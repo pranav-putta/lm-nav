@@ -49,7 +49,7 @@ train:
   actor:
     use_artifact_policy_config: True 
     load_artifact:
-      name: "lmnav-1env-bc-lora"
+      name: "lmnav-1env-bc-lora_clip_max_trajectory_length_150"
       version: "latest"
         
   critic:

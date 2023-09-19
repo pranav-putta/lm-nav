@@ -9,44 +9,45 @@ defaults:
   # set up experiment misc.
   - /exp: base
   - /logger@exp.logger: wb
-    
-  # set up train
-  - /runner@train: bc
-  - /lr@train.lr_schedule: exponential
-  - /models/policy/nav_llama/qformer@train.policy: lora 
-  - /dataset@train.dataset: offline_episode
-    
+   
   # set up eval
   - /runner@eval: eval
   - /dataset@eval.dataset: offline_episode
-    
+
+  # set up train
+  - /runner@train: bc
+  - /lr@train.lr_schedule: exponential
+  - /dataset@train.dataset: offline_episode
+  - /models/policy/nav_llama/clip@train.policy: lora 
+ 
   - _self_
 
 
 exp:
   group: "lmnav-10env"
   job_type: "bc"
-  tags: ["lora"]
+  tags: ["lora", "clip"]
 
 train:
-  batch_size: 120
-  minibatch_size: 2
-  num_grad_accums: 6
+  batch_size: 36
+  minibatch_size: 3
+  num_grad_accums: 2
 
   steps: 10_000
-  episodes_per_batch: 10
+  episodes_per_batch: 36
   lr_schedule:
     lr: 2.5e-4
     gamma: 0.9995
   policy:
-    max_trajectory_length: 22    
-  dataset: 
+    max_trajectory_length: 200    
+  dataset:
     artifact: 
       name: "offline_10envs"
       version: "latest"
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
-  
+
+ 
 eval:
   policy: 
     use_artifact_policy_config: True

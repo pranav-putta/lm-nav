@@ -243,6 +243,7 @@ def main():
 
     with read_write(config):
         config.exp.resume_id = resume_id
+        config.exp.name = f'eval {config.eval.policy.load_artifact.name}'
         config.habitat_baselines.num_environments = config.eval.num_envs
         config.eval.deterministic = args.deterministic
 
