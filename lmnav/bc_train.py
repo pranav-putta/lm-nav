@@ -157,7 +157,6 @@ class BCTrainer:
         }
 
         if self.config.exp.resume_id is not None:
-            # TODO; update this with wandb maybe?
             artifact_name = f'{self.config.exp.group}-{self.config.exp.job_type}-{self.config.exp.name}'
             artifact_name = artifact_name.replace('+', '_')
             artifact_name = artifact_name.replace('=', '_')

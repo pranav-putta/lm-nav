@@ -36,7 +36,7 @@ class ExperimentConfig:
 class ArtifactConfig:
     name: str = MISSING
     version: str = MISSING
-    dirpath: str = MISSING
+    dirpath: Optional[str] = MISSING
     
 
 ### MODEL CONFIGS ###

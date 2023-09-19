@@ -22,6 +22,7 @@ from habitat_baselines.utils.common import batch_obs
 
 from pprint import pprint
 from lmnav.common.utils import all_reduce, sum_dict
+from lmnav.config.default_structured_configs import ArtifactConfig
 from lmnav.dataset.data_gen import  _init_envs
 from lmnav.common.episode_processor import apply_transforms_inputs 
 from lmnav.common.episode_processor import apply_transforms_actions, apply_transforms_images, apply_transforms_inputs, extract_inputs_from_dataset
@@ -147,6 +148,23 @@ class PPOTrainer:
             torch.manual_seed(self.config.habitat.seed)
             
             self.artifact_store = torch.distributed.PrefixStore("artifacts", tcp_store)
+            if self.config.exp.resume_id is not None:
+                artifact_name = f'{self.config.exp.group}-{self.config.exp.job_type}-{self.config.exp.name}'
+                artifact_name = artifact_name.replace('+', '_')
+                artifact_name = artifact_name.replace('=', '_')
+
+                if rank0_only():
+                    ckpt_path = self.writer.load_model(ArtifactConfig(name=artifact_name,
+                                                                      version='latest',
+                                                                      dirpath=None))
+                    print(f"Loading actor-critic policy {artifact_name} from config: {ckpt_path}")
+                    self.artifact_store.set("policy_ckpt", ckpt_path)
+                else:
+                    self.artifact_store.wait(["policy_ckpt"])
+                    ckpt_path = self.artifact_store.get("policy_ckpt").decode('utf-8')
+                    
+                self.load_checkpoint(ckpt_path) 
+
          
             
         if rank0_only():
@@ -236,6 +254,19 @@ class PPOTrainer:
         return { **self.cumstats, **episode_stats }
          
  
+    def load_checkpoint(self, ckpt_path):
+        # load checkpoint
+        ckpt_state_dict = torch.load(ckpt_path, map_location='cpu')
+        self.model.load_state_dict(ckpt_state_dict['model'], strict=False)
+        self.optim.load_state_dict(ckpt_state_dict['optimizer'])
+        self.lr_scheduler.load_state_dict(ckpt_state_dict['lr_scheduler'])
+
+        # TODO; check if saved and loaded configs are the same
+
+        # update cum stats
+        self.cumstats = ckpt_state_dict['stats']
+        self.step = self.cumstats['step']
+
     def save_checkpoint(self):
         # only save parameters that have been updated
         param_grad_dict = {
