@@ -48,7 +48,11 @@ train:
     name: "${..exp.group}-${..exp.job_type}-${...exp.name}"
   
 eval:
-  policy: ${..train.policy}
+  policy: 
+    use_artifact_policy_config: True
+    load_artifact:
+      name: ${....train.store_artifact.name}
+      version: "latest"
   num_episodes: 50
   save_videos: True
   deterministic: False

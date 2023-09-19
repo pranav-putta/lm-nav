@@ -12,7 +12,10 @@ class PPOAgent(nn.Module):
 
     def action_generator(self, *args):
         return self.actor.action_generator(*args)
-    
+
+    def embed_visual(self, *args):
+        return self.actor.embed_visual(*args)
+
     def forward(self, rgbs_t, goals_t, actions_t, mask_t):
         E, T = rgbs_t.shape[:2]
         device = rgbs_t.device
