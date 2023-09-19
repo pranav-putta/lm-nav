@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
     
 from typing import Optional
-from omegaconf import MISSING
+from omegaconf import MISSING, OmegaConf
 import torch
 
 @dataclass
@@ -162,7 +162,6 @@ class BaseRunnerConfig:
     policy: BasePolicyConfig = MISSING
     dataset: BaseDatasetConfig = MISSING
     store_artifact: Optional[ArtifactConfig] = None
-    num_envs: int = MISSING
 
 @dataclass
 class TrainRunnerConfig(BaseRunnerConfig):
@@ -186,6 +185,7 @@ class PPOTrainRunnerConfig(TrainRunnerConfig):
     lr_schedule: ActorCriticLRConfig = MISSING
     num_rollout_steps: int = MISSING
     ppo_epochs: int = MISSING
+    num_envs: int = MISSING
     cliprange_value: float = 0.2
     cliprange: float = 0.2
     vf_coef: float = 0.1
@@ -201,6 +201,7 @@ class EvalRunnerConfig(BaseRunnerConfig):
     save_videos: bool = MISSING
     deterministic: bool = MISSING
     dtg_threshold: float = 1.0
+    num_envs: int = MISSING
     
 
 cs = ConfigStore.instance()
@@ -237,4 +238,4 @@ cs.store(group='runner', name='bc', node=BCTrainRunnerConfig)
 cs.store(group='runner', name='eval', node=EvalRunnerConfig)
 cs.store(group='runner', name='ppo', node=PPOTrainRunnerConfig)
 
-
+OmegaConf.register_new_resolver('quote', lambda x: x.replace('+', '_').replace('=', '_'))

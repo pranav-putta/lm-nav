@@ -53,4 +53,3 @@ eval:
   save_videos: True
   deterministic: False
   num_envs: 10
-  load_artifact: ${..train.store_artifact}

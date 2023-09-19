@@ -4,7 +4,7 @@ defaults:
   # set up habitat 
   - /env@habitat_baselines: habitat_baselines
   - /env@habitat: habitat 
-  - /dataset/imagenav/hm3d_1env
+  - /dataset/imagenav/hm3d_10env
     
   # set up experiment misc.
   - /exp: base
@@ -25,7 +25,7 @@ defaults:
 
 
 exp:
-  group: "lmnav-1env"
+  group: "lmnav-10env"
   job_type: "rl"
   tags: ["lora"]
 
@@ -49,7 +49,7 @@ train:
   actor:
     use_artifact_policy_config: True 
     load_artifact:
-      name: "lmnav-1env-bc-lora"
+      name: "lmnav-10env-bc-lora_lr_sched_lr_2.5e-4_gamma_0.9995.yaml"
       version: "latest"
         
   critic:
@@ -66,7 +66,7 @@ eval:
   num_envs: 10
   dataset:
     artifact:
-      name: "offline_00744"
+      name: "offline_10envs"
       version: "latest"
   policy:
     use_artifact_policy_config: True

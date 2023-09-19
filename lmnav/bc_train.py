@@ -4,7 +4,7 @@ import einops
 
 from pprint import pprint
 from habitat.utils.visualizations.utils import observations_to_image
-from habitat_baselines.utils.common import generate_video
+from habitat_baselines.utils.common import batch_obs, generate_video
 from habitat_sim.utils.datasets_download import argparse
 from habitat_baselines.utils.info_dict import extract_scalars_from_info
 
@@ -28,12 +28,13 @@ from lmnav.common.lr_utils import get_lr_schedule_lambda
 from lmnav.common.resumable_random_sampler import ResumableRandomSampler
 from lmnav.config.default import get_config
 from lmnav.common.utils import all_reduce
+from lmnav.config.default_structured_configs import ArtifactConfig
 
 from lmnav.dataset.data_gen import  _init_envs
 from lmnav.models import *
 from lmnav.dataset.offline_episode_dataset import OfflineEpisodeDataset
 from lmnav.processors import *
-from lmnav.common.episode_processor import apply_transforms_inputs, construct_subsequences 
+from lmnav.common.episode_processor import apply_transforms_images, apply_transforms_inputs, construct_subsequences 
 
 from lmnav.common.writer import *
 from lmnav.dataset.offline_episode_dataset import *
@@ -44,13 +45,14 @@ os.environ["HABITAT_SIM_LOG"] = "quiet"
 
 class BCTrainer:
     
-    def __init__(self, config):
+    def __init__(self, config, eval=False, verbose=False):
         self.config = config
+        self.verbose = verbose
         self.exp_folder = os.path.join(self.config.exp.root_dir,
                                        self.config.exp.group,
                                        self.config.exp.job_type,
                                        self.config.exp.name)
-        self.writer = instantiate(self.config.exp.logger)
+        self.writer = instantiate(self.config.exp.logger, eval_mode=eval)
 
     def validate_config(self):
         """
@@ -77,6 +79,8 @@ class BCTrainer:
 
         self.agent = self.setup_student()
         self.agent.eval()
+        
+        self.envs, env_spec = _init_envs(self.config)
         
         self.writer.open(self.config)
 
@@ -154,12 +158,21 @@ class BCTrainer:
 
         if self.config.exp.resume_id is not None:
             # TODO; update this with wandb maybe?
-            ckpt_folder = os.path.join(self.exp_folder, 'ckpts')
-            ckpts = os.listdir(ckpt_folder)
-            latest_ckpt = list(sorted(ckpts, key=lambda x: int(x.split('.')[1])))[-1]
-            print(f"Resuming run. Starting from {latest_ckpt}")
-            self.load_checkpoint(os.path.join(ckpt_folder, latest_ckpt)) 
+            artifact_name = f'{self.config.exp.group}-{self.config.exp.job_type}-{self.config.exp.name}'
+            artifact_name = artifact_name.replace('+', '_')
+            artifact_name = artifact_name.replace('=', '_')
 
+            if rank0_only():
+                ckpt_path = self.writer.load_model(ArtifactConfig(name=artifact_name, version='latest', dirpath=None))
+                print(f"Loading actor policy {artifact_name} from config: {ckpt_path}")
+                self.artifact_store.set("actor_policy_ckpt", ckpt_path)
+            else:
+                self.artifact_store.wait(["actor_policy_ckpt"])
+                ckpt_path = self.artifact_store.get("actor_policy_ckpt").decode('utf-8')
+                
+            self.load_checkpoint(ckpt_path) 
+
+        print("Starting train!")
         torch.distributed.barrier()
 
 
@@ -271,7 +284,7 @@ class BCTrainer:
     def load_checkpoint(self, ckpt_path):
         # load checkpoint
         print(f"Loading model from checkpoint")
-        ckpt_state_dict = torch.load(ckpt_path, map_location=self.device)
+        ckpt_state_dict = torch.load(ckpt_path, map_location='cpu')
         self.agent.load_state_dict(ckpt_state_dict['model'], strict=False)
         self.optim.load_state_dict(ckpt_state_dict['optimizer'])
         self.lr_scheduler.load_state_dict(ckpt_state_dict['lr_scheduler'])
@@ -359,17 +372,18 @@ class BCTrainer:
     def eval(self):
         self.initialize_eval()
 
-        if self.config.eval.load_artifact.version == '*':
-            versions = self.writer.load_model_versions(self.config.eval.load_artifact)
+        assert self.config.eval.policy.use_artifact_policy_config, "eval was selected, but no artifact was provided!"
+
+        if self.config.eval.policy.load_artifact.version == '*':
+            versions = self.writer.load_model_versions(self.config.eval.policy.load_artifact)
         else:
-            versions = [self.config.eval.load_artifact.version]
+            versions = [self.config.eval.policy.load_artifact.version]
 
         versions = reversed(sorted(versions))  
-        envs, env_spec = _init_envs(self.config)
         for version in versions:
             with read_write(self.config):
-                self.config.eval.load_artifact.version = version
-            ckpt_path = self.writer.load_model(self.config.eval.load_artifact)
+                self.config.eval.policy.load_artifact.version = version
+            ckpt_path = self.writer.load_model(self.config.eval.policy.load_artifact)
             stats_path = os.path.join(self.eval_dir, os.path.basename(ckpt_path), 'stats.pkl')
 
             if os.path.exists(stats_path):
@@ -378,10 +392,22 @@ class BCTrainer:
             else:
                 prev_stats = None
 
-            self.eval_checkpoint(ckpt_path, prev_stats, envs)
+            self.eval_checkpoint(ckpt_path, prev_stats)
 
 
-    def eval_checkpoint(self, ckpt_path, prev_stats, envs):
+    def embed_observations(self, observations):
+        observations = batch_obs(observations, self.device)
+        rgbs, goals = map(lambda t: einops.rearrange(t, 'b h w c -> b 1 c h w'), (observations['rgb'], observations['imagegoal']))
+        rgbs_t, goals_t = apply_transforms_images(self.vis_processor, rgbs, goals) 
+        img_embds_t, img_atts_t = self.agent.embed_visual(torch.cat([rgbs_t, goals_t], dim=2).to(self.device))
+        rgb_embds, goal_embds = img_embds_t[:, 0], img_embds_t[:, 1]
+
+        map(lambda t: t.to('cpu'), (observations['rgb'], observations['imagegoal'], observations['depth']))
+        del observations
+        return rgb_embds, goal_embds
+
+
+    def eval_checkpoint(self, ckpt_path, prev_stats):
         print(f"Starting evaluation for {ckpt_path}")
 
         N_episodes = self.config.eval.num_episodes
@@ -406,9 +432,9 @@ class BCTrainer:
         for param in self.agent.parameters():
             param.requires_grad = False
 
-        observations = envs.reset()
-        episodes = [[] for _ in range(envs.num_envs)]
-        dones = [False for _ in range(envs.num_envs)]
+        observations = self.envs.reset()
+        episodes = [[] for _ in range(self.envs.num_envs)]
+        dones = [False for _ in range(self.envs.num_envs)]
 
         stats = {
             f'{ckpt_name}/total_episodes': 0,
@@ -418,13 +444,13 @@ class BCTrainer:
         if prev_stats is not None:
             stats = prev_stats
 
-        actor = self.agent.action_generator(envs.num_envs, T, self.vis_processor, deterministic=self.config.eval.deterministic)
+        actor = self.agent.action_generator(self.envs.num_envs, deterministic=self.config.eval.deterministic)
 
         while stats[f'{ckpt_name}/total_episodes'] < N_episodes:
             next(actor)
-            actions = actor.send((observations, dones)) 
+            actions = actor.send((self.embed_observations(observations), dones)) 
 
-            outputs = envs.step(actions)
+            outputs = self.envs.step(actions)
             next_observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)] 
 
             # add environment observation to episodes list
@@ -437,30 +463,29 @@ class BCTrainer:
                 })
 
             for i, done in enumerate(dones):
-                if done:
-                    stats[f'{ckpt_name}/total_episodes'] += 1
+                if not done:
+                    continue
+                stats[f'{ckpt_name}/total_episodes'] += 1
 
-                    if episodes[i][-1]['info']['distance_to_goal'] < self.config.eval.dtg_threshold:
-                        stats[f'{ckpt_name}/successful_episodes'] += 1
+                if episodes[i][-1]['info']['distance_to_goal'] < self.config.eval.dtg_threshold:
+                    stats[f'{ckpt_name}/successful_episodes'] += 1
 
-                    self.writer.write(stats)
-                    if self.config.eval.save_videos:
-                        try:
-                            ckpt_idx = ckpt_name.split('.')[1]
-                            self.save_episode_video(episodes[i], stats[f'{ckpt_name}/total_episodes'], video_dir, ckpt_idx)
-                        except:
-                            print("There was an error while saving video!")
+                self.writer.write(stats)
+                if self.config.eval.save_videos:
+                    try:
+                        ckpt_idx = ckpt_name.split('.')[1]
+                        self.save_episode_video(episodes[i], stats[f'{ckpt_name}/total_episodes'], video_dir, ckpt_idx)
+                    except:
+                        print("There was an error while saving video!")
 
-                    # this is to tell actor generator to clear this episode from history
-                    episodes[i] = []
+                # this is to tell actor generator to clear this episode from history
+                episodes[i] = []
 
             observations = next_observations
         
             with open(os.path.join(eval_dir, 'stats.pkl'), 'wb+') as f:
                 pickle.dump(stats, f)
          
-               
-
 
 def main():
     parser = argparse.ArgumentParser(description="Example argparse for cfg_path")
@@ -478,13 +503,8 @@ def main():
 
         if args.eval:
             config.habitat_baselines.num_environments = config.eval.num_envs
-            config.exp.name = f'eval {config.exp.name}'
-            config.exp.job_type = 'eval'
 
-        if args.debug:
-            config.exp.job_type = 'debug'
-        
-    trainer = BCTrainer(config)
+    trainer = BCTrainer(config, eval=args.eval, verbose=args.debug)
 
     if not args.eval:
         trainer.train()

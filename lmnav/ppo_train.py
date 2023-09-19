@@ -89,13 +89,13 @@ def masked_mean(values, mask, axis=None):
 
 class PPOTrainer:
 
-    def __init__(self, config, verbose=False):
+    def __init__(self, config, eval=False, verbose=False):
         self.config = config
         self.exp_folder = os.path.join(self.config.exp.root_dir,
                                        self.config.exp.group,
                                        self.config.exp.job_type,
                                        self.config.exp.name)
-        self.writer = instantiate(self.config.exp.logger)
+        self.writer = instantiate(self.config.exp.logger, eval_mode=eval)
         self.verbose = verbose
 
     def validate_config(self):
@@ -228,6 +228,7 @@ class PPOTrainer:
                                      device=self.device,
                                      dtype=torch.float32)
         all_reduce(self.is_distributed, self.device, episode_stats)
+        episode_stats /= self.world_size
         # write stats if on rank 0
         episode_stats = { k: episode_stats[i].item() for i, k in enumerate(stats_keys) }
         self.cumstats['step'] = self.step
@@ -296,7 +297,7 @@ class PPOTrainer:
                 
                 for _ in it:
                     next(action_generator) 
-                    actions = action_generator.send((rgb_embds, goal_embds, dones))
+                    actions = action_generator.send(((rgb_embds, goal_embds), dones))
 
                     outputs = self.envs.step(actions)
                     next_observations, rewards, dones, infos = [list(x) for x in zip(*outputs)] 
@@ -601,13 +602,8 @@ def main():
 
         if args.eval:
             config.habitat_baselines.num_environments = config.eval.num_envs
-            config.exp.name = f'eval {config.exp.name}'
-            config.exp.job_type = 'eval'
-
-        if args.debug:
-            config.exp.job_type = 'debug'
         
-    trainer = PPOTrainer(config, verbose=args.debug)
+    trainer = PPOTrainer(config, eval=args.eval, verbose=args.debug)
 
     if not args.eval:
         trainer.train()

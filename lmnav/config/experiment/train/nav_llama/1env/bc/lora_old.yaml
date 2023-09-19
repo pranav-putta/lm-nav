@@ -50,7 +50,7 @@ eval:
   policy: 
     use_artifact_policy_config: True
     load_artifact:
-      name: ${....train.store_artifact.name}
+      name: ""
       version: "latest"
   num_episodes: 50
   save_videos: True

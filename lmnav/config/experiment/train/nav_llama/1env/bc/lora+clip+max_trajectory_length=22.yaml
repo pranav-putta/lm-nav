@@ -44,14 +44,16 @@ train:
       name: "offline_00744"
       version: "latest"
   store_artifact:
-    name: ${...exp.name}
+    name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
 
  
 eval:
-  policy: ${..train.policy}
-  ckpt: "ckpt.*.pth"
+  policy: 
+    use_artifact_policy_config: True
+    load_artifact:
+      name: ${....train.store_artifact.name}
+      version: "latest"
   num_episodes: 50
   save_videos: True
   deterministic: False
   num_envs: 10
-  load_artifact: ${..train.store_artifact}

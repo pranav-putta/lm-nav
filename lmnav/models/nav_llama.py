@@ -248,7 +248,7 @@ class NavLLAMA(Blip2Base):
         act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
         
         while True:
-            rgb_embds, goal_embds, dones = yield
+            (rgb_embds, goal_embds), dones = yield
             
             for i, episode in enumerate(episodes):
                 if dones[i]:

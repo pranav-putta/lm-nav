@@ -12,8 +12,8 @@ from tqdm import tqdm
 
 class BaseLogger(ABC):
     
-    def __init__(self):
-        pass
+    def __init__(self, eval_mode=False):
+        self.eval_mode = eval_mode
 
     @abstractmethod
     def open(self, cfg):
@@ -43,7 +43,7 @@ class BaseLogger(ABC):
 
 class ConsoleLogger(BaseLogger):
 
-    def open(self, cfg):
+    def open(self, cfg, eval_mode=False):
         pass
         
     def write(self, log_dict):
@@ -82,6 +82,8 @@ class WandBLogger(BaseLogger):
             wb_kwargs["notes"] = config.notes
         if config.job_type is not None:
             wb_kwargs['job_type'] = config.job_type
+            if self.eval_mode:
+                wb_kwargs['job_type'] = 'eval'
             
         slurm_info_dict = {
             k[len("SLURM_") :]: v
