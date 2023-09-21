@@ -1,9 +1,6 @@
 import logging
 
-import pdb
 import contextlib
-import random
-import time
 
 import torch.nn.functional as F
 
@@ -12,14 +9,11 @@ from torch.cuda.amp import autocast as autocast
 import torch.nn as nn
 from lmnav.common.episode_processor import apply_transforms_actions, apply_transforms_images, apply_transforms_inputs, extract_inputs_from_dataset
 
-from lmnav.common.registry import registry
-from lmnav.models.blip2 import Blip2Base, disabled_train
+from lmnav.models.blip2 import Blip2Base 
 from lmnav.models.modeling_llama import LlamaForCausalLM
-# from lmnav.models.Qformer import BertEncoder
-from transformers import LlamaTokenizer,BertConfig
-# from transformers.models.bert.modeling_bert import BertEncoder
+from transformers import LlamaTokenizer
 import einops
-from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
+from peft import get_peft_model, LoraConfig, TaskType
 
 
 class NavLLAMA(Blip2Base):
@@ -146,7 +140,7 @@ class NavLLAMA(Blip2Base):
         return inputs_llama, atts_llama
 
     
-    def prompt1_wrap(self, prompt, rgbs_embd, goals_embd, actions, masks):
+    def prompt1_wrap(self, prompt, rgbs_embd, goals_embd, actions, masks, order='sa'):
         action_tkns_t = self.tokenize_actions(actions)
         actions_embd = self.embed_actions(action_tkns_t)
         
@@ -158,9 +152,16 @@ class NavLLAMA(Blip2Base):
         prompt_embd = [embd.repeat(B, 1, 1) for embd in prompt_embd]
         
         actions_embd = einops.rearrange(actions_embd, 'b t h -> b t 1 h')
-        s_a_embds = torch.cat([rgbs_embd, actions_embd], dim=2)
+        if order == 'sa': 
+            s_a_embds = torch.cat([rgbs_embd, actions_embd], dim=2)
+        elif order == 'as':
+            s_a_embds = torch.cat([actions_embd, rgbs_embd], dim=2)
+        elif order == 's':
+            s_a_embds = torch.cat([rgbs_embd], dim=2)
+        else:
+            raise ValueError(f"{order} ordering is not known")
+            
         s_a_embds = s_a_embds.view(B, T * (Q + 1), H)
-
         goals_embd = goals_embd.squeeze(1)
 
         embds = [prompt_embd[0], goals_embd, prompt_embd[1], s_a_embds]
@@ -237,41 +238,32 @@ class NavLLAMA(Blip2Base):
     def tokens_per_img(self):
         return self.vis_encoder.num_tokens
 
-    def action_generator(self, num_envs, deterministic=False, max_its=0):
+    def create_empty_cache(self):
+        return [(torch.zeros(8, 32, 0, 128, device=self.device).clone(),) * 2 for _ in range(32)]
+
+    def action_generator(self, num_envs, deterministic=False):
         """
             action generator function, takes in the next rgb, goal, and action 
         """
-        T = self.max_trajectory_length
-        vis_processor = self.vis_encoder.vis_processor
-        
-        episodes = [ [] for _ in range(num_envs) ] 
-        
         act_tkn_ids = self.llama_tokenizer('stop forward left right', add_special_tokens=False, return_tensors='pt') 
         act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
-        
-        its = 0
+ 
+        # assumes that max_trajectory_length = C * num_rollout_steps
+        caches = [self.create_empty_cache() for _ in range(num_envs)]
+        last_actions = [None for _ in range(num_envs)]
+       
         while True:
             (rgb_embds, goal_embds), dones = yield
             if dones is None:
-                episodes.clear()
+                caches.clear()
             
-            for i, episode in enumerate(episodes):
+            for i in range(len(caches)):
                 if dones[i]:
-                    episode.clear()
+                    caches[i] = self.create_empty_cache()
 
-                episode.append({
-                                'rgb_embds': rgb_embds[i],
-                                'goal_embds': goal_embds[i],
-                                'action': 0
-                            })
-
-            episodes = [e[-(T - 1):] for e in episodes]
-
-            rgb_embds, goal_embds, actions = map(lambda key: [[step[key] for step in episode] for episode in episodes], ('rgb_embds', 'goal_embds', 'action'))
-            rgb_embds, goal_embds = map(lambda seq: [torch.stack(t, dim=0) for t in seq], (rgb_embds, goal_embds))
-            actions = [torch.tensor(t) for t in actions]
-            rgb_embds, goal_embds, actions_t = map(lambda t: self.pad_sequences(t, dim=0), (rgb_embds, goal_embds, actions))
-            goal_embds = goal_embds[:, 0:1] 
+            lens = [item[0][0].shape[2] for item in caches]
+            actions = [torch.tensor(t) for t in last_actions]
+            caches_t = [self.pad_sequences([caches[env][layer][i] for env in num_envs], dim=2) for i in range(2) for layer in range(32)]
             mask_t = torch.ones_like(actions_t, dtype=torch.bool).to(self.device)
 
             actions_t = apply_transforms_actions(actions_t)
@@ -284,9 +276,10 @@ class NavLLAMA(Blip2Base):
             embd = embd.to(self.device)
             tgts = tgts.to(self.device)
             
-            outputs = self.llama_model(inputs_embeds=embd,
-                                        labels=tgts,
-                                        return_dict=True)
+            outputs = self.llama_model(inputs_embeds=embd, labels=tgts, return_dict=True)
+
+            import pdb
+            pdb.set_trace()
 
             act_pos_delta = [(self.tokens_per_img + 1) * (max_len - l) + 2 for l in lens]
             logits = outputs.logits
@@ -304,14 +297,6 @@ class NavLLAMA(Blip2Base):
                 actions.append(action)
 
                 episodes[i][-1]['action'] = action
-
-            its += 1
-            
-            
-            if its == max_its:
-                embd.to('cpu')
-                tgts.to('cpu')
-                episodes.clear() 
-                torch.cuda.empty_cache()
+                
             yield actions
             

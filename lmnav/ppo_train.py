@@ -286,7 +286,6 @@ class PPOTrainer:
     def environment_sample_generator(self):
         # we use an abstract action generator fn so that different models
         # can preserve their state in the way that makes sense for them
-        torch.cuda.empty_cache()
         observations = self.envs.reset()
         with torch.no_grad(), self.model.no_sync():
             rgb_embds, goal_embds = self.embed_observations(observations)
@@ -294,7 +293,6 @@ class PPOTrainer:
         
         # insert initial obsevations
         self.rollouts.insert(next_rgbs=rgb_embds, next_goals=goal_embds)
-        torch.cuda.empty_cache()
 
         while True:
             # TODO; this needs to be changed if policy history needs to be cached
@@ -305,22 +303,13 @@ class PPOTrainer:
                 it = range(self.config.train.num_rollout_steps)
                 
                 for _ in it:
-                    start = time.time()
                     next(action_generator) 
                     actions = action_generator.send(((rgb_embds, goal_embds), dones))
-                    end = time.time()
-                    action_gen_time = end - start
 
-                    start = time.time()
                     outputs = self.envs.step(actions)
-                    end = time.time()
-                    env_time = end - start
                     
                     next_observations, rewards, dones, infos = [list(x) for x in zip(*outputs)] 
-                    start = time.time()
                     rgb_embds, goal_embds = self.embed_observations(next_observations) 
-                    end = time.time()
-                    embed_time = end - start
                     dones, rewards, actions = map(lambda l: torch.tensor(l), (dones, rewards, actions))
                     
                     self.rollouts.insert(next_rgbs=rgb_embds, next_goals=goal_embds, dones=dones, rewards=rewards, actions=actions) 
