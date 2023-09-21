@@ -22,6 +22,7 @@ from lmnav.config.default import get_config
 
 from lmnav.dataset.data_gen import  _init_envs
 from lmnav.models import *
+from lmnav.models.base_policy import instantiate_model
 from lmnav.processors import *
 from lmnav.common.episode_processor import apply_transforms_images 
 
@@ -49,21 +50,26 @@ class EvalRunner:
         Initializes controller for evaluation process.
         NOTE: distributed eval is not set up here
         """
+        self.validate_config()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.rank = 0
         self.is_distributed = False
         self.eval_dir = os.path.join(self.exp_folder, 'eval')
 
-        self.agent = self.setup_student()
-        self.agent.eval()
-        
-        self.envs, env_spec = _init_envs(self.config)
-        
         self.writer.open(self.config)
         
+        self.envs, env_spec = _init_envs(self.config)
+        self.agent = self.setup_student()
+        self.agent.eval()
+ 
+        
+        
+    def validate_config(self):
+        pass
         
     def setup_student(self):
-        model = instantiate(self.config.train.policy)
+        OmegaConf.resolve(self.config)
+        model = instantiate_model(self.config.eval.policy, writer=self.writer, store=None)
 
         self.vis_processor = model.vis_encoder.vis_processor
 
@@ -117,8 +123,6 @@ class EvalRunner:
 
     def eval(self):
         self.initialize_eval()
-
-        assert self.config.eval.policy.use_artifact_policy_config, "eval was selected, but no artifact was provided!"
 
         if self.config.eval.policy.load_artifact.version == '*':
             versions = self.writer.load_model_versions(self.config.eval.policy.load_artifact)
@@ -243,7 +247,6 @@ def main():
 
     with read_write(config):
         config.exp.resume_id = resume_id
-        config.exp.name = f'eval {config.eval.policy.load_artifact.name}'
         config.habitat_baselines.num_environments = config.eval.num_envs
         config.eval.deterministic = args.deterministic
 

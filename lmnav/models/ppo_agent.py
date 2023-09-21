@@ -5,11 +5,15 @@ from lmnav.common.utils import logprobs_from_logits
 
 class PPOAgent(nn.Module):
 
-    def __init__(self, actor, critic):
+    def __init__(self, actor, critic, **kwargs):
         super().__init__()
         self.actor = actor
         self.critic = critic
 
+    @property
+    def vis_processor(self):
+        return self.actor.vis_encoder.vis_processor
+    
     def action_generator(self, *args):
         return self.actor.action_generator(*args)
 

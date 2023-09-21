@@ -3,6 +3,7 @@ from itertools import product
 import pdb
 # from tqdm import tqdm
 from torch.distributed.elastic.multiprocessing.errors import record
+from lmnav.common.utils import find_tensors
 from operator import add
 from collections import Counter
 from functools import reduce
@@ -21,7 +22,7 @@ import numpy as np
 from habitat_baselines.utils.common import batch_obs
 
 from pprint import pprint
-from lmnav.common.utils import all_reduce, sum_dict
+from lmnav.common.utils import all_gather, all_reduce, sum_dict
 from lmnav.config.default_structured_configs import ArtifactConfig
 from lmnav.dataset.data_gen import  _init_envs
 from lmnav.common.episode_processor import apply_transforms_inputs 
@@ -33,12 +34,20 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from lmnav.config.default import get_config
 from lmnav.common.rollout_storage import RolloutStorage
 from lmnav.common.registry import registry
+from lmnav.models.base_policy import instantiate_model
 from lmnav.models.ppo_agent import PPOAgent
 from lmnav.models.linear_head import LinearHead
 from lmnav.common.lr_utils import get_lr_schedule_lambda
 
 from habitat.config import read_write
 from habitat_baselines.rl.ddppo.ddp_utils import (init_distrib_slurm, get_distrib_size, rank0_only)
+
+import warnings
+warnings.filterwarnings("ignore") 
+
+import pprofile
+profiler = pprofile.Profile() 
+
 
 def entropy_from_logits(logits):
     """Calculate entropy from logits."""
@@ -103,13 +112,7 @@ class PPOTrainer:
         """
         validates that config parameters are constrained properly
         """ 
-        batch_size = self.config.train.batch_size
-        minibatch_size = self.config.train.minibatch_size
-        num_minibatches = batch_size // minibatch_size
-        num_grad_accums = self.config.train.num_grad_accums
-
-        assert batch_size % minibatch_size == 0, 'batch must be evenly partitioned into minibatch sizes'
-        assert num_minibatches % num_grad_accums == 0, '# of grad accums must divide num_minibatches equally'
+        pass
 
     def initialize_train(self):
         """
@@ -133,7 +136,7 @@ class PPOTrainer:
             self.rank = local_rank
 
             if rank0_only():
-                logger.info(f"Initialized DDP-BC with {torch.distributed.get_world_size()} workers")
+                logger.info(f"Initialized DDP-PPO with {torch.distributed.get_world_size()} workers")
                 
             # update gpu ids for this process
             with read_write(self.config):
@@ -179,7 +182,7 @@ class PPOTrainer:
         self.sample_generator = self.environment_sample_generator()
 
         # TODO; update img size to something from config
-        self.rollouts = RolloutStorage(self.envs.num_envs, self.config.train.num_rollout_steps)
+        self.rollouts = RolloutStorage(self.envs.num_envs, self.config.train.num_rollout_steps, self.model.module.actor.tokens_per_img)
         self.step = 0
         self.cumstats = {
             'step': 0,
@@ -205,28 +208,13 @@ class PPOTrainer:
         """
         Sets up the actor and critic modules, wraps them in DDP if distributed is set
         """
-        actor_policy_cfg = self.config.train.actor
-        # don't construct a policy from scratch, rather pull it from artifact
-        if actor_policy_cfg.use_artifact_policy_config:
-            assert actor_policy_cfg.load_artifact is not None, 'use_artifact_policy_config=True, but load_artifact not specified!'
-            if rank0_only():
-                ckpt_path = self.writer.load_model(actor_policy_cfg.load_artifact)
-                self.artifact_store.set("actor_policy_ckpt", ckpt_path)
-            else:
-                self.artifact_store.wait(["actor_policy_ckpt"])
-                ckpt_path = self.artifact_store.get("actor_policy_ckpt").decode('utf-8')
-                
-            print(f"Loading actor policy from config: {ckpt_path}")
-            ckpt_state_dict = torch.load(ckpt_path, map_location=self.device)
-            actor_policy_cfg = OmegaConf.create(ckpt_state_dict['config']).train.policy
-        
-        actor = instantiate(actor_policy_cfg)
-        critic = instantiate(self.config.train.critic, in_dim=actor.hidden_size)
-        
-        model = PPOAgent(actor, critic)
+       
+        OmegaConf.resolve(self.config)
+        model = instantiate_model(self.config.train.policy, writer=self.writer, store=self.artifact_store)
+        model.actor.max_trajectory_length = self.config.train.num_rollout_steps
         model = model.to(self.device)
         
-        self.vis_processor = actor.vis_encoder.vis_processor
+        self.vis_processor = model.vis_processor
         
         if self.is_distributed:
             print(f"Setting up DDP on GPU {self.rank}")
@@ -299,20 +287,22 @@ class PPOTrainer:
     def embed_observations(self, observations):
         observations = batch_obs(observations, self.device)
         rgbs, goals = map(lambda t: einops.rearrange(t, 'b h w c -> b 1 c h w'), (observations['rgb'], observations['imagegoal']))
+        # start = time.time()
         rgbs_t, goals_t = apply_transforms_images(self.vis_processor, rgbs, goals) 
+        # end = time.time()
+        # print("apply transforms", end - start, "seconds")
         img_embds_t, img_atts_t = self.model.module.actor.embed_visual(torch.cat([rgbs_t, goals_t], dim=2).to(self.device))
         rgb_embds, goal_embds = img_embds_t[:, 0], img_embds_t[:, 1]
 
         map(lambda t: t.to('cpu'), (observations['rgb'], observations['imagegoal'], observations['depth']))
         del observations
+            
         return rgb_embds, goal_embds
 
-        
     def environment_sample_generator(self):
         # we use an abstract action generator fn so that different models
         # can preserve their state in the way that makes sense for them
-        action_generator = self.model.module.actor.action_generator(self.envs.num_envs, self.config.train.deterministic)
-
+        torch.cuda.empty_cache()
         observations = self.envs.reset()
         with torch.no_grad(), self.model.no_sync():
             rgb_embds, goal_embds = self.embed_observations(observations)
@@ -320,23 +310,38 @@ class PPOTrainer:
         
         # insert initial obsevations
         self.rollouts.insert(next_rgbs=rgb_embds, next_goals=goal_embds)
+        torch.cuda.empty_cache()
 
         while True:
+            # TODO; this needs to be changed if policy history needs to be cached
+            action_generator = self.model.module.actor.action_generator(self.envs.num_envs,
+                                                                        self.config.train.deterministic,
+                                                                        max_its=self.config.train.num_rollout_steps)
             with torch.no_grad(), self.model.no_sync():
                 it = range(self.config.train.num_rollout_steps)
-                # it = tqdm(it, desc='generating rollout...') if self.verbose else it
                 
                 for _ in it:
+                    start = time.time()
                     next(action_generator) 
                     actions = action_generator.send(((rgb_embds, goal_embds), dones))
+                    end = time.time()
+                    action_gen_time = end - start
 
+                    start = time.time()
                     outputs = self.envs.step(actions)
+                    end = time.time()
+                    env_time = end - start
+                    
                     next_observations, rewards, dones, infos = [list(x) for x in zip(*outputs)] 
+                    start = time.time()
                     rgb_embds, goal_embds = self.embed_observations(next_observations) 
+                    end = time.time()
+                    embed_time = end - start
                     dones, rewards, actions = map(lambda l: torch.tensor(l), (dones, rewards, actions))
                     
                     self.rollouts.insert(next_rgbs=rgb_embds, next_goals=goal_embds, dones=dones, rewards=rewards, actions=actions) 
                     
+            del action_generator
             yield
             self.rollouts.reset()
             
@@ -455,43 +460,15 @@ class PPOTrainer:
         }
         return pg_loss, self.config.train.vf_coef * vf_loss, flatten_dict(stats)
         
-    def all_gather(self, q):
-        """
-        Gathers tensor arrays of different lengths across multiple gpus. 
-        Assumes that q.shape[1:] is identical across gpus, and only pads dim=0
-        
-        Parameters
-        ----------
-            q : tensor array
-            ws : world size
-            device : current gpu device
-            
-        Returns
-        -------
-            all_q : list of gathered tensor arrays from all the gpus
-
-        """
-        q = q.to(self.device)
-        local_size = torch.tensor(q.shape[0], device=self.device)
-        all_sizes = [torch.zeros_like(local_size) for _ in range(self.world_size)]
-        torch.distributed.all_gather(all_sizes, local_size)
-
-        size_diff = max(all_sizes).item() - local_size.item()
-        if size_diff:
-            padding = torch.zeros((size_diff, *q.shape[1:]), device=self.device, dtype=q.dtype)
-            q = torch.cat((q, padding))
-
-        all_qs_padded = [torch.zeros_like(q) for _ in range(self.world_size)]
-        torch.distributed.all_gather(all_qs_padded, q)
-        all_qs = torch.cat([q[:size] for q, size in zip(all_qs_padded, all_sizes)])
-        return all_qs
     
     def train_ppo_step(self):
+        import pdb
         stats = { 'metrics/frames': 0, 'metrics/rollouts_wait_time': 0. }
         
         # first collect environment samples
         rollouts_start_time = time.time()
         next(self.sample_generator)        
+        
         rgbs, goals, actions, rewards = self.rollouts.generate_samples()
         rollouts_end_time = time.time()
         stats['metrics/rollouts_wait_time'] = rollouts_end_time - rollouts_start_time
@@ -514,11 +491,11 @@ class PPOTrainer:
         actions_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in actions])
         rewards_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in rewards])
 
-        rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(lambda t: self.all_gather(t), (rgbs_t, goals_t, actions_t, rewards_t, mask_t)) 
+        rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(lambda t: all_gather(t, self.device, self.world_size), (rgbs_t, goals_t, actions_t, rewards_t, mask_t)) 
         # slice up the gathered data into equal sized pieces
         E = rgbs_d.shape[0] // self.world_size
-        rgbs_t, goals_t, actions_t, rewards_t, mask_t = map(lambda t: t[self.rank * E:self.rank * E + E].clone(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
         rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(lambda t: t.cpu(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
+        rgbs_t, goals_t, actions_t, rewards_t, mask_t = map(lambda t: t[self.rank * E:self.rank * E + E].clone(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
          
         
         with torch.no_grad(), self.model.no_sync():
@@ -534,12 +511,12 @@ class PPOTrainer:
         cum_train_stats_l = []
         for _, mb in product(range(self.config.train.ppo_epochs), 
                              range(0, E, num_grad_accums * minibatch_size)):                 
-
-            minibatches_left = E - mb * minibatch_size
+            minibatches_left = math.ceil((E - mb) / minibatch_size)
             num_grad_steps = min(minibatches_left, num_grad_accums)
 
             for g in range(num_grad_steps):
-                mb_idxs = batch_idxs[mb + g: mb + g + minibatch_size]
+                start_idx = mb + g * minibatch_size
+                mb_idxs = batch_idxs[start_idx: start_idx + minibatch_size]
                 minibatch = {
                     'rgbs': rgbs_t[mb_idxs],
                     'goals': goals_t[mb_idxs],
@@ -553,7 +530,7 @@ class PPOTrainer:
                 # move all to device
                 minibatch = {k: v.to(self.device) for k, v in minibatch.items()}
 
-                def compute_loss():
+                def backwards_loss():
                     logits, vpreds, logprobs = self.batched_forward_pass(
                         minibatch['rgbs'], 
                         minibatch['goals'], 
@@ -575,10 +552,11 @@ class PPOTrainer:
 
                 if g < num_grad_steps - 1:
                     with self.model.no_sync():
-                        train_stats = compute_loss()
+                        train_stats = backwards_loss()
                 else:
-                    train_stats = compute_loss()
+                    train_stats = backwards_loss()
 
+                map(lambda k: minibatch[k].to('cpu'), minibatch.keys())
                 cum_train_stats_l.append(train_stats)
                 
             if self.config.train.max_grad_norm is not None:
@@ -643,6 +621,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
-    
     

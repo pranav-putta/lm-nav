@@ -1,4 +1,6 @@
 import logging
+
+import pdb
 import contextlib
 import random
 import time
@@ -235,7 +237,7 @@ class NavLLAMA(Blip2Base):
     def tokens_per_img(self):
         return self.vis_encoder.num_tokens
 
-    def action_generator(self, num_envs, deterministic=False):
+    def action_generator(self, num_envs, deterministic=False, max_its=0):
         """
             action generator function, takes in the next rgb, goal, and action 
         """
@@ -247,8 +249,11 @@ class NavLLAMA(Blip2Base):
         act_tkn_ids = self.llama_tokenizer('stop forward left right', add_special_tokens=False, return_tensors='pt') 
         act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
         
+        its = 0
         while True:
             (rgb_embds, goal_embds), dones = yield
+            if dones is None:
+                episodes.clear()
             
             for i, episode in enumerate(episodes):
                 if dones[i]:
@@ -300,5 +305,13 @@ class NavLLAMA(Blip2Base):
 
                 episodes[i][-1]['action'] = action
 
+            its += 1
+            
+            
+            if its == max_its:
+                embd.to('cpu')
+                tgts.to('cpu')
+                episodes.clear() 
+                torch.cuda.empty_cache()
             yield actions
             

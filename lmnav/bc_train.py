@@ -1,4 +1,4 @@
-import pickle
+import math
 
 import einops
 
@@ -25,9 +25,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from torch.utils.data import DataLoader
 from lmnav.common.lr_utils import get_lr_schedule_lambda
-from lmnav.common.resumable_random_sampler import ResumableRandomSampler
+from lmnav.common.resumable_random_sampler import DistributedResumableSampler
 from lmnav.config.default import get_config
-from lmnav.common.utils import all_reduce
+from lmnav.common.utils import all_gather, all_reduce
 from lmnav.config.default_structured_configs import ArtifactConfig
 
 from lmnav.dataset.data_gen import  _init_envs
@@ -88,6 +88,7 @@ class BCTrainRunner:
             local_rank, tcp_store = init_distrib_slurm(backend)
 
             self.rank = local_rank
+            self.world_size = world_size
 
             if rank0_only():
                 logger.info(f"Initialized DDP-BC with {torch.distributed.get_world_size()} workers")
@@ -128,7 +129,7 @@ class BCTrainRunner:
 
         # set up dataset
         self.dataset = OfflineEpisodeDataset(files=data_files)
-        self.sampler = ResumableRandomSampler(self.dataset)
+        self.sampler = DistributedResumableSampler(self.dataset, self.rank, self.world_size)
         self.data_loader = DataLoader(self.dataset, batch_size=self.config.train.episodes_per_batch,
                                       collate_fn=lambda x: x, num_workers=1, sampler=self.sampler)
 
@@ -140,9 +141,7 @@ class BCTrainRunner:
         }
 
         if self.config.exp.resume_id is not None:
-            artifact_name = f'{self.config.exp.group}-{self.config.exp.job_type}-{self.config.exp.name}'
-            artifact_name = artifact_name.replace('+', '_')
-            artifact_name = artifact_name.replace('=', '_')
+            artifact_name = self.config.train.store_artifact.name
 
             if rank0_only():
                 ckpt_path = self.writer.load_model(ArtifactConfig(name=artifact_name, version='latest', dirpath=None))
@@ -154,8 +153,10 @@ class BCTrainRunner:
                 
             self.load_checkpoint(ckpt_path) 
 
-        print("Starting train!")
         torch.distributed.barrier()
+        print(f"Process {self.rank}: Ready")
+        if rank0_only():
+            print("Starting train!")
 
 
     def setup_student(self):
@@ -209,32 +210,40 @@ class BCTrainRunner:
         minibatch_size = self.config.train.minibatch_size
         num_minibatches = batch_size // minibatch_size
         num_grad_accums = self.config.train.num_grad_accums
+        
+        stats = { 'learner/loss': 0.0 , 'metrics/frames': 0, 'learner/lr': 0 }
 
-        rgbs = [einops.rearrange(episode['rgb'], 't h w c -> t c h w') for episode in episodes]
-        goals = [einops.rearrange(episode['imagegoal'], 't h w c -> t c h w') for episode in episodes]
-        actions = [episode['action'] for episode in episodes]
-
-        stats = { 'learner/loss': 0.0 }
+        try:
+            rgbs = [einops.rearrange(episode['rgb'], 't h w c -> t c h w') for episode in episodes]
+            goals = [einops.rearrange(episode['imagegoal'], 't h w c -> t c h w') for episode in episodes]
+            actions = [episode['action'] for episode in episodes]
+        except:
+            print("There was an error loading data in one of these episode_ids: ", [episode['episode_id'] for episode in episodes])
+            return stats
 
         rgbs, goals, actions = construct_subsequences(batch_size, T, rgbs, goals, actions)
-        batch_idxs = torch.randperm(len(rgbs)).view(num_minibatches, minibatch_size)
+        mask = torch.stack([torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])]) for t in rgbs])
+        mask = mask.bool()
+        rgbs = torch.stack([F.pad(t, (0,)*7 + (T - t.shape[0],), 'constant', 0) for t in rgbs])
+        goals = torch.stack(goals) 
+        actions = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in actions])
 
-        for mb in range(0, num_minibatches, num_grad_accums):
+        rgbs, goals, actions, mask = map(lambda t: all_gather(t.contiguous(), self.device, self.world_size), (rgbs, goals, actions, mask))
+        E = rgbs.shape[0] // self.world_size
+        # TODO; rename these variables to improve readability
+        rgbs, goals, actions, mask = map(lambda t: t[self.rank * E:self.rank * E + E].clone(), (rgbs, goals, actions, mask))
+        batch_idxs = torch.randperm(E)
 
-            for g in range(num_grad_accums):
-                mb_idxs = batch_idxs[mb + g] 
-
+        for mb in range(0, E, num_grad_accums * minibatch_size):
+            minibatches_left = math.ceil((E - mb) / minibatch_size)
+            num_grad_steps = min(minibatches_left, num_grad_accums)
+            for g in range(num_grad_steps):
+                start_idx = mb + g * minibatch_size
+                mb_idxs = batch_idxs[start_idx: start_idx + minibatch_size]
                 # construct batch
-                rgbs_t, goals_t, actions_t = map(lambda t: [t[i] for i in mb_idxs], (rgbs, goals, actions))
-
-                # pad inputs to T
-                mask_t = torch.stack([torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])]) for t in rgbs_t])
-                mask_t = mask_t.bool()
-                rgbs_t = torch.stack([F.pad(t, (0,)*7 + (T - t.shape[0],), 'constant', 0) for t in rgbs_t])
-                goals_t = torch.stack(goals_t) 
-                actions_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in actions_t])
+                rgbs_t, goals_t, actions_t, mask_t = map(lambda t: t[mb_idxs], (rgbs, goals, actions, mask))
                 rgbs_t, goals_t, actions_t = apply_transforms_inputs(self.vis_processor, rgbs_t, goals_t, actions_t)
-
+                
                 if g < num_grad_accums - 1:
                     with self.agent.no_sync():
                         outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t)

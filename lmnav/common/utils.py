@@ -6,6 +6,7 @@
 """
 
 import io
+import gc
 import torch.distributed
 import tracemalloc
 import json
@@ -483,4 +484,44 @@ def logprobs_from_logits(logits, labels):
 def sum_dict(d1, d2):
     return {k: d1[k] + d2[k] for k in d1.keys() | d2.keys()}
 
+def all_gather(q, device, world_size):
+    """
+    Gathers tensor arrays of different lengths across multiple gpus. 
+    Assumes that q.shape[1:] is identical across gpus, and only pads dim=0
+    
+    Parameters
+    ----------
+        q : tensor array
+        ws : world size
+        device : current gpu device
+        
+    Returns
+    -------
+        all_q : list of gathered tensor arrays from all the gpus
 
+    """
+    q = q.to(device)
+    local_size = torch.tensor(q.shape[0], device=device)
+    all_sizes = [torch.zeros_like(local_size) for _ in range(world_size)]
+    torch.distributed.all_gather(all_sizes, local_size)
+
+    size_diff = max(all_sizes).item() - local_size.item()
+    if size_diff:
+        padding = torch.zeros((size_diff, *q.shape[1:]), device=device, dtype=q.dtype)
+        q = torch.cat((q, padding))
+
+    all_qs_padded = [torch.zeros_like(q) for _ in range(world_size)]
+    torch.distributed.all_gather(all_qs_padded, q)
+    all_qs = torch.cat([q[:size] for q, size in zip(all_qs_padded, all_sizes)])
+    return all_qs
+
+def find_tensors():
+    tensors = []
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                tensors.append((obj, obj.size()))
+        except:
+            pass
+
+    return tensors

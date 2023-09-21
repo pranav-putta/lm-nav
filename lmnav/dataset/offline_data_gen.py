@@ -20,13 +20,7 @@ from lmnav.dataset.data_gen import start_data_gen_process
 from lmnav.config.default import get_config
 from lmnav.dataset.filter_methods import *
 from lmnav.common.actor_setups import *
-
-from memory_profiler import profile
-import tracemalloc
-import linecache
-
-
-
+from hydra.utils import instantiate
 
 class OfflineDataGenerator:
 
@@ -37,7 +31,8 @@ class OfflineDataGenerator:
         self.N = 0
         self.latest_generator_stats = {}
         
-        self.writer: BaseLogger = registry.get_logger_class(self.config.exp.logger._target_)(self.config)
+        self.writer = instantiate(self.config.exp.logger)
+        self.writer.open(self.config)
 
         
     def initialize_data_generator(self, exp_folder, max_buffer_len, gpu_id):

@@ -42,9 +42,8 @@ class ArtifactConfig:
 ### MODEL CONFIGS ###
 @dataclass
 class BaseModelConfig:
-    _target_: str = MISSING
+    is_model: bool = True    
     load_artifact: Optional[ArtifactConfig] = None
-    use_artifact_policy_config: bool = False
 
 
 @dataclass
@@ -90,6 +89,12 @@ class LinearHeadPolicyConfig(BasePolicyConfig):
 class OldEAIPolicyConfig(BasePolicyConfig):
     _target_: str = "old_eai_policy"
     ckpt: str = MISSING
+
+@dataclass
+class PPOAgentModelConfig(BaseModelConfig):
+    _target_: str = "lmnav.models.ppo_agent.PPOAgent"
+    actor: BasePolicyConfig = MISSING
+    critic: BaseModelConfig = MISSING
 
     
 @dataclass
@@ -179,8 +184,7 @@ class BCTrainRunnerConfig(TrainRunnerConfig):
 
 @dataclass
 class PPOTrainRunnerConfig(TrainRunnerConfig):
-    actor: BasePolicyConfig = MISSING
-    critic: BaseModelConfig = MISSING
+    policy: PPOAgentModelConfig = MISSING
     
     lr_schedule: ActorCriticLRConfig = MISSING
     num_rollout_steps: int = MISSING

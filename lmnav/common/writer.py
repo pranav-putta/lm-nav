@@ -82,8 +82,11 @@ class WandBLogger(BaseLogger):
             wb_kwargs["notes"] = config.notes
         if config.job_type is not None:
             wb_kwargs['job_type'] = config.job_type
-            if self.eval_mode:
-                wb_kwargs['job_type'] = 'eval'
+
+        # special tings for eval mode
+        if self.eval_mode:
+            wb_kwargs['job_type'] = 'eval'
+            wb_kwargs['name'] = f"eval {config.group}/{config.job_type}/{config.name}"
             
         slurm_info_dict = {
             k[len("SLURM_") :]: v

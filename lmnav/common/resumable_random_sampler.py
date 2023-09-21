@@ -1,6 +1,7 @@
 import torch
+import math
 
-class ResumableRandomSampler(torch.utils.data.Sampler):
+class DistributedResumableSampler(torch.utils.data.Sampler):
     r"""Samples elements randomly. If without replacement, then sample from a shuffled dataset.
     If with replacement, then user can specify :attr:`num_samples` to draw.
     Arguments:
@@ -13,26 +14,31 @@ class ResumableRandomSampler(torch.utils.data.Sampler):
     #data_source: Sized
     #replacement: bool
 
-    def __init__(self, data_source):
+    def __init__(self, data_source, rank, world_size):
         self.data_source = data_source
         self.generator = torch.Generator()
-        self.generator.manual_seed(47)
+        self.generator = self.generator.manual_seed(47)
         
         self.perm_index = 0
-        self.perm = torch.randperm(self.num_samples, generator=self.generator)
+        self.rank = rank
+        self.world_size = world_size
+        
+        self.perm = torch.randperm(len(self.data_source), generator=self.generator)
+        self.total_size = self.num_samples * self.world_size
         
     @property
     def num_samples(self) -> int:
-        return len(self.data_source)
-
+        # drop the tail to make sure data source is evenly divisible
+        return math.floor((len(self.data_source) - self.world_size) / self.world_size)
+    
     def __iter__(self):
         if self.perm_index >= len(self.perm):
             self.perm_index = 0
             self.perm = torch.randperm(self.num_samples, generator=self.generator)
             
-        while self.perm_index < len(self.perm):
-            self.perm_index += 1
-            yield self.perm[self.perm_index-1]
+        indices = self.perm[self.rank:self.total_size:self.world_size]
+        assert len(indices) == self.num_samples
+        return iter(indices)
 
     def __len__(self):
         return self.num_samples

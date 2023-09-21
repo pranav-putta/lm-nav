@@ -3,7 +3,7 @@ from lmnav.common.utils import is_url, convert_weights_to_fp16
 
 class LinearHead(nn.Module):
 
-    def __init__(self, in_dim, p_dropout, **kwargs):
+    def __init__(self, in_dim=None, p_dropout=0.2, **kwargs):
         super().__init__()
         self.dropout = nn.Dropout(p_dropout)
         self.summary = nn.Linear(in_dim, 1)

@@ -230,8 +230,9 @@ class CLIPVisualProcessor:
     def transform(self, imgs):
         """ imgs in shape [ c (b t) h w ]"""
         imgs = einops.rearrange(imgs, 'c b h w -> b c h w')
-        imgs = self._processor(images=imgs)
-        imgs = torch.from_numpy(np.stack(imgs['pixel_values']))
+        imgs = self._processor(images=imgs, return_tensors='pt', padding=True)
+        # imgs = torch.from_numpy(np.stack(imgs['pixel_values']))
+        imgs = imgs["pixel_values"] 
         imgs = einops.rearrange(imgs, 'b c h w -> c b h w')
         return imgs
         

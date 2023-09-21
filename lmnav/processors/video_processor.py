@@ -153,6 +153,8 @@ class AlproVideoTrainProcessor(AlproVideoBaseProcessor):
         Returns:
             torch.tensor: video clip after transforms. Size is (C, T, size, size).
         """
+        import time
+        start = time.time()
         clip = load_video(
             video_path=vpath,
             n_frms=self.n_frms,
@@ -160,8 +162,13 @@ class AlproVideoTrainProcessor(AlproVideoBaseProcessor):
             width=self.image_size,
             sampling="headtail",
         )
+        end = time.time()
+        print("load_video", end - start, "seconds")
 
-        return self.transform(clip)
+        start = time.time()
+        clip = self.transform(clip)
+        end = time.time()
+        print("transfor", end - start, "seconds")
 
     @classmethod
     def from_config(cls, cfg=None):

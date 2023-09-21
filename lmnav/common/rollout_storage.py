@@ -2,12 +2,12 @@ import torch
 
 class RolloutStorage:
 
-    def __init__(self, num_envs, max_steps):
+    def __init__(self, num_envs, max_steps, tokens_per_img):
         self.num_envs = num_envs
         self.max_steps = max_steps
         
-        self.rgbs = torch.zeros(num_envs, max_steps + 1, 32, 4096, dtype=torch.float32) 
-        self.goals = torch.zeros(num_envs, max_steps + 1, 32, 4096, dtype=torch.float32)
+        self.rgbs = torch.zeros(num_envs, max_steps + 1, tokens_per_img, 4096, dtype=torch.float32) 
+        self.goals = torch.zeros(num_envs, max_steps + 1, tokens_per_img, 4096, dtype=torch.float32)
         self.actions = torch.zeros(num_envs, max_steps + 1, dtype=torch.int8)
         self.dones = torch.zeros(num_envs, max_steps + 1,  dtype=torch.bool)
         self.rewards = torch.zeros(num_envs, max_steps + 1, dtype=torch.float16)
@@ -64,3 +64,5 @@ class RolloutStorage:
         rgbs, goals, actions, rewards = zip(*samples)
         return rgbs, goals, actions, rewards
 
+    def to_cpu(self):
+        map(lambda t: t.cpu(), (self.rgbs, self.goals, self.dones, self.rewards, self.actions))

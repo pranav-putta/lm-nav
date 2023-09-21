@@ -19,13 +19,10 @@ defaults:
   - _self_
 
 exp:
-  name: "offline_10envs_actprobs"
   root_dir: "data/datasets/lmnav"
-  logger:
-    project: "lmnav"
-    name: "lmnav imagenav 10envs with act probs"
-    group: "datagen"
-  
+  group: "lmnav-10env"
+  job_type: "datagen"
+
 generator:
   num_episodes: 100000
   deterministic: False
@@ -35,7 +32,8 @@ generator:
     
   policy:
     _target_: "policies.old_eai_policy"
-    ckpt: "ckpts/uLHP.300.pth"
+    load_artifact:
+      dirpath: "ckpts/uLHP.300.pth"
   
   store_artifact:
     name: "offline_10envs_actprobs"
