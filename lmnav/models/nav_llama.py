@@ -156,8 +156,6 @@ class NavLLAMA(Blip2Base):
             s_a_embds = torch.cat([rgbs_embd, actions_embd], dim=2)
         elif order == 'as':
             s_a_embds = torch.cat([actions_embd, rgbs_embd], dim=2)
-        elif order == 's':
-            s_a_embds = torch.cat([rgbs_embd], dim=2)
         else:
             raise ValueError(f"{order} ordering is not known")
             
@@ -249,21 +247,17 @@ class NavLLAMA(Blip2Base):
         act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
  
         # assumes that max_trajectory_length = C * num_rollout_steps
-        caches = [self.create_empty_cache() for _ in range(num_envs)]
-        last_actions = [None for _ in range(num_envs)]
+        caches = torch.zeros(32, 2, num_envs, 32, self.max_trajectory_length, 128)
+        last_actions = [0 for _ in range(num_envs)]
        
+        i = 0
         while True:
             (rgb_embds, goal_embds), dones = yield
             if dones is None:
                 caches.clear()
             
-            for i in range(len(caches)):
-                if dones[i]:
-                    caches[i] = self.create_empty_cache()
-
-            lens = [item[0][0].shape[2] for item in caches]
-            actions = [torch.tensor(t) for t in last_actions]
-            caches_t = [self.pad_sequences([caches[env][layer][i] for env in num_envs], dim=2) for i in range(2) for layer in range(32)]
+            lens = [item.shape[-2] for item in caches]
+            actions_t = torch.tensor(last_actions).unsqueeze(1)
             mask_t = torch.ones_like(actions_t, dtype=torch.bool).to(self.device)
 
             actions_t = apply_transforms_actions(actions_t)
@@ -277,9 +271,6 @@ class NavLLAMA(Blip2Base):
             tgts = tgts.to(self.device)
             
             outputs = self.llama_model(inputs_embeds=embd, labels=tgts, return_dict=True)
-
-            import pdb
-            pdb.set_trace()
 
             act_pos_delta = [(self.tokens_per_img + 1) * (max_len - l) + 2 for l in lens]
             logits = outputs.logits

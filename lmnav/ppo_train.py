@@ -198,7 +198,7 @@ class PPOTrainer:
        
         OmegaConf.resolve(self.config)
         model = instantiate_model(self.config.train.policy, writer=self.writer, store=self.artifact_store)
-        model.actor.max_trajectory_length = self.config.train.num_rollout_steps
+        # model.actor.max_trajectory_length = self.config.train.num_rollout_steps
         model = model.to(self.device)
         
         self.vis_processor = model.vis_processor
