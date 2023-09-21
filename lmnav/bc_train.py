@@ -141,16 +141,7 @@ class BCTrainRunner:
         }
 
         if self.config.exp.resume_id is not None:
-            artifact_name = self.config.train.store_artifact.name
-
-            if rank0_only():
-                ckpt_path = self.writer.load_model(ArtifactConfig(name=artifact_name, version='latest', dirpath=None))
-                print(f"Loading actor policy {artifact_name} from config: {ckpt_path}")
-                self.artifact_store.set("actor_policy_ckpt", ckpt_path)
-            else:
-                self.artifact_store.wait(["actor_policy_ckpt"])
-                ckpt_path = self.artifact_store.get("actor_policy_ckpt").decode('utf-8')
-                
+            ckpt_path = os.path.join(self.exp_folder, 'ckpts', 'latest.pth')
             self.load_checkpoint(ckpt_path) 
 
         torch.distributed.barrier()
@@ -289,7 +280,7 @@ class BCTrainRunner:
         self.epoch = self.cumstats['epoch']
 
 
-    def save_checkpoint(self):
+    def save_checkpoint(self, filename):
         # only save parameters that have been updated
         param_grad_dict = {
             k: v.requires_grad for k, v in self.agent.named_parameters()
@@ -309,13 +300,10 @@ class BCTrainRunner:
             "stats": self.cumstats
         }
 
-        ckpt_num = self.step // self.config.train.ckpt_freq
-        ckpt_filepath = os.path.join(self.exp_folder, 'ckpts', f'ckpt.{ckpt_num}.pth')
+        ckpt_filepath = os.path.join(self.exp_folder, 'ckpts', filename)
         torch.save(save_obj, ckpt_filepath) 
 
-        artifact_name = f'{self.config.exp.group}-{self.config.exp.job_type}-{self.config.exp.name}'
-        artifact_name = artifact_name.replace('+', '_')
-        artifact_name = artifact_name.replace('=', '_')
+        artifact_name = self.config.train.store_artifact.name
         self.writer.save_artifact(artifact_name, 'model', os.path.abspath(ckpt_filepath))
 
     def train(self):
@@ -333,7 +321,12 @@ class BCTrainRunner:
                 if rank0_only():
                     self.writer.write(stats)
                     if self.step % self.config.train.ckpt_freq == 0:
-                        self.save_checkpoint()
+                        ckpt_num = self.step // self.config.train.ckpt_freq
+                        filename = f"ckpt.{ckpt_num}.pth"
+                    else:
+                        filename = "latest.pth"
+                        
+                    self.save_checkpoint(filename)
 
                 self.step += 1
 

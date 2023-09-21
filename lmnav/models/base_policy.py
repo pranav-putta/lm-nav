@@ -19,6 +19,10 @@ def load_policy_artifact(writer, store, cfg):
         else:
             store.wait(["policy_ckpt"])
             ckpt_path = store.get("policy_ckpt").decode("utf-8")
+        # remove key after all processes consume; important in case this key is
+        # used again.
+        torch.distributed.barrier()
+        store.delete_key("policy_ckpt")
     
     print(f"Loading policy ({cfg.name}:{cfg.version}) from config: {ckpt_path}")
     ckpt_state_dict = torch.load(ckpt_path, map_location='cpu')
