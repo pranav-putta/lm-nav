@@ -37,6 +37,9 @@ import linecache
 from torch import nn
 import torch.nn.functional as F
 
+from time import perf_counter
+from contextlib import contextmanager
+
 
 def now():
     from datetime import datetime
@@ -525,3 +528,12 @@ def find_tensors():
             pass
 
     return tensors
+
+
+
+@contextmanager
+def catchtime(name="") -> float:
+    start = perf_counter()
+    yield lambda: perf_counter() - start
+    print(f'TimeIt [{name}]: {perf_counter() - start:.3f} seconds')
+    

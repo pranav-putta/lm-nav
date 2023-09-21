@@ -3,8 +3,9 @@ import numpy as np
 import einops
 from torch import nn
 from transformers import CLIPModel, CLIPProcessor, CLIPVisionModel
-from lmnav.models.base_model import BaseModel
+from torchvision import transforms
 
+from lmnav.models.base_model import BaseModel
 from lmnav.models.eva_vit import create_eva_vit_g
 from lmnav.models.blip2 import disabled_train
 from lmnav.models.Qformer import BertConfig, BertLMHeadModel
@@ -222,16 +223,35 @@ class QformerVisualEncoder(VisualEncoder):
             return 32
  
 
+class CustomCLIPVisualProcessor:
+    def __init__(self) -> None:
+        self.transformation =  transforms.Compose([
+                        transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
+                        transforms.CenterCrop(224),
+                        transforms.ConvertImageDtype(torch.float),
+                        transforms.Normalize(mean=(0, 0, 0), std=(255, 255, 255), inplace=True),  
+                        transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073],
+                                             std=[0.26862954, 0.26130258, 0.27577711],
+                                             inplace=True)
+                        ])
+ 
+
+    def transform(self, imgs):
+        imgs = einops.rearrange(imgs, 'c b h w -> b c h w')
+        imgs = self.transformation(imgs)
+        imgs = einops.rearrange(imgs, 'b c h w -> c b h w')
+        return imgs
+       
+        
 class CLIPVisualProcessor:
 
     def __init__(self, clip_processor):
         self._processor = clip_processor
 
-    def transform(self, imgs):
+    def transform(self, imgs, **kwargs):
         """ imgs in shape [ c (b t) h w ]"""
         imgs = einops.rearrange(imgs, 'c b h w -> b c h w')
-        imgs = self._processor(images=imgs, return_tensors='pt', padding=True)
-        # imgs = torch.from_numpy(np.stack(imgs['pixel_values']))
+        imgs = self._processor(images=imgs, return_tensors='pt', **kwargs)
         imgs = imgs["pixel_values"] 
         imgs = einops.rearrange(imgs, 'b c h w -> c b h w')
         return imgs
@@ -249,7 +269,8 @@ class CLIPVisualEncoder(VisualEncoder):
         
         print("Loading CLIP visual encoder...")
         self.model = CLIPVisionModel.from_pretrained(vit_model)
-        self._vis_processor = CLIPVisualProcessor(CLIPProcessor.from_pretrained(vit_model))
+        # self._vis_processor = CLIPVisualProcessor(CLIPProcessor.from_pretrained(vit_model))
+        self._vis_processor = CustomCLIPVisualProcessor()
 
         if freeze_vit:
             for param in self.model.parameters():
