@@ -46,7 +46,7 @@ def instantiate_model(cfg, load_ckpts=True, writer=None, store=None):
         if not isinstance(v, omegaconf.DictConfig):
             inputs[k] = v
             continue
-        if cfg.get('is_model', False):
+        if v.get('is_model', False):
             inputs[k] = instantiate_model(v, load_ckpts=load_ckpts, writer=writer, store=store)
         else:
             inputs[k] = instantiate(v)
