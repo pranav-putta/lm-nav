@@ -31,8 +31,8 @@ exp:
 
 train:
   steps: 10_000
-  num_envs: 8
-  minibatch_size: 2
+  num_envs: 16
+  minibatch_size: 3
   num_grad_accums: 6
 
   num_rollout_steps: 200
@@ -48,7 +48,7 @@ train:
   policy:
     actor:
       load_artifact:
-        name: "lmnav-1env-bc-lora_clip_max_trajectory_length_200"
+        name: "lmnav-1env-bc-lora_clip_max_trajectory_length_200_batch_size_9"
         version: "latest"
           
     critic:

@@ -95,6 +95,7 @@ class PPOAgentModelConfig(BaseModelConfig):
     _target_: str = "lmnav.models.ppo_agent.PPOAgent"
     actor: BasePolicyConfig = MISSING
     critic: BaseModelConfig = MISSING
+    max_trajectory_length: int = MISSING
 
     
 @dataclass

@@ -71,7 +71,7 @@ class EvalRunner:
         OmegaConf.resolve(self.config)
         model = instantiate_model(self.config.eval.policy, writer=self.writer, store=None)
 
-        self.vis_processor = model.vis_encoder.vis_processor
+        self.vis_processor = model.vis_processor
 
         agent = model.to(self.device)
         agent.train()
@@ -239,16 +239,15 @@ def main():
     parser.add_argument('cfg_path', type=str, help="Path to the configuration file")
     parser.add_argument('--debug', action='store_true', help='Flag to enable debug mode')
     parser.add_argument('--deterministic', action='store_true', help='Flag to quickly enable determinism')
-    parser.add_argument('--resume_run_id', type=str, help="Writer run id to restart")
+    parser.add_argument('--version', type=str, help='Which version of the model to run')
     args = parser.parse_args()
 
     config = get_config(args.cfg_path)
-    resume_id = args.resume_run_id
 
     with read_write(config):
-        config.exp.resume_id = resume_id
         config.habitat_baselines.num_environments = config.eval.num_envs
         config.eval.deterministic = args.deterministic
+        config.eval.policy.load_artifact.version = args.version
 
     runner = EvalRunner(config, verbose=args.debug)
     runner.eval()

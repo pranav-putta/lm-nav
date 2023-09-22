@@ -14,8 +14,8 @@ class PPOAgent(nn.Module):
     def vis_processor(self):
         return self.actor.vis_encoder.vis_processor
     
-    def action_generator(self, *args):
-        return self.actor.action_generator(*args)
+    def action_generator(self, *args, **kwargs):
+        return self.actor.action_generator(*args, **kwargs)
 
     def embed_visual(self, *args):
         return self.actor.embed_visual(*args)

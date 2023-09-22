@@ -50,6 +50,7 @@ class NavLLAMA(Blip2Base):
                        After every image, choose the best action. {}"
 
         self.vis_encoder = vis_encoder
+        self.vis_processor = self.vis_encoder.vis_processor
         self.tokenizer = self.init_tokenizer()
         self.low_resource = low_resource
         self.max_trajectory_length = max_trajectory_length

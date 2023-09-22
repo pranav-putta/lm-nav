@@ -50,7 +50,6 @@ train:
  
 eval:
   policy: 
-    use_artifact_policy_config: True
     load_artifact:
       name: ${....train.store_artifact.name}
       version: "latest"

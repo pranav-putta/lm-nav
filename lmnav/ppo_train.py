@@ -152,14 +152,13 @@ class PPOTrainer:
             
             self.artifact_store = torch.distributed.PrefixStore("artifacts", tcp_store)
             
-            
-        if rank0_only():
-            self.writer.open(self.config)
-            
         os.makedirs(self.exp_folder, exist_ok=True)
         os.makedirs(os.path.join(self.exp_folder, 'ckpts'), exist_ok=True)
-        
+                                                              
         self.envs, _ = _init_envs(self.config) 
+        
+        if rank0_only():
+            self.writer.open(self.config)
         
         self.model = self.setup_actor_critic()
         self.sample_generator = self.environment_sample_generator()
