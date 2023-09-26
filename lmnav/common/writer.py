@@ -16,7 +16,7 @@ class BaseLogger(ABC):
         self.eval_mode = eval_mode
 
     @abstractmethod
-    def open(self, cfg):
+    def open(self, cfg, override_run_name=None):
         pass
         
     @abstractmethod
@@ -39,11 +39,13 @@ class BaseLogger(ABC):
     def load_model_versions(self, artifact):
         pass
 
-
+    @abstractmethod
+    def load_runs(self, filters=None):
+        pass
 
 class ConsoleLogger(BaseLogger):
 
-    def open(self, cfg, eval_mode=False):
+    def open(self, cfg, override_run_name=None):
         pass
         
     def write(self, log_dict):
@@ -65,9 +67,12 @@ class ConsoleLogger(BaseLogger):
     def load_model_versions(self, artifact):
         raise NotImplementedError
 
+    def load_runs(self, filters=None):
+        raise NotImplementedError
+
 class WandBLogger(BaseLogger):
 
-    def open(self, cfg):
+    def open(self, cfg, override_run_name=None):
         config = cfg.exp
         wb_kwargs = {}
         if config.project != "":
@@ -86,7 +91,8 @@ class WandBLogger(BaseLogger):
         # special tings for eval mode
         if self.eval_mode:
             wb_kwargs['job_type'] = 'eval'
-            wb_kwargs['name'] = f"eval {config.group}/{config.job_type}/{config.name}"
+        if override_run_name is not None:
+            wb_kwargs["name"] = override_run_name
             
         slurm_info_dict = {
             k[len("SLURM_") :]: v
@@ -128,7 +134,8 @@ class WandBLogger(BaseLogger):
         return files
 
     def load_model(self, artifact):
-        name = f"{artifact.name}:{artifact.version}"
+        version = 'latest' if artifact.version == '*' else artifact.version
+        name = f"{artifact.name}:{version}"
         artifact = wandb.use_artifact(name)
         files = [unquote(urlparse(v.ref).path) for k, v in artifact.manifest.entries.items()]
         assert len(files) == 1, 'there was more than 1 file for checkpoint'
@@ -141,7 +148,7 @@ class WandBLogger(BaseLogger):
         
         return [f'v{i}' for i in range(latest_version)]            
             
-        
-
-    
-        
+    def load_runs(self, filters=None):
+        api = wandb.Api()
+        return api.runs("cvmlp-embodiment-transfer/lmnav", filters)
+       

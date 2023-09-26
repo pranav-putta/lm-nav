@@ -53,7 +53,7 @@ eval:
     load_artifact:
       name: ${....train.store_artifact.name}
       version: "latest"
-  num_episodes: 50
+  num_episodes: 25
   save_videos: True
   deterministic: False
   num_envs: 10

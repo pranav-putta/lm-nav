@@ -8,6 +8,7 @@ ckpts/
 videos/
 wandb/
 logs/
+experiments/
 *.egg-info
 *.dat
 
