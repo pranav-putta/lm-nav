@@ -1,123 +1,146 @@
-import os
-import editdistance
-
-import torch
-from torch import nn, Tensor
-from torch.nn import functional as F
-from typing import *
-
+import random
 from random import randrange
+from scipy.cluster.vq import kmeans, vq
+import matplotlib.pyplot as plt
 
+import editdistance
+import torch
+from torch import nn
+from torch.nn import functional as F
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
+from einops import repeat, rearrange
 
 
-class VanillaVAE(nn.Module):
-
-    def __init__(self,
-                 vocab_size: int,
-                 embedding_dim: int,
-                 hidden_dim: int,
-                 latent_dim: int,
-                 temperature: float,
-                 kl_weight: float,
-                 num_layers: int,
-                 **kwargs) -> None:
-        super(VanillaVAE, self).__init__()
-
-        self.latent_dim = latent_dim
-        self.embedding_dim = embedding_dim
-        self.hidden_dim = hidden_dim
-        self.vocab_size = vocab_size
+class Encoder(nn.Module):
+    def __init__(self, input_size=4096, hidden_size=1024, num_layers=2):
+        super(Encoder, self).__init__()
+        self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.temperature = temperature
+        self.lstm = nn.LSTM(
+            input_size,
+            hidden_size,
+            num_layers,
+            batch_first=True,
+            bidirectional=False,
+        )
 
-        self.kld_weight = kl_weight
+    def forward(self, x):
+        # x: tensor of shape (batch_size, seq_length, hidden_size)
+        outputs, (hidden, cell) = self.lstm(x)
+        return (hidden, cell)
 
-        self.embedding = nn.Embedding(self.num_tokens, embedding_dim)
-        self.encoder = nn.GRU(embedding_dim, hidden_dim, num_layers=num_layers, batch_first=True)
 
-        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
-        self.fc_var = nn.Linear(hidden_dim, latent_dim)
+class Decoder(nn.Module):
+    def __init__(
+            self, input_size=4096, hidden_size=1024, output_size=4096, num_layers=2
+    ):
+        super(Decoder, self).__init__()
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.num_layers = num_layers
+        self.lstm = nn.LSTM(
+            input_size,
+            hidden_size,
+            num_layers,
+            batch_first=True,
+            bidirectional=False,
+        )
+        self.fc = nn.Linear(hidden_size, output_size)
 
-        self.dec_embedding = nn.Embedding(self.num_tokens, hidden_dim)
-        self.dec_latent_proj = nn.Linear(latent_dim, hidden_dim)
-        self.decoder = nn.GRU(hidden_dim, hidden_dim, num_layers=num_layers, batch_first=True)
-        self.decoder_head = nn.Linear(hidden_dim, vocab_size)
+    def forward(self, x, hidden):
+        # x: tensor of shape (batch_size, seq_length, hidden_size)
+        output, (hidden, cell) = self.lstm(x, hidden)
+        prediction = self.fc(output)
+        return prediction, (hidden, cell)
 
-    @property
-    def start_token(self):
-        return self.vocab_size
 
-    @property
-    def pad_token(self):
-        return self.vocab_size + 1
+class LSTMVAE(nn.Module):
+    """LSTM-based Variational Auto Encoder"""
 
-    @property
-    def num_tokens(self):
-        return self.vocab_size + 2
-
-    def encode(self, input: Tensor) -> List[Tensor]:
+    def __init__(
+            self, vocab_size, embedding_size, hidden_size, latent_size,
+            num_layers, device=torch.device("cuda"), kl_weight=0.00025
+    ):
         """
-        Encodes the input by passing through the encoder network
-        and returns the latent codes.
-        :param input: (Tensor) Input tensor to encoder [N x C x H x W]
-        :return: (Tensor) List of latent codes
+        input_size: int, batch_size x sequence_length x input_dim
+        hidden_size: int, output size of LSTM AE
+        latent_size: int, latent z-layer size
+        num_lstm_layer: int, number of layers in LSTM
         """
-        out = self.embedding(input)
-        out, hx = self.encoder(out)
+        super(LSTMVAE, self).__init__()
+        self.device = device
 
-        # Split the result into mu and var components
-        # of the latent Gaussian distribution
-        mu = self.fc_mu(hx[-1])
-        log_var = self.fc_var(hx[-1])
+        # dimensions
+        self.kl_weight = kl_weight
+        self.embedding_size = embedding_size
+        self.hidden_size = hidden_size
+        self.latent_size = latent_size
+        self.num_layers = num_layers
+        self.vocab_size = vocab_size
 
-        return [mu, log_var]
+        # lstm ae
+        self.embedding = nn.Embedding(vocab_size + 1, self.embedding_size)
+        self.lstm_enc = Encoder(
+            input_size=embedding_size,
+            hidden_size=hidden_size,
+            num_layers=self.num_layers
+        )
+        self.lstm_dec = Decoder(
+            input_size=latent_size,
+            output_size=embedding_size,
+            hidden_size=hidden_size,
+            num_layers=self.num_layers,
+        )
 
-    def decode(self, z: Tensor, seq_len) -> Tensor:
-        """
-        Maps the given latent codes
-        onto the image space.
-        :param z: (Tensor) [B x D]
-        :return: (Tensor) [B x C x H x W]
-        """
-        hx = z.expand(self.num_layers, -1, -1)
-        hx = self.dec_latent_proj(hx)
-        inputs = torch.tensor([[self.start_token] * z.shape[0]]).T.cuda()
+        self.fc21 = nn.Linear(self.hidden_size, self.latent_size)
+        self.fc22 = nn.Linear(self.hidden_size, self.latent_size)
+        self.fc3 = nn.Linear(self.latent_size, self.hidden_size)
 
-        out_seq = []
-        for _ in range(seq_len):
-            inputs = self.dec_embedding(inputs)
-            out, hx = self.decoder(inputs, hx)
-            logits = self.decoder_head(out) / self.temperature
-            probs = F.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs.squeeze(1), 1).long()
-            out_seq.append(probs)
-            inputs = next_token.detach().clone()
+        self.dec_head = nn.Linear(hidden_size, vocab_size)
 
-        return torch.stack(out_seq, dim=1)
-
-    def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
-        """
-        Reparameterization trick to sample from N(mu, var) from
-        N(0,1).
-        :param mu: (Tensor) Mean of the latent Gaussian [B x D]
-        :param logvar: (Tensor) Standard deviation of the latent Gaussian [B x D]
-        :return: (Tensor) [B x D]
-        """
+    def reparametize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return eps * std + mu
+        noise = torch.randn_like(std).to(self.device)
 
-    def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
-        mu, log_var = self.encode(input)
-        z = self.reparameterize(mu, log_var)
-        return [self.decode(z, input.shape[1]), input, mu, log_var]
+        z = mu + noise * std
+        return z
 
-    def loss_function(self,
-                      *args,
-                      **kwargs) -> dict:
+    def forward(self, inp):
+        batch_size, seq_len = inp.shape
+
+        x = self.embedding(inp)
+
+        # encode input space to hidden space
+        enc_hidden = self.lstm_enc(x)
+        enc_h = enc_hidden[0].view(batch_size, self.hidden_size).to(self.device)
+
+        # extract latent variable z(hidden space to latent space)
+        mean = self.fc21(enc_h)
+        logvar = self.fc22(enc_h)
+        z = self.reparametize(mean, logvar)  # batch_size x latent_size
+
+        original_z = z
+        # decode latent space to input space
+        z = repeat(z, 'b h -> b l h', l=seq_len)
+        reconstruct_output, hidden = self.lstm_dec(z, enc_hidden)
+
+        x_hat = self.dec_head(reconstruct_output)
+
+        # calculate vae loss
+        losses = self.loss_function(x_hat, inp, mean, logvar)
+        m_loss, recon_loss, kld_loss = (
+            losses["loss"],
+            losses["Reconstruction_Loss"],
+            losses["KLD"],
+        )
+
+        return m_loss, x_hat, (recon_loss, kld_loss, original_z)
+
+    def loss_function(self, *args, **kwargs) -> dict:
         """
         Computes the VAE loss function.
         KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
@@ -125,53 +148,90 @@ class VanillaVAE(nn.Module):
         :param kwargs:
         :return:
         """
-        recons = args[0].view(-1, self.vocab_size)
-        input = args[1].view(-1)
+        recons = args[0]
+        input = args[1]
         mu = args[2]
         log_var = args[3]
 
-        recons_loss = F.cross_entropy(recons, input, ignore_index=self.pad_token)
+        kld_weight = self.kl_weight  # Account for the minibatch samples from the dataset
+        recons_loss = F.cross_entropy(recons.view(-1, self.vocab_size), input.view(-1), ignore_index=self.vocab_size)
 
-        kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=1), dim=0)
+        kld_loss = torch.mean(
+            -0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=1), dim=0
+        )
 
-        loss = recons_loss + self.kld_weight * kld_loss
-        return {'loss': loss, 'Reconstruction_Loss': recons_loss.detach().item(), 'KLD': -kld_loss.detach().item()}
+        loss = recons_loss + kld_weight * kld_loss
+        return {
+            "loss": loss,
+            "Reconstruction_Loss": recons_loss.detach(),
+            "KLD": -kld_loss.detach(),
+        }
 
-    def sample(self,
-               num_samples: int,
-               current_device: int, **kwargs) -> Tensor:
+
+class LSTMAE(nn.Module):
+    """LSTM-based Auto Encoder"""
+
+    def __init__(self, vocab_size, embedding_size, hidden_size,
+                 latent_size, num_layers, device=torch.device("cuda"), **kwargs):
         """
-        Samples from the latent space and return the corresponding
-        image space map.
-        :param num_samples: (Int) Number of samples
-        :param current_device: (Int) Device to run the model
-        :return: (Tensor)
+        input_size: int, batch_size x sequence_length x input_dim
+        hidden_size: int, output size of LSTM AE
+        latent_size: int, latent z-layer size
+        num_lstm_layer: int, number of layers in LSTM
         """
-        z = torch.randn(num_samples,
-                        self.latent_dim)
+        super(LSTMAE, self).__init__()
+        self.device = device
 
-        z = z.to(current_device)
+        # dimensions
+        self.embedding_size = embedding_size
+        self.hidden_size = hidden_size
+        self.latent_size = latent_size
+        self.vocab_size = vocab_size
 
-        samples = self.decode(z)
-        return samples
+        self.embedding = nn.Embedding(vocab_size, self.embedding_size)
+        # lstm ae
+        self.lstm_enc = Encoder(
+            input_size=embedding_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers
+        )
+        self.lstm_dec = Decoder(
+            input_size=embedding_size,
+            output_size=embedding_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers
+        )
 
-    def generate(self, x: Tensor, **kwargs) -> Tensor:
-        """
-        Given an input image x, returns the reconstructed image
-        :param x: (Tensor) [B x C x H x W]
-        :return: (Tensor) [B x C x H x W]
-        """
+        self.dec_head = nn.Linear(hidden_size, vocab_size)
 
-        return self.forward(x)[0]
+        self.criterion = nn.CrossEntropyLoss(ignore_index=vocab_size + 1)
+
+    def forward(self, inp):
+        batch_size, seq_len = inp.shape
+
+        x = self.embedding(inp)
+        enc_hidden = self.lstm_enc(x)
+
+        temp_input = torch.zeros((batch_size, seq_len, self.embedding_size), dtype=torch.float).to(
+            self.device
+        )
+        hidden = enc_hidden
+        reconstruct_output, hidden = self.lstm_dec(temp_input, hidden)
+        reconstruct_output = self.dec_head(reconstruct_output)
+
+        reconstruct_loss = self.criterion(reconstruct_output.view(-1, self.vocab_size), inp.view(-1))
+
+        return reconstruct_loss, reconstruct_output, (0, 0, hidden)
 
 
 class ModeDataset(Dataset):
-    
+
     def __init__(self):
         r = lambda length: [randrange(0, 4) for _ in range(length)]
         num_modes = 4
-        self.modes = [r(l) for l in [randrange(10, 20) for _ in range(num_modes)]]
-        self.modes = [[0] * 12, [0, 1] * 5, [1, 2] * 5 + [0, 1]] 
+        random.seed(0)
+        self.modes = [r(l) for l in [100] * 4]
+        # self.modes = [[0, 1, 2] * 10, [0, 1, 0] * 10]
         print(self.modes)
 
     def __len__(self):
@@ -179,69 +239,120 @@ class ModeDataset(Dataset):
 
     def __getitem__(self, index):
         return torch.tensor(self.modes[index % len(self.modes)])
-        
+
+    def val2str(self, val):
+        return ''.join(map(str, val.squeeze().cpu().tolist()))
+
+
+def plot_and_cluster_features(tensors, k, title):
+    # Performing kmeans clustering
+    centroids, distortion = kmeans(tensors, k)
+    idx, _ = vq(tensors, centroids)
+
+    # Plot the clustered data
+    for i in range(k):
+        plt.scatter(tensors[idx == i, 0], tensors[idx == i, 1], label=f'Cluster {i + 1}')
+
+    # Plot the centroids
+    plt.scatter(centroids[:, 0], centroids[:, 1], s=100, color='black', label='Centroids')
+    plt.title("t-SNE of latents")
+
+    plt.legend()
+    plt.savefig(f'{title}.png')
+    plt.clf()
+
+
+def plot_and_reduce_dimensions(data, title):
+    # Extract the tensors and labels from the data
+    tensors = torch.cat([t for t, _ in data], dim=0).cpu().numpy()
+    labels = [l for _, l in data]
+
+    # Apply t-SNE for dimensionality reduction
+    tsne = TSNE(n_components=2, random_state=0)
+    tensors_2d = tsne.fit_transform(tensors)
+
+    # Plot the reduced data
+    plot_and_cluster_features(tensors_2d, 8, title)
+
 class ActionDataset(Dataset):
 
-    def __init__(self, data_path=None, bostoken=4, min_len=8, max_len=40):
+    def __init__(self, data_path=None, min_len=8, max_len=40):
         assert (data_path is not None)
-        
+
         # set metadata using the config file
         self.min_len = min_len
         self.max_len = max_len
-        self.bostoken = bostoken
-        
+
         self.data = torch.load(data_path)
-    
+
     def __len__(self):
         return len(self.data)
-    
+
     def __getitem__(self, idx):
         _, actions = self.data[idx]
         actions = actions.tolist()
         # add a BOS token
-        actions = [self.bostoken] + actions
-        rand_len = min(randrange(self.min_len, self.max_len), len(actions)) 
+        rand_len = min(randrange(self.min_len, self.max_len), len(actions))
         start = randrange(0, len(actions) - rand_len + 1)
         actions = actions[start:start + rand_len]
-        return torch.tensor(actions, dtype=torch.long)
+        return torch.tensor(actions, dtype=torch.long) 
 
-vocab_size = 4
-embedding_dim = 8
-hidden_dim = 64
-latent_dim = 3
-temp = 0.95
-num_layers = 2
+    def val2str(self, val):
+        return ' '.join(map(str, val.squeeze().cpu().tolist()))
 
-# dataset = ActionDataset("/srv/flash1/pputta7/projects/lm-nav/action_dataset.pt")
-dataset = ModeDataset()
-dataloader = DataLoader(dataset,
-                        collate_fn=lambda t: pad_sequence(t, batch_first=True, padding_value=vocab_size + 1),
-                        batch_size=16, num_workers=1)
-model = VanillaVAE(vocab_size, embedding_dim, hidden_dim, latent_dim, temp, 0.05, num_layers)
-model = model.cuda()
-optim = torch.optim.Adam(model.parameters(), lr=1e-3)
+def train():
+    vocab_size = 4
+    embedding_dim = 64
+    hidden_dim = 64
+    latent_dim = 32
+    temp = 1.0
+    num_layers = 1
+    lr = 1e-3
+    kl_weight = 0.025
+    device = torch.device('cuda')
 
-print("Num params", sum([p.numel() for p in model.parameters()]))
-for epoch in range(5):
-    step = 0
-    for actions in (pbar := tqdm(dataloader)):
-        optim.zero_grad()
-        out = model(actions.cuda())
-        loss = model.loss_function(*out)
+    dataset = ActionDataset("/srv/flash1/pputta7/projects/lm-nav/actdataset.pt")
+    # dataset = ModeDataset()
+    dataloader = DataLoader(dataset,
+                            collate_fn=lambda t: pad_sequence(t, batch_first=True, padding_value=vocab_size),
+                            batch_size=16)
+    model = LSTMVAE(vocab_size, embedding_dim, hidden_dim, latent_dim, num_layers, device, kl_weight=kl_weight)
+    model = model.to(device)
+    optim = torch.optim.Adam(model.parameters(), lr=lr)
 
-        loss['loss'].backward()
-        optim.step()
+    print("Num params", sum([p.numel() for p in model.parameters()]))
+    for epoch in range(10):
+        step = 0
+        for actions in (pbar := tqdm(dataloader)):
+            optim.zero_grad()
+            loss, out, extra = model(actions.to(device))
 
-        pbar.set_description(f"{loss}")
-        step += 1
-        if step % 25 == 0:
-            torch.save({'model': model.state_dict(), 'optim': optim.state_dict()}, 'skill_vae2.pt')
+            loss.backward()
+            optim.step()
 
-    print(f"Epoch {epoch} eval:")
-    for i in range(3):
-        pred, inp, _, _ = model(dataset[i][None,].cuda())
-        pred = torch.argmax(pred, dim=-1)
-        pred = ' '.join(map(lambda x: str(x), pred.squeeze().tolist()))
-        inp = ' '.join(map(lambda x: str(x), inp.squeeze().tolist()))
-        print(f"Input: {inp} ; Pred: {pred} ; Distance: {editdistance.eval(pred, inp)}" )
-    
+            pbar.set_description(f"Loss: {loss} ; Reconstruction Loss: {extra[0]} ; KDL: {extra[1]}")
+            step += 1
+            if step % 25 == 0:
+                torch.save({'model': model.state_dict(), 'optim': optim.state_dict()}, f'skill_vae_epoch={epoch}.pt')
+
+        print(f"Epoch {epoch} eval:")
+        latents = []
+        avg_edit_dist = 0
+        with torch.no_grad():
+            for i in range(1000):
+                inp = dataset[i][None,].to(device)
+                _, pred, (_, _, z) = model(inp.to(device))
+
+                pred = torch.argmax(pred, dim=-1)
+                label = dataset.val2str(pred)
+                inp = dataset.val2str(inp)
+                
+                dist = editdistance.eval(label, inp)
+                avg_edit_dist += dist
+                # print(f"Input: {label}, Pred: {label}, Distance: {dist}")
+                latents.append((z, label))
+            print("Average edit distance", avg_edit_dist / len(latents))
+            plot_and_reduce_dimensions(latents, f'epoch={epoch}')
+
+if __name__ == "__main__":
+    train()
