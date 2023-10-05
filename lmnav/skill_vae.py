@@ -20,18 +20,19 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(
+        self.lstm = nn.GRU(
             input_size,
             hidden_size,
             num_layers,
             batch_first=True,
-            bidirectional=False,
+            bidirectional=True,
+            dropout=0.1
         )
 
     def forward(self, x):
         # x: tensor of shape (batch_size, seq_length, hidden_size)
-        outputs, (hidden, cell) = self.lstm(x)
-        return (hidden, cell)
+        outputs, hidden = self.lstm(x)
+        return hidden
 
 
 class Decoder(nn.Module):
@@ -42,20 +43,21 @@ class Decoder(nn.Module):
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(
+        self.lstm = nn.GRU(
             input_size,
             hidden_size,
             num_layers,
             batch_first=True,
             bidirectional=False,
+            dropout=0.1
         )
         self.fc = nn.Linear(hidden_size, output_size)
 
-    def forward(self, x, hidden):
+    def forward(self, x):
         # x: tensor of shape (batch_size, seq_length, hidden_size)
-        output, (hidden, cell) = self.lstm(x, hidden)
+        output, hidden = self.lstm(x)
         prediction = self.fc(output)
-        return prediction, (hidden, cell)
+        return prediction, hidden
 
 
 class LSTMVAE(nn.Module):
@@ -91,16 +93,13 @@ class LSTMVAE(nn.Module):
         )
         self.lstm_dec = Decoder(
             input_size=latent_size,
-            output_size=embedding_size,
+            output_size=vocab_size,
             hidden_size=hidden_size,
             num_layers=self.num_layers,
         )
 
-        self.fc21 = nn.Linear(self.hidden_size, self.latent_size)
-        self.fc22 = nn.Linear(self.hidden_size, self.latent_size)
-        self.fc3 = nn.Linear(self.latent_size, self.hidden_size)
-
-        self.dec_head = nn.Linear(hidden_size, vocab_size)
+        self.fc21 = nn.Linear(self.hidden_size * self.num_layers * 2, self.latent_size)
+        self.fc22 = nn.Linear(self.hidden_size * self.num_layers * 2, self.latent_size)
 
     def reparametize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -116,19 +115,21 @@ class LSTMVAE(nn.Module):
 
         # encode input space to hidden space
         enc_hidden = self.lstm_enc(x)
-        enc_h = enc_hidden[0].view(batch_size, self.hidden_size).to(self.device)
+        hidden = rearrange(enc_hidden, 'l b h -> b (l h)')
 
         # extract latent variable z(hidden space to latent space)
-        mean = self.fc21(enc_h)
-        logvar = self.fc22(enc_h)
+        mean = self.fc21(hidden)
+        logvar = self.fc22(hidden)
         z = self.reparametize(mean, logvar)  # batch_size x latent_size
 
         original_z = z
+        
         # decode latent space to input space
         z = repeat(z, 'b h -> b l h', l=seq_len)
-        reconstruct_output, hidden = self.lstm_dec(z, enc_hidden)
-
-        x_hat = self.dec_head(reconstruct_output)
+        
+        reconstruct_output, hidden = self.lstm_dec(z)
+        
+        x_hat = reconstruct_output
 
         # calculate vae loss
         losses = self.loss_function(x_hat, inp, mean, logvar)
@@ -166,62 +167,6 @@ class LSTMVAE(nn.Module):
             "Reconstruction_Loss": recons_loss.detach(),
             "KLD": -kld_loss.detach(),
         }
-
-
-class LSTMAE(nn.Module):
-    """LSTM-based Auto Encoder"""
-
-    def __init__(self, vocab_size, embedding_size, hidden_size,
-                 latent_size, num_layers, device=torch.device("cuda"), **kwargs):
-        """
-        input_size: int, batch_size x sequence_length x input_dim
-        hidden_size: int, output size of LSTM AE
-        latent_size: int, latent z-layer size
-        num_lstm_layer: int, number of layers in LSTM
-        """
-        super(LSTMAE, self).__init__()
-        self.device = device
-
-        # dimensions
-        self.embedding_size = embedding_size
-        self.hidden_size = hidden_size
-        self.latent_size = latent_size
-        self.vocab_size = vocab_size
-
-        self.embedding = nn.Embedding(vocab_size, self.embedding_size)
-        # lstm ae
-        self.lstm_enc = Encoder(
-            input_size=embedding_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers
-        )
-        self.lstm_dec = Decoder(
-            input_size=embedding_size,
-            output_size=embedding_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers
-        )
-
-        self.dec_head = nn.Linear(hidden_size, vocab_size)
-
-        self.criterion = nn.CrossEntropyLoss(ignore_index=vocab_size + 1)
-
-    def forward(self, inp):
-        batch_size, seq_len = inp.shape
-
-        x = self.embedding(inp)
-        enc_hidden = self.lstm_enc(x)
-
-        temp_input = torch.zeros((batch_size, seq_len, self.embedding_size), dtype=torch.float).to(
-            self.device
-        )
-        hidden = enc_hidden
-        reconstruct_output, hidden = self.lstm_dec(temp_input, hidden)
-        reconstruct_output = self.dec_head(reconstruct_output)
-
-        reconstruct_loss = self.criterion(reconstruct_output.view(-1, self.vocab_size), inp.view(-1))
-
-        return reconstruct_loss, reconstruct_output, (0, 0, hidden)
 
 
 class ModeDataset(Dataset):
@@ -304,11 +249,11 @@ def train():
     vocab_size = 4
     embedding_dim = 64
     hidden_dim = 64
-    latent_dim = 32
+    latent_dim = 512
     temp = 1.0
-    num_layers = 1
-    lr = 1e-3
-    kl_weight = 0.025
+    num_layers = 4
+    lr = 1e-4
+    kl_weight = 0.05
     device = torch.device('cuda')
 
     dataset = ActionDataset("/srv/flash1/pputta7/projects/lm-nav/actdataset.pt")
@@ -321,17 +266,23 @@ def train():
     optim = torch.optim.Adam(model.parameters(), lr=lr)
 
     print("Num params", sum([p.numel() for p in model.parameters()]))
-    for epoch in range(10):
+    for epoch in range(1000):
         step = 0
+        avg_loss, avg_recon_loss, avg_kl_loss = 0, 0, 0
         for actions in (pbar := tqdm(dataloader)):
             optim.zero_grad()
             loss, out, extra = model(actions.to(device))
 
             loss.backward()
             optim.step()
-
-            pbar.set_description(f"Loss: {loss} ; Reconstruction Loss: {extra[0]} ; KDL: {extra[1]}")
+            
+            avg_loss += loss
+            avg_recon_loss += extra[0]
+            avg_kl_loss += extra[1]
+            
+            
             step += 1
+            pbar.set_description(f"Loss: {avg_loss / step:.3f} ; Reconstruction Loss: {avg_recon_loss / step:.3f} ; KDL: {avg_kl_loss / step:.3f}")
             if step % 25 == 0:
                 torch.save({'model': model.state_dict(), 'optim': optim.state_dict()}, f'skill_vae_epoch={epoch}.pt')
 
@@ -349,10 +300,11 @@ def train():
                 
                 dist = editdistance.eval(label, inp)
                 avg_edit_dist += dist
-                # print(f"Input: {label}, Pred: {label}, Distance: {dist}")
+                if i % 250 == 0:
+                    print(f"Input: {inp}, Pred: {label}, Distance: {dist}")
                 latents.append((z, label))
             print("Average edit distance", avg_edit_dist / len(latents))
-            plot_and_reduce_dimensions(latents, f'epoch={epoch}')
+            # plot_and_reduce_dimensions(latents, f'epoch={epoch}')
 
 if __name__ == "__main__":
     train()
