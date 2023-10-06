@@ -1,21 +1,25 @@
-from dataclasses import dataclass 
+from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
-    
+
 from typing import Optional
 from omegaconf import MISSING, OmegaConf
 import torch
 
+
 @dataclass
 class LoggerConfig:
     _target_: str = MISSING
-    
+
+
 @dataclass
 class WBLoggerConfig(LoggerConfig):
     _target_: str = 'lmnav.common.writer.WandBLogger'
 
+
 @dataclass
 class ConsoleLoggerConfig(LoggerConfig):
     _target_: str = 'lmnav.common.writer.ConsoleLogger'
+
 
 @dataclass
 class ExperimentConfig:
@@ -31,18 +35,19 @@ class ExperimentConfig:
 
     logger: LoggerConfig = MISSING
 
+
 ### ARTIFACT CONFIG ###
 @dataclass
 class ArtifactConfig:
     name: str = "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
     version: str = MISSING
     dirpath: Optional[str] = MISSING
-    
+
 
 ### MODEL CONFIGS ###
 @dataclass
 class BaseModelConfig:
-    is_model: bool = True    
+    is_model: bool = True
     load_artifact: Optional[ArtifactConfig] = None
 
 
@@ -51,6 +56,7 @@ class BaseVisualEncoderConfig(BaseModelConfig):
     _target_: str = MISSING
     vis_processor: Optional[dict] = None
     image_size: int = 224
+
 
 @dataclass
 class QformerVisualEncoderConfig(BaseVisualEncoderConfig):
@@ -65,14 +71,15 @@ class QformerVisualEncoderConfig(BaseVisualEncoderConfig):
     qformer_compressor_cfg: Optional[dict] = None
     qformer_model: str = "https://storage.googleapis.com/sfr-vision-language-research/LAVIS/models/BLIP2/blip2_pretrained_flant5xxl.pth"
 
+
 @dataclass
 class CLIPVisualEncoderConfig(BaseVisualEncoderConfig):
-    _target_:str = "lmnav.models.vis_encoders.CLIPVisualEncoder"
+    _target_: str = "lmnav.models.vis_encoders.CLIPVisualEncoder"
     vit_precision: str = "fp16"
     vit_model: str = "openai/clip-vit-large-patch14"
     freeze_vit: bool = True
-    
-    
+
+
 @dataclass
 class BasePolicyConfig(BaseModelConfig):
     pass
@@ -82,13 +89,14 @@ class BasePolicyConfig(BaseModelConfig):
 class LinearHeadPolicyConfig(BasePolicyConfig):
     _target_: str = "lmnav.models.linear_head.LinearHead"
     in_dim: Optional[int] = None
-    p_dropout: float = 0.2    
+    p_dropout: float = 0.2
 
 
 @dataclass
 class OldEAIPolicyConfig(BasePolicyConfig):
     _target_: str = "old_eai_policy"
     ckpt: str = MISSING
+
 
 @dataclass
 class PPOAgentModelConfig(BaseModelConfig):
@@ -97,7 +105,7 @@ class PPOAgentModelConfig(BaseModelConfig):
     critic: BaseModelConfig = MISSING
     max_trajectory_length: int = MISSING
 
-    
+
 @dataclass
 class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
     _target_: str = "lmnav.models.nav_llama.NavLLAMA"
@@ -105,23 +113,40 @@ class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
     vis_encoder: BaseVisualEncoderConfig = MISSING
 
     freeze_llama_proj: bool = False
-    
+
     low_resource: bool = False
     lora_config: Optional[dict] = None
 
     llama_model: str = "meta-llama/Llama-2-7b-chat-hf"
     max_trajectory_length: int = MISSING
 
+
+@dataclass
+class BaseNavVanillaTransformerPolicyConfig(BasePolicyConfig):
+    _target_: str = "lmnav.models.nav_vanilla.NavVanillaTransformer"
+
+    vis_encoder: BaseVisualEncoderConfig = MISSING
+
+    d_hidden: int = 512
+    d_head: int = 64
+    n_heads: int = 8
+    n_blocks: int = 2
+    drop_p: float = 0.2
+    max_t: int = 200
+
+
 ### FILTER CONFIGS ###
 @dataclass
 class BaseFilterMethodConfig:
     _target_: str = MISSING
 
+
 @dataclass
 class DTGFitlerMethodConfig(BaseFilterMethodConfig):
     _target_: str = "filter_methods.dtg"
     dtg_threshold: float = 1.0
-    
+
+
 ### GENERATOR CONFIGS ###
 @dataclass
 class EpisodeGeneratorConfig:
@@ -131,43 +156,50 @@ class EpisodeGeneratorConfig:
     deterministic: bool = MISSING
     ckpt_freq: int = 1
     store_artifact: ArtifactConfig = MISSING
-    
+
+
 ### DATASET CONFIGS ###
 @dataclass
 class BaseDatasetConfig:
     _target_: str = MISSING
     artifact: ArtifactConfig = MISSING
 
+
 @dataclass
 class OfflineEpisodeDatasetConfig(BaseDatasetConfig):
     _target_: str = "datasets.offline_episode"
-    
-    
+
+
 ### TRAINER CONFIGS ###
 @dataclass
 class BaseLRConfig:
     lr: float = MISSING
 
+
 @dataclass
 class ConstantLRConfig(BaseLRConfig):
     _target_: str = 'constant'
-    
+
+
 @dataclass
 class ExponentialLRConfig(BaseLRConfig):
     _target_: str = 'exponential'
     gamma: float = MISSING
+
 
 @dataclass
 class ActorCriticLRConfig(BaseLRConfig):
     _target_: str = 'group'
     actor: BaseLRConfig = MISSING
     critic: BaseLRConfig = MISSING
-    
+
+
 @dataclass
 class BaseRunnerConfig:
     policy: BasePolicyConfig = MISSING
     dataset: BaseDatasetConfig = MISSING
     store_artifact: Optional[ArtifactConfig] = None
+
 
 @dataclass
 class TrainRunnerConfig(BaseRunnerConfig):
@@ -178,15 +210,17 @@ class TrainRunnerConfig(BaseRunnerConfig):
     max_grad_norm: Optional[float] = 1.2
     ckpt_freq: int = 50
 
+
 @dataclass
 class BCTrainRunnerConfig(TrainRunnerConfig):
     episodes_per_batch: int = MISSING
     lr_schedule: BaseLRConfig = MISSING
 
+
 @dataclass
 class PPOTrainRunnerConfig(TrainRunnerConfig):
     policy: PPOAgentModelConfig = MISSING
-    
+
     lr_schedule: ActorCriticLRConfig = MISSING
     num_rollout_steps: int = MISSING
     ppo_epochs: int = MISSING
@@ -199,6 +233,7 @@ class PPOTrainRunnerConfig(TrainRunnerConfig):
     ratio_threshold: float = 10.0
     deterministic: bool = False
 
+
 @dataclass
 class EvalRunnerConfig(BaseRunnerConfig):
     ckpt: str = MISSING
@@ -207,7 +242,7 @@ class EvalRunnerConfig(BaseRunnerConfig):
     deterministic: bool = MISSING
     dtg_threshold: float = 1.0
     num_envs: int = MISSING
-    
+
 
 cs = ConfigStore.instance()
 cs.store(group='exp', name='base', node=ExperimentConfig)
@@ -223,6 +258,7 @@ cs.store(group='generator/filter_method', name='dtg', node=DTGFitlerMethodConfig
 cs.store(group='models/policy', name='base', node=BasePolicyConfig)
 cs.store(group='models/policy/old_eai_policy', name='old_eai_policy', node=OldEAIPolicyConfig)
 cs.store(group='models/policy/nav_llama', name='base_nav_llama', node=BaseNavLLaMAPolicyConfig)
+cs.store(group='models/policy/nav_vanilla', name='base_nav_vanilla', node=BaseNavVanillaTransformerPolicyConfig)
 cs.store(group='models', name='linear', node=LinearHeadPolicyConfig)
 
 cs.store(group='models/vis_encoder', name='base', node=BaseVisualEncoderConfig)

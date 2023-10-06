@@ -1,0 +1,53 @@
+# @package _global_
+
+defaults:
+  # set up habitat 
+  - /env@habitat_baselines: habitat_baselines
+  - /env@habitat: habitat 
+  - /dataset/imagenav/hm3d_1env
+    
+  # set up experiment misc.
+  - /exp: base
+  - /logger@exp.logger: console
+    
+  # set up train
+  - /runner@train: bc
+  - /lr@train.lr_schedule: constant
+  - /models/policy/nav_vanilla@train.policy: clip
+  - /dataset@train.dataset: offline_episode
+    
+  # set up eval
+  - /runner@eval: eval
+  - /dataset@eval.dataset: offline_episode
+    
+  - _self_
+
+exp:
+  group: "lmnav-1env"
+  job_type: "bc"
+  tags: ["linear"]
+
+train:
+  batch_size: 120
+  minibatch_size: 2
+  num_grad_accums: 6
+    
+  steps: 10_000
+  lr: 1e-4
+  policy:
+    max_trajectory_length: 22    
+  dataset:
+    artifact:
+      name: "offline_00744"
+      version: "latest"
+  store_artifact:
+    name: ${...exp.name}
+ 
+eval:
+  policy: ${..train.policy}
+  ckpt: "ckpt.*.pth"
+  num_episodes: 50
+  save_videos: True
+  deterministic: False
+  num_envs: 10
+  load_artifact: ${..train.store_artifact}

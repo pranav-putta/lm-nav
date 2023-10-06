@@ -1,10 +1,10 @@
 from torch import nn
 
-
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import einops
 
 
 class MaskedCausalAttention(nn.Module):
@@ -82,7 +82,15 @@ class Block(nn.Module):
 
 class NavVanillaTransformer(nn.Module):
     def __init__(
-        self, vis_encoder, d_hidden, d_head, n_heads, n_blocks, drop_p, **kwargs
+            self,
+            vis_encoder,
+            d_hidden,
+            d_head,
+            n_heads,
+            n_blocks,
+            drop_p,
+            max_t,
+            **kwargs
     ):
         super().__init__()
 
@@ -96,7 +104,7 @@ class NavVanillaTransformer(nn.Module):
         self.drop_p = drop_p
 
         self.transformer = nn.Sequential(
-            *[Block(h_dim, input_seq_len, n_heads, drop_p) for _ in range(n_blocks)]
+            *[Block(d_hidden, max_t, n_heads, drop_p) for _ in range(n_blocks)]
         )
 
     @property
@@ -133,9 +141,6 @@ class NavVanillaTransformer(nn.Module):
         rgbs_embd, rgbs_attn = self.embed_visual(rgbs_t)
         goals_embd, goals_attn = self.embed_visual(goals_t)
         mask_t = mask_t.to(torch.bool)
-
-        embd = embd.to(self.device)
-        tgts = tgts.to(self.device)
 
         outputs = self.transformer(embd)
 
