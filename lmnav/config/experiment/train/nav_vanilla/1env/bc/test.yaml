@@ -8,12 +8,12 @@ defaults:
     
   # set up experiment misc.
   - /exp: base
-  - /logger@exp.logger: console
+  - /logger@exp.logger: wb
     
   # set up train
   - /runner@train: bc
-  - /lr@train.lr_schedule: constant
-  - /models/policy/nav_vanilla@train.policy: clip
+  - /lr@train.lr_schedule: exponential
+  - /models/policy/nav_vanilla@train.policy: clip 
   - /dataset@train.dataset: offline_episode
     
   # set up eval
@@ -22,32 +22,37 @@ defaults:
     
   - _self_
 
+
 exp:
   group: "lmnav-1env"
   job_type: "bc"
-  tags: ["linear"]
+  tags: ["lora"]
 
 train:
   batch_size: 120
   minibatch_size: 2
   num_grad_accums: 6
-    
+
   steps: 10_000
-  lr: 1e-4
+  episodes_per_batch: 10
+  lr_schedule:
+    lr: 2.5e-4
+    gamma: 0.9995
   policy:
-    max_trajectory_length: 22    
+    max_t: 200
   dataset:
     artifact:
       name: "offline_00744"
       version: "latest"
   store_artifact:
-    name: ${...exp.name}
- 
+    name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
+      
 eval:
-  policy: ${..train.policy}
-  ckpt: "ckpt.*.pth"
+  policy: 
+    load_artifact:
+      name: ${....train.store_artifact.name}
+      version: "latest"
   num_episodes: 50
   save_videos: True
   deterministic: False
   num_envs: 10
-  load_artifact: ${..train.store_artifact}

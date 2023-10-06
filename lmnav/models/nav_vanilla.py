@@ -1,10 +1,21 @@
+from dataclasses import dataclass
 from torch import nn
 
 import math
 import torch
+import contextlib
 import torch.nn as nn
 import torch.nn.functional as F
 import einops
+
+from lmnav.models.base_model import BaseModel
+
+from torch.cuda.amp import autocast as autocast
+
+
+@dataclass
+class NavVanillaTransformerOutput:
+    loss: torch.Tensor
 
 
 class MaskedCausalAttention(nn.Module):
@@ -80,17 +91,18 @@ class Block(nn.Module):
         return x
 
 
-class NavVanillaTransformer(nn.Module):
+class NavVanillaTransformer(BaseModel):
     def __init__(
-            self,
-            vis_encoder,
-            d_hidden,
-            d_head,
-            n_heads,
-            n_blocks,
-            drop_p,
-            max_t,
-            **kwargs
+        self,
+        vis_encoder,
+        d_hidden,
+        d_head,
+        n_heads,
+        n_blocks,
+        drop_p,
+        max_t,
+        *args,
+        **kwargs
     ):
         super().__init__()
 
@@ -103,9 +115,16 @@ class NavVanillaTransformer(nn.Module):
         self.n_blocks = n_blocks
         self.drop_p = drop_p
 
+        self.max_t = (
+            max_t + (max_t + 1) * self.vis_encoder.num_tokens
+        )  # action tokens + rgb tokens + goal token
+
         self.transformer = nn.Sequential(
-            *[Block(d_hidden, max_t, n_heads, drop_p) for _ in range(n_blocks)]
+            *[Block(d_hidden, self.max_t, n_heads, drop_p) for _ in range(n_blocks)]
         )
+        self.vis_proj = nn.Linear(self.vis_encoder.hidden_size, self.d_hidden)
+        self.action_embedding = nn.Embedding(4, self.d_hidden)
+        self.action_head = nn.Linear(self.d_hidden, 4)
 
     @property
     def hidden_size(self):
@@ -117,16 +136,25 @@ class NavVanillaTransformer(nn.Module):
     def embed_visual(self, imgs):
         B, _, T, _, _ = imgs.size()
         image = einops.rearrange(imgs, "b c t h w -> (b t) c h w")
+
         image_embeds, image_atts = self.vis_encoder.embed_visual(image)
+        inputs = self.vis_proj(image_embeds)
 
-        inputs_llama = self.llama_proj(image_embeds)
-        atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(
-            image_embeds.device
-        )
+        atts = torch.ones(inputs.size()[:-1], dtype=torch.long).to(image_embeds.device)
 
-        inputs_llama = einops.rearrange(inputs_llama, "(b t) q h -> b t q h", b=B)
-        atts_llama = einops.rearrange(atts_llama, "(b t) h -> b t h", b=B)
-        return inputs_llama, atts_llama
+        inputs = einops.rearrange(inputs, "(b t) q h -> b t q h", b=B)
+        atts = einops.rearrange(atts, "(b t) h -> b t h", b=B)
+        return inputs, atts
+
+    def maybe_autocast(self, dtype=torch.float16):
+        # if on cpu, don't use autocast
+        # if on gpu, use autocast with dtype if provided, otherwise use torch.float16
+        enable_autocast = self.device != torch.device("cpu")
+
+        if enable_autocast:
+            return torch.cuda.amp.autocast(dtype=dtype)
+        else:
+            return contextlib.nullcontext()
 
     def forward(self, rgbs_t, goals_t, actions_t, mask_t):
         """
@@ -135,13 +163,31 @@ class NavVanillaTransformer(nn.Module):
         actions_t = [B, T]
         """
 
-        rgbs_t, goals_t, mask_t = map(
-            lambda t: t.to(self.device), (rgbs_t, goals_t, mask_t)
-        )
-        rgbs_embd, rgbs_attn = self.embed_visual(rgbs_t)
-        goals_embd, goals_attn = self.embed_visual(goals_t)
-        mask_t = mask_t.to(torch.bool)
+        with self.maybe_autocast():
+            rgbs_t, goals_t, actions_t, mask_t = map(
+                lambda t: t.to(self.device), (rgbs_t, goals_t, actions_t, mask_t)
+            )
+            rgbs_embd, rgbs_attn = self.embed_visual(rgbs_t)
+            goals_embd, goals_attn = self.embed_visual(goals_t)
+            actions_embd = einops.rearrange(
+                self.action_embedding(actions_t), "b t h -> b t 1 h"
+            )
+            mask_t = mask_t.to(torch.bool)
 
-        outputs = self.transformer(embd)
+            sa_embds = torch.cat((rgbs_embd, actions_embd), dim=2)
+            sa_embds = einops.rearrange(sa_embds, "b t q h -> b (t q) h")
+            goals_embd = einops.rearrange(goals_embd, "b t q h -> b (t q) h")
+            embd = torch.cat((goals_embd, sa_embds), dim=1)
 
-        return outputs
+            logits = self.transformer(embd)[
+                :, self.vis_encoder.num_tokens :: self.vis_encoder.num_tokens * 2
+            ]
+            probs = einops.rearrange(
+                F.softmax(self.action_head(logits), dim=-1), "b t h -> (b t) h"
+            )
+            tgts = einops.rearrange(actions_t, "b t -> (b t)")
+            masks = einops.rearrange(mask_t, "b t -> (b t)")
+
+            loss = (F.cross_entropy(probs, tgts, reduction="none") * masks).mean()
+
+        return NavVanillaTransformerOutput(loss=loss)

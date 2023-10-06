@@ -168,6 +168,12 @@ class NavLLAMA(Blip2Base):
         return inputs_llama, atts_llama
 
     def prompt1_wrap(self, prompt, rgbs_embd, goals_embd, actions, masks):
+        action_idx2token = {0: "stop", 1: "forward", 2: "left", 3: "right"}
+
+        # process actions into tokens
+        actions = actions.tolist()
+        actions = [[action_idx2token[act] for act in acts_t] for acts_t in actions]
+
         action_tkns_t = self.tokenize_actions(actions)
         actions_embd = self.embed_actions(action_tkns_t)
 
