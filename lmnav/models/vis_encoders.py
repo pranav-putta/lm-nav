@@ -12,11 +12,12 @@ from lmnav.models.Qformer import BertConfig, BertLMHeadModel
 from lmnav.models.perceiver import Perceiver
 
 from lmnav.common.dist_utils import download_cached_file
-from lmnav.common.utils import is_url, convert_weights_to_fp16
+from lmnav.common.utils import is_url, convert_weights_to_fp16, catchtime
 import contextlib
 
 import logging
 import os
+
 
 class LayerNorm(nn.LayerNorm):
     """Subclass torch's LayerNorm to handle fp16."""
@@ -27,11 +28,9 @@ class LayerNorm(nn.LayerNorm):
         return ret.type(orig_type)
 
 
-
 class VisualEncoder(BaseModel):
-
     def embed_visual(self, img):
-        raise NotImplementedError('embed_visual needs to be implemented')
+        raise NotImplementedError("embed_visual needs to be implemented")
 
     def maybe_autocast(self, dtype=torch.float16):
         # if on cpu, don't use autocast
@@ -45,36 +44,38 @@ class VisualEncoder(BaseModel):
 
     @property
     def hidden_size(self):
-        raise NotImplementedError('hidden_size needs to be implemented') 
+        raise NotImplementedError("hidden_size needs to be implemented")
 
     @property
     def vis_processor(self):
-        raise NotImplementedError('vis_processor needs to be implemented')
+        raise NotImplementedError("vis_processor needs to be implemented")
 
     @property
     def num_tokens(self):
-        raise NotImplementedError('num_tokens needs to be implemented')
+        raise NotImplementedError("num_tokens needs to be implemented")
+
 
 class QformerVisualEncoder(VisualEncoder):
-    
-    def __init__(self,
-                 image_size,
-                 vis_processor,
-                 vit_precision,
-                 vit_model,
-                 drop_path_rate,
-                 use_grad_checkpoint,
-                 num_query_token,
-                 freeze_vit,
-                 freeze_qformer,
-                 qformer_compressor_cfg,
-                 qformer_model,
-                 **kwargs):
-        super().__init__() 
-        
-        print('Loading Qformer visual encoder...')
+    def __init__(
+        self,
+        image_size,
+        vis_processor,
+        vit_precision,
+        vit_model,
+        drop_path_rate,
+        use_grad_checkpoint,
+        num_query_token,
+        freeze_vit,
+        freeze_qformer,
+        qformer_compressor_cfg,
+        qformer_model,
+        **kwargs
+    ):
+        super().__init__()
+
+        print("Loading Qformer visual encoder...")
         self._vis_processor = vis_processor
-        
+
         print("Loading VIT...")
         self.visual_encoder, self.ln_vision = self.init_vision_encoder(
             vit_model, image_size, drop_path_rate, use_grad_checkpoint, vit_precision
@@ -89,9 +90,9 @@ class QformerVisualEncoder(VisualEncoder):
             self.ln_vision = self.ln_vision.eval()
             self.ln_vision.train = disabled_train
             logging.info("freeze vision encoder")
-        print('Loading VIT Done')
+        print("Loading VIT Done")
 
-        print('Loading Q-Former')
+        print("Loading Q-Former")
         self.Qformer, self.query_tokens = self.init_Qformer(
             num_query_token, self.visual_encoder.num_features
         )
@@ -110,17 +111,17 @@ class QformerVisualEncoder(VisualEncoder):
             self.Qformer.train = disabled_train
             self.query_tokens.requires_grad = False
             logging.info("freeze Qformer")
-        logging.info('Loading Q-Former Done')
+        logging.info("Loading Q-Former Done")
 
         # check if we will compress q former tokens through a perceiver
         self.qformer_compressor_cfg = qformer_compressor_cfg
         if qformer_compressor_cfg is not None:
-            print('Loading Qformer Compression Perceiver')
+            print("Loading Qformer Compression Perceiver")
             self.qformer_compressor = Perceiver(
                 input_channels=self.Qformer.config.hidden_size,
                 input_axis=1,
                 num_freq_bands=64,
-                max_freq=64.,
+                max_freq=64.0,
                 depth=qformer_compressor_cfg.depth,
                 num_latents=qformer_compressor_cfg.num_latents,
                 latent_dim=self.Qformer.config.hidden_size,
@@ -136,13 +137,14 @@ class QformerVisualEncoder(VisualEncoder):
                 self_per_cross_attn=qformer_compressor_cfg.self_per_cross_attn,
             )
 
-
     def embed_visual(self, image):
-        """ expects tensor of shape [(b t) c h w] """
+        """expects tensor of shape [(b t) c h w]"""
         device = image.device
         with self.maybe_autocast():
             image_embeds = self.ln_vision(self.visual_encoder(image)).to(device)
-            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(device)
+            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(
+                device
+            )
             query_tokens = self.query_tokens.expand(image_embeds.shape[0], -1, -1)
             query_output = self.Qformer.bert(
                 query_embeds=query_tokens,
@@ -150,16 +152,14 @@ class QformerVisualEncoder(VisualEncoder):
                 encoder_attention_mask=image_atts,
                 return_dict=True,
             )
-            
+
             q_hidden_state = query_output.last_hidden_state
 
             # check if compressor exists
             if self.qformer_compressor_cfg is not None:
                 q_hidden_state = self.qformer_compressor(q_hidden_state)
 
-           
         return q_hidden_state, image_atts
-
 
     @property
     def hidden_size(self):
@@ -168,12 +168,14 @@ class QformerVisualEncoder(VisualEncoder):
     @property
     def vis_processor(self):
         return self._vis_processor
-    
+
     @classmethod
     def init_vision_encoder(
         cls, model_name, img_size, drop_path_rate, use_grad_checkpoint, precision
     ):
-        assert model_name == "eva_clip_g", "vit model must be eva_clip_g for current version of MiniGPT-4"
+        assert (
+            model_name == "eva_clip_g"
+        ), "vit model must be eva_clip_g for current version of MiniGPT-4"
         visual_encoder = create_eva_vit_g(
             img_size, drop_path_rate, use_grad_checkpoint, precision
         )
@@ -221,52 +223,50 @@ class QformerVisualEncoder(VisualEncoder):
             return self.qformer_compressor_cfg.num_latents
         else:
             return 32
- 
+
 
 class CustomCLIPVisualProcessor:
     def __init__(self) -> None:
-        self.transformation =  transforms.Compose([
-                        transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
-                        transforms.CenterCrop(224),
-                        transforms.ConvertImageDtype(torch.float),
-                        transforms.Normalize(mean=(0, 0, 0), std=(255, 255, 255), inplace=True),  
-                        transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073],
-                                             std=[0.26862954, 0.26130258, 0.27577711],
-                                             inplace=True)
-                        ])
- 
+        self.transformation = transforms.Compose(
+            [
+                transforms.Resize(
+                    224, interpolation=transforms.InterpolationMode.BICUBIC
+                ),
+                transforms.CenterCrop(224),
+                transforms.ConvertImageDtype(torch.float),
+                transforms.Normalize(mean=(0, 0, 0), std=(255, 255, 255), inplace=True),
+                transforms.Normalize(
+                    mean=[0.48145466, 0.4578275, 0.40821073],
+                    std=[0.26862954, 0.26130258, 0.27577711],
+                    inplace=True,
+                ),
+            ]
+        )
 
     def transform(self, imgs):
-        imgs = einops.rearrange(imgs, 'c b h w -> b c h w')
+        imgs = einops.rearrange(imgs, "c b h w -> b c h w")
         imgs = self.transformation(imgs)
-        imgs = einops.rearrange(imgs, 'b c h w -> c b h w')
+        imgs = einops.rearrange(imgs, "b c h w -> c b h w")
         return imgs
-       
-        
-class CLIPVisualProcessor:
 
+
+class CLIPVisualProcessor:
     def __init__(self, clip_processor):
         self._processor = clip_processor
 
     def transform(self, imgs, **kwargs):
-        """ imgs in shape [ c (b t) h w ]"""
-        imgs = einops.rearrange(imgs, 'c b h w -> b c h w')
-        imgs = self._processor(images=imgs, return_tensors='pt', **kwargs)
-        imgs = imgs["pixel_values"] 
-        imgs = einops.rearrange(imgs, 'b c h w -> c b h w')
+        """imgs in shape [ c (b t) h w ]"""
+        imgs = einops.rearrange(imgs, "c b h w -> b c h w")
+        imgs = self._processor(images=imgs, return_tensors="pt", **kwargs)
+        imgs = imgs["pixel_values"]
+        imgs = einops.rearrange(imgs, "b c h w -> c b h w")
         return imgs
-        
-class CLIPVisualEncoder(VisualEncoder):
 
-    def __init__(self,
-                 vit_precision,
-                 vit_model,
-                 freeze_vit, 
-                 *args,
-                 **kwargs):
-        
+
+class CLIPVisualEncoder(VisualEncoder):
+    def __init__(self, vit_precision, vit_model, freeze_vit, *args, **kwargs):
         super().__init__()
-        
+
         print("Loading CLIP visual encoder...")
         self.model = CLIPVisionModel.from_pretrained(vit_model)
         # self._vis_processor = CLIPVisualProcessor(CLIPProcessor.from_pretrained(vit_model))
@@ -276,19 +276,19 @@ class CLIPVisualEncoder(VisualEncoder):
             for param in self.model.parameters():
                 param.requires_grad = False
 
-        if vit_precision == 'fp16':
-            convert_weights_to_fp16(self.model)            
-
+        if vit_precision == "fp16":
+            convert_weights_to_fp16(self.model)
 
     def embed_visual(self, img):
         with self.maybe_autocast():
             out = self.model(pixel_values=img)
-            out = out.pooler_output # [b h]
-            image_embeds = einops.rearrange(out, 'b h -> b 1 h')
-            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(self.device)
+            out = out.pooler_output  # [b h]
+            image_embeds = einops.rearrange(out, "b h -> b 1 h")
+            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(
+                self.device
+            )
             return image_embeds, image_atts
-            
-        
+
     @property
     def vis_processor(self):
         return self._vis_processor
@@ -300,10 +300,3 @@ class CLIPVisualEncoder(VisualEncoder):
     @property
     def num_tokens(self):
         return 1
-
-    
-
-
-
-
-
