@@ -36,6 +36,7 @@ class TestLoraLLAMATrain(unittest.TestCase):
         )
 
         out = model(rgbs, goals, actions, masks)
+        print(sum([p.numel() for p in model.parameters() if p.requires_grad]))
 
 
 if __name__ == "__main__":

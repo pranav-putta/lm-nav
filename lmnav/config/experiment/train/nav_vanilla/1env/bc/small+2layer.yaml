@@ -24,22 +24,27 @@ defaults:
 
 
 exp:
-  group: "lmnav-1env"
+  group: "vanilla-1env"
   job_type: "bc"
-  tags: ["lora"]
+  tags: []
 
 train:
-  batch_size: 120
-  minibatch_size: 2
-  num_grad_accums: 6
+  batch_size: 64
+  minibatch_size: 64
+  num_grad_accums: 1
 
   steps: 10_000
-  episodes_per_batch: 10
+  episodes_per_batch: 64
   lr_schedule:
-    lr: 2.5e-4
-    gamma: 0.9995
+    lr: 2.5e-3
+    gamma: 0.995
   policy:
-    max_t: 200
+    d_hidden: 512
+    d_head: 64
+    n_heads: 8
+    n_blocks: 2
+    drop_p: 0.1
+    max_trajectory_length: 200
   dataset:
     artifact:
       name: "offline_00744"

@@ -100,7 +100,7 @@ class NavVanillaTransformer(BaseModel):
         n_heads,
         n_blocks,
         drop_p,
-        max_t,
+        max_trajectory_length,
         *args,
         **kwargs
     ):
@@ -116,7 +116,8 @@ class NavVanillaTransformer(BaseModel):
         self.drop_p = drop_p
 
         self.max_t = (
-            max_t + (max_t + 1) * self.vis_encoder.num_tokens
+            max_trajectory_length
+            + (max_trajectory_length + 1) * self.vis_encoder.num_tokens
         )  # action tokens + rgb tokens + goal token
 
         self.transformer = nn.Sequential(
@@ -134,17 +135,21 @@ class NavVanillaTransformer(BaseModel):
         raise NotImplementedError()
 
     def embed_visual(self, imgs):
-        B, _, T, _, _ = imgs.size()
-        image = einops.rearrange(imgs, "b c t h w -> (b t) c h w")
+        with self.maybe_autocast():
+            B, _, T, _, _ = imgs.size()
+            imgs = imgs.to(self.device)
+            image = einops.rearrange(imgs, "b c t h w -> (b t) c h w")
 
-        image_embeds, image_atts = self.vis_encoder.embed_visual(image)
-        inputs = self.vis_proj(image_embeds)
+            image_embeds, image_atts = self.vis_encoder.embed_visual(image)
+            inputs = self.vis_proj(image_embeds)
 
-        atts = torch.ones(inputs.size()[:-1], dtype=torch.long).to(image_embeds.device)
+            atts = torch.ones(inputs.size()[:-1], dtype=torch.long).to(
+                image_embeds.device
+            )
 
-        inputs = einops.rearrange(inputs, "(b t) q h -> b t q h", b=B)
-        atts = einops.rearrange(atts, "(b t) h -> b t h", b=B)
-        return inputs, atts
+            inputs = einops.rearrange(inputs, "(b t) q h -> b t q h", b=B)
+            atts = einops.rearrange(atts, "(b t) h -> b t h", b=B)
+            return inputs, atts
 
     def maybe_autocast(self, dtype=torch.float16):
         # if on cpu, don't use autocast
@@ -156,7 +161,7 @@ class NavVanillaTransformer(BaseModel):
         else:
             return contextlib.nullcontext()
 
-    def forward(self, rgbs_t, goals_t, actions_t, mask_t):
+    def forward(self, rgbs_t, goals_t, actions_t, mask_t, vis_embedded=False):
         """
         rgbs_t = [B, C, T, H, W]
         goals_t = [B, C, 1, H, W]
@@ -167,10 +172,17 @@ class NavVanillaTransformer(BaseModel):
             rgbs_t, goals_t, actions_t, mask_t = map(
                 lambda t: t.to(self.device), (rgbs_t, goals_t, actions_t, mask_t)
             )
-            rgbs_embd, rgbs_attn = self.embed_visual(rgbs_t)
-            goals_embd, goals_attn = self.embed_visual(goals_t)
+
+            # if visual inputs have already been embedded through visual encoder, pass through
+            if not vis_embedded:
+                rgbs_embd, rgbs_attn = self.embed_visual(rgbs_t)
+                goals_embd, goals_attn = self.embed_visual(goals_t)
+            else:
+                rgbs_embd = rgbs_t
+                goals_embd = goals_t
+
             actions_embd = einops.rearrange(
-                self.action_embedding(actions_t), "b t h -> b t 1 h"
+                self.action_embedding(actions_t.long()), "b t h -> b t 1 h"
             )
             mask_t = mask_t.to(torch.bool)
 

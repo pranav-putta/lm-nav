@@ -13,20 +13,20 @@ class LoggerConfig:
 
 @dataclass
 class WBLoggerConfig(LoggerConfig):
-    _target_: str = 'lmnav.common.writer.WandBLogger'
+    _target_: str = "lmnav.common.writer.WandBLogger"
 
 
 @dataclass
 class ConsoleLoggerConfig(LoggerConfig):
-    _target_: str = 'lmnav.common.writer.ConsoleLogger'
+    _target_: str = "lmnav.common.writer.ConsoleLogger"
 
 
 @dataclass
 class ExperimentConfig:
     name: Optional[str] = None
-    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
-    root_dir: str = 'experiments/'
-    project: str = 'lmnav'
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    root_dir: str = "experiments/"
+    project: str = "lmnav"
     group: str = MISSING
     job_type: str = MISSING
     tags: Optional[list] = None
@@ -132,7 +132,7 @@ class BaseNavVanillaTransformerPolicyConfig(BasePolicyConfig):
     n_heads: int = 8
     n_blocks: int = 2
     drop_p: float = 0.2
-    max_t: int = 200
+    max_trajectory_length: int = 200
 
 
 ### FILTER CONFIGS ###
@@ -178,18 +178,18 @@ class BaseLRConfig:
 
 @dataclass
 class ConstantLRConfig(BaseLRConfig):
-    _target_: str = 'constant'
+    _target_: str = "constant"
 
 
 @dataclass
 class ExponentialLRConfig(BaseLRConfig):
-    _target_: str = 'exponential'
+    _target_: str = "exponential"
     gamma: float = MISSING
 
 
 @dataclass
 class ActorCriticLRConfig(BaseLRConfig):
-    _target_: str = 'group'
+    _target_: str = "group"
     actor: BaseLRConfig = MISSING
     critic: BaseLRConfig = MISSING
 
@@ -245,38 +245,50 @@ class EvalRunnerConfig(BaseRunnerConfig):
 
 
 cs = ConfigStore.instance()
-cs.store(group='exp', name='base', node=ExperimentConfig)
+cs.store(group="exp", name="base", node=ExperimentConfig)
 
-cs.store(group='logger', name='base', node=LoggerConfig)
-cs.store(group='logger', name='wb', node=WBLoggerConfig)
-cs.store(group='logger', name='console', node=ConsoleLoggerConfig)
+cs.store(group="logger", name="base", node=LoggerConfig)
+cs.store(group="logger", name="wb", node=WBLoggerConfig)
+cs.store(group="logger", name="console", node=ConsoleLoggerConfig)
 
-cs.store(group='generator', name='base', node=EpisodeGeneratorConfig)
-cs.store(group='generator/filter_method', name='base', node=BaseFilterMethodConfig)
-cs.store(group='generator/filter_method', name='dtg', node=DTGFitlerMethodConfig)
+cs.store(group="generator", name="base", node=EpisodeGeneratorConfig)
+cs.store(group="generator/filter_method", name="base", node=BaseFilterMethodConfig)
+cs.store(group="generator/filter_method", name="dtg", node=DTGFitlerMethodConfig)
 
-cs.store(group='models/policy', name='base', node=BasePolicyConfig)
-cs.store(group='models/policy/old_eai_policy', name='old_eai_policy', node=OldEAIPolicyConfig)
-cs.store(group='models/policy/nav_llama', name='base_nav_llama', node=BaseNavLLaMAPolicyConfig)
-cs.store(group='models/policy/nav_vanilla', name='base_nav_vanilla', node=BaseNavVanillaTransformerPolicyConfig)
-cs.store(group='models', name='linear', node=LinearHeadPolicyConfig)
+cs.store(group="models/policy", name="base", node=BasePolicyConfig)
+cs.store(
+    group="models/policy/old_eai_policy", name="old_eai_policy", node=OldEAIPolicyConfig
+)
+cs.store(
+    group="models/policy/nav_llama",
+    name="base_nav_llama",
+    node=BaseNavLLaMAPolicyConfig,
+)
+cs.store(
+    group="models/policy/nav_vanilla",
+    name="base_nav_vanilla",
+    node=BaseNavVanillaTransformerPolicyConfig,
+)
+cs.store(group="models", name="linear", node=LinearHeadPolicyConfig)
 
-cs.store(group='models/vis_encoder', name='base', node=BaseVisualEncoderConfig)
-cs.store(group='models/vis_encoder', name='qformer', node=QformerVisualEncoderConfig)
-cs.store(group='models/vis_encoder', name='clip', node=CLIPVisualEncoderConfig)
+cs.store(group="models/vis_encoder", name="base", node=BaseVisualEncoderConfig)
+cs.store(group="models/vis_encoder", name="qformer", node=QformerVisualEncoderConfig)
+cs.store(group="models/vis_encoder", name="clip", node=CLIPVisualEncoderConfig)
 
-cs.store(group='dataset', name='base', node=BaseDatasetConfig)
-cs.store(group='dataset', name='offline_episode', node=OfflineEpisodeDatasetConfig)
+cs.store(group="dataset", name="base", node=BaseDatasetConfig)
+cs.store(group="dataset", name="offline_episode", node=OfflineEpisodeDatasetConfig)
 
-cs.store(group='lr', name='base', node=BaseLRConfig)
-cs.store(group='lr', name='constant', node=ConstantLRConfig)
-cs.store(group='lr', name='exponential', node=ExponentialLRConfig)
-cs.store(group='lr', name='actor_critic', node=ActorCriticLRConfig)
+cs.store(group="lr", name="base", node=BaseLRConfig)
+cs.store(group="lr", name="constant", node=ConstantLRConfig)
+cs.store(group="lr", name="exponential", node=ExponentialLRConfig)
+cs.store(group="lr", name="actor_critic", node=ActorCriticLRConfig)
 
-cs.store(group='runner', name='base', node=BaseRunnerConfig)
-cs.store(group='runner', name='base_train', node=TrainRunnerConfig)
-cs.store(group='runner', name='bc', node=BCTrainRunnerConfig)
-cs.store(group='runner', name='eval', node=EvalRunnerConfig)
-cs.store(group='runner', name='ppo', node=PPOTrainRunnerConfig)
+cs.store(group="runner", name="base", node=BaseRunnerConfig)
+cs.store(group="runner", name="base_train", node=TrainRunnerConfig)
+cs.store(group="runner", name="bc", node=BCTrainRunnerConfig)
+cs.store(group="runner", name="eval", node=EvalRunnerConfig)
+cs.store(group="runner", name="ppo", node=PPOTrainRunnerConfig)
 
-OmegaConf.register_new_resolver('quote', lambda x: x.replace('+', '_').replace('=', '_'))
+OmegaConf.register_new_resolver(
+    "quote", lambda x: x.replace("+", "_").replace("=", "_")
+)
