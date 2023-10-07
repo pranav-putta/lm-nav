@@ -133,10 +133,13 @@ class BCTrainRunner:
         self.agent = self.setup_student()
 
         # set up optimizer
-        optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
-        self.optim = torch.optim.Adam(
-            params=[{"params": optim_params, "lr": self.config.train.lr_schedule.lr}]
-        )
+        optim_groups = self.agent.module.configure_optim_groups()
+        optim_groups = [
+            {**group, "lr": self.config.train.lr_schedule.lr} for group in optim_groups
+        ]
+        self.optim = torch.optim.Adam(params=optim_groups)
+
+        # set up lr scheduler
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer=self.optim,
             lr_lambda=[get_lr_schedule_lambda(self.config.train.lr_schedule)],
@@ -268,10 +271,9 @@ class BCTrainRunner:
             x = [einops.rearrange(t, "b t q h -> (b t) q h") for t in x]
             return x
 
-        with catchtime("CLIP Embedding"):
-            rgbs, goals = map(
-                lambda k: preprocess_obs(k, max_batch_size=3072), ("rgb", "imagegoal")
-            )
+        rgbs, goals = map(
+            lambda k: preprocess_obs(k, max_batch_size=3072), ("rgb", "imagegoal")
+        )
 
         actions = [episode["action"] for episode in episodes]
 

@@ -132,6 +132,7 @@ class BaseNavVanillaTransformerPolicyConfig(BasePolicyConfig):
     n_heads: int = 8
     n_blocks: int = 2
     drop_p: float = 0.2
+    weight_decay: float = 0.0
     max_trajectory_length: int = 200
 
 

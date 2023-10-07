@@ -101,6 +101,7 @@ class NavVanillaTransformer(BaseModel):
         n_heads,
         n_blocks,
         drop_p,
+        weight_decay,
         max_trajectory_length,
         *args,
         **kwargs
@@ -115,6 +116,7 @@ class NavVanillaTransformer(BaseModel):
         self.n_heads = n_heads
         self.n_blocks = n_blocks
         self.drop_p = drop_p
+        self.weight_decay = weight_decay
 
         self.max_trajectory_length = max_trajectory_length
         self.max_tokens = (
@@ -129,7 +131,15 @@ class NavVanillaTransformer(BaseModel):
         )
         self.vis_proj = nn.Linear(self.vis_encoder.hidden_size, self.d_hidden)
         self.action_embedding = nn.Embedding(4, self.d_hidden)
+        self.wpe = nn.Embedding(self.max_tokens, self.d_hidden)
         self.action_head = nn.Linear(self.d_hidden, 4)
+
+        self.apply(self._init_weights)
+        for pn, p in self.named_parameters():
+            if pn.endswith("c_proj.weight") and p.requires_grad:
+                torch.nn.init.normal_(
+                    p, mean=0.0, std=0.02 / math.sqrt(2 * self.n_blocks)
+                )
 
     @property
     def hidden_size(self):
@@ -138,6 +148,17 @@ class NavVanillaTransformer(BaseModel):
     @property
     def tokens_per_img(self):
         return self.vis_encoder.num_tokens
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            torch.nn.init.zeros_(module.bias)
+            torch.nn.init.ones_(module.weight)
 
     def pad_sequences(self, seqs, dim):
         p2d_partial = (0,) * ((len(seqs[0].shape) - dim - 1) * 2 + 1)
@@ -175,6 +196,65 @@ class NavVanillaTransformer(BaseModel):
         else:
             return contextlib.nullcontext()
 
+    def configure_optim_groups(self):
+        """
+        This long function is unfortunately doing something very simple and is being very defensive:
+        We are separating out all parameters of the model into two buckets: those that will experience
+        weight decay for regularization and those that won't (biases, and layernorm/embedding weights).
+        We are then returning the PyTorch optimizer object.
+        """
+
+        # separate out all parameters to those that will and won't experience regularizing weight decay
+        decay = set()
+        no_decay = set()
+        whitelist_weight_modules = (torch.nn.Linear,)
+        blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
+
+        get_optim_params = lambda module: {
+            pn: p for pn, p in module.named_parameters() if p.requires_grad
+        }
+        for mn, m in self.named_modules():
+            for pn, p in get_optim_params(m):
+                fpn = "%s.%s" % (mn, pn) if mn else pn  # full param name
+                # random note: because named_modules and named_parameters are recursive
+                # we will see the same tensors p many many times. but doing it this way
+                # allows us to know which parent module any tensor p belongs to...
+                if pn.endswith("bias"):
+                    # all biases will not be decayed
+                    no_decay.add(fpn)
+                elif pn.endswith("weight") and isinstance(m, whitelist_weight_modules):
+                    # weights of whitelist modules will be weight decayed
+                    decay.add(fpn)
+                elif pn.endswith("weight") and isinstance(m, blacklist_weight_modules):
+                    # weights of blacklist modules will NOT be weight decayed
+                    no_decay.add(fpn)
+
+        # validate that we considered every parameter
+        param_dict = get_optim_params(self)
+        inter_params = decay & no_decay
+        union_params = decay | no_decay
+        assert (
+            len(inter_params) == 0
+        ), "parameters %s made it into both decay/no_decay sets!" % (str(inter_params),)
+        assert (
+            len(param_dict.keys() - union_params) == 0
+        ), "parameters %s were not separated into either decay/no_decay set!" % (
+            str(param_dict.keys() - union_params),
+        )
+
+        # create the pytorch optimizer object
+        optim_groups = [
+            {
+                "params": [param_dict[pn] for pn in sorted(list(decay))],
+                "weight_decay": self.weight_decay,
+            },
+            {
+                "params": [param_dict[pn] for pn in sorted(list(no_decay))],
+                "weight_decay": 0.0,
+            },
+        ]
+        return optim_groups
+
     def forward(self, rgbs_t, goals_t, actions_t, mask_t, vis_embedded=False):
         """
         rgbs_t = [B, C, T, H, W]
@@ -182,6 +262,7 @@ class NavVanillaTransformer(BaseModel):
         actions_t = [B, T]
         """
         with self.maybe_autocast():
+            B, T = actions_t.shape
             rgbs_t, goals_t, actions_t, mask_t = map(
                 lambda t: t.to(self.device), (rgbs_t, goals_t, actions_t, mask_t)
             )
@@ -204,7 +285,11 @@ class NavVanillaTransformer(BaseModel):
             goals_embd = einops.rearrange(goals_embd, "b t q h -> b (t q) h")
             embd = torch.cat((goals_embd, sa_embds), dim=1)
 
-            logits = self.transformer(embd)
+            # add position embeddings
+            pos = torch.arange(0, T, dtype=torch.long, device=self.device).unsqueeze(0)
+            pos_emb = self.wpe(pos)
+
+            logits = self.transformer(embd + pos_emb)
             logits = logits[:, self.tokens_per_img :: self.tokens_per_img * 2]
             probs = einops.rearrange(
                 F.softmax(self.action_head(logits), dim=-1), "b t h -> (b t) h"
@@ -213,6 +298,7 @@ class NavVanillaTransformer(BaseModel):
             masks = einops.rearrange(mask_t, "b t -> (b t)")
 
             loss = (F.cross_entropy(probs, tgts, reduction="none") * masks).mean()
+            print(probs[:15])
 
         return NavVanillaTransformerOutput(loss=loss)
 
