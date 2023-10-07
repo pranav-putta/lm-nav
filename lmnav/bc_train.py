@@ -1,5 +1,6 @@
 import math
 
+import pdb
 import einops
 
 from pprint import pprint
@@ -7,7 +8,7 @@ from habitat.utils.visualizations.utils import observations_to_image
 from habitat_baselines.utils.common import batch_obs, generate_video
 from habitat_sim.utils.datasets_download import argparse
 from habitat_baselines.utils.info_dict import extract_scalars_from_info
-from lmnav.common.utils import catchtime
+from lmnav.common.utils import catchtime, forward_minibatches
 
 import numpy as np
 import random
@@ -236,65 +237,71 @@ class BCTrainRunner:
 
         stats = {"learner/loss": 0.0, "metrics/frames": 0, "learner/lr": 0}
 
-        try:
-            rgbs = [
-                einops.rearrange(episode["rgb"], "t h w c -> t c h w")
+        # extract rgb and goal lists from episodes
+        def preprocess_obs(k, max_batch_size):
+            # extract observation from episode dictionary
+            list_of_tensors = [
+                einops.rearrange(episode[k], "t h w c -> t c h w")
                 for episode in episodes
             ]
-            goals = [
-                einops.rearrange(episode["imagegoal"], "t h w c -> t c h w")
-                for episode in episodes
-            ]
-            actions = [episode["action"] for episode in episodes]
-        except:
-            print(
-                "There was an error loading data in one of these episode_ids: ",
-                [episode["episode_id"] for episode in episodes],
-            )
-            return stats
+            # batch up tensors
+            x = torch.cat(list_of_tensors, dim=0)
 
+            # apply transforms
+            x = einops.rearrange(x, "t c h w -> c t h w")
+            x = x.float()
+            x = self.vis_processor.transform(x)
+            x = einops.rearrange(x, "c b h w -> b c 1 h w")
+
+            # forward pass in minibatches through visual encoder
+            x = torch.split(
+                torch.cat(
+                    [
+                        self.agent.module.embed_visual(x[i : i + max_batch_size])[0]
+                        for i in range(0, x.shape[0], max_batch_size)
+                    ],
+                    dim=0,
+                ),
+                [len(t) for t in list_of_tensors],
+            )
+
+            x = [einops.rearrange(t, "b t q h -> (b t) q h") for t in x]
+            return x
+
+        with catchtime("CLIP Embedding"):
+            rgbs, goals = map(
+                lambda k: preprocess_obs(k, max_batch_size=3072), ("rgb", "imagegoal")
+            )
+
+        actions = [episode["action"] for episode in episodes]
+
+        # construct subsequences
         rgbs, goals, actions = construct_subsequences(
             batch_size, T, rgbs, goals, actions
         )
+
+        # pad sequences
         mask = torch.stack(
             [
                 torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])])
                 for t in rgbs
             ]
-        )
-        mask = mask.bool()
+        ).bool()
         rgbs = torch.stack(
-            [F.pad(t, (0,) * 7 + (T - t.shape[0],), "constant", 0) for t in rgbs]
+            [F.pad(t, (0, 0, 0, 0, 0, T - t.shape[0]), "constant", 0) for t in rgbs]
         )
         goals = torch.stack(goals)
         actions = torch.stack(
             [F.pad(t, (0, T - t.shape[0]), "constant", 0) for t in actions]
         )
 
-        # embed rgb images before training
-        with torch.no_grad():
-            rgbs, goals, actions = apply_transforms_inputs(
-                self.vis_processor, rgbs, goals, actions
-            )
-
-            max_img_batch_size = 14
-            imgs = torch.cat((goals, rgbs), dim=2)
-            imgs_embd = torch.cat(
-                list(
-                    map(
-                        lambda i: self.agent.module.embed_visual(
-                            imgs[i : i + max_img_batch_size]
-                        )[0],
-                        range(0, imgs.shape[0], max_img_batch_size),
-                    )
-                )
-            )
-        rgbs, goals = imgs_embd[:, 1:], imgs_embd[:, 0:1]
+        # to ensure equal batch sizes across gpus, gather them all
         rgbs, goals, actions, mask = map(
             lambda t: all_gather(t.contiguous(), self.device, self.world_size),
             (rgbs, goals, actions, mask),
         )
         E = rgbs.shape[0] // self.world_size
+
         # TODO; rename these variables to improve readability
         rgbs, goals, actions, mask = map(
             lambda t: t[self.rank * E : self.rank * E + E].clone(),

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import pdb
 from torch import nn
 
 import math
@@ -180,7 +181,6 @@ class NavVanillaTransformer(BaseModel):
         goals_t = [B, C, 1, H, W]
         actions_t = [B, T]
         """
-
         with self.maybe_autocast():
             rgbs_t, goals_t, actions_t, mask_t = map(
                 lambda t: t.to(self.device), (rgbs_t, goals_t, actions_t, mask_t)
@@ -204,9 +204,8 @@ class NavVanillaTransformer(BaseModel):
             goals_embd = einops.rearrange(goals_embd, "b t q h -> b (t q) h")
             embd = torch.cat((goals_embd, sa_embds), dim=1)
 
-            logits = self.transformer(embd)[
-                :, self.tokens_per_img :: self.tokens_per_img * 2
-            ]
+            logits = self.transformer(embd)
+            logits = logits[:, self.tokens_per_img :: self.tokens_per_img * 2]
             probs = einops.rearrange(
                 F.softmax(self.action_head(logits), dim=-1), "b t h -> (b t) h"
             )

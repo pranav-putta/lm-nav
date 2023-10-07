@@ -124,7 +124,6 @@ def download_google_drive_url(url: str, output_path: str, output_file_name: str)
     import requests
 
     with requests.Session() as session:
-
         # First get the confirmation token and append it to the URL
         with session.get(url, stream=True, allow_redirects=True) as response:
             for k, v in response.cookies.items():
@@ -432,21 +431,26 @@ def get_file_size(filename):
     size_in_mb = os.path.getsize(filename) / float(1024**2)
     return size_in_mb
 
-def display_snapshot(snapshot, key_type='lineno', limit=10):
-    snapshot = snapshot.filter_traces((
-        tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
-        tracemalloc.Filter(False, "<unknown>"),
-    ))
+
+def display_snapshot(snapshot, key_type="lineno", limit=10):
+    snapshot = snapshot.filter_traces(
+        (
+            tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+            tracemalloc.Filter(False, "<unknown>"),
+        )
+    )
     top_stats = snapshot.statistics(key_type)
 
     print("Top %s lines" % limit)
     for index, stat in enumerate(top_stats[:limit], 1):
         frame = stat.traceback[0]
-        print("#%s: %s:%s: %.1f KiB"
-              % (index, frame.filename, frame.lineno, stat.size / 1024))
+        print(
+            "#%s: %s:%s: %.1f KiB"
+            % (index, frame.filename, frame.lineno, stat.size / 1024)
+        )
         line = linecache.getline(frame.filename, frame.lineno).strip()
         if line:
-            print('    %s' % line)
+            print("    %s" % line)
 
     other = top_stats[limit:]
     if other:
@@ -455,6 +459,7 @@ def display_snapshot(snapshot, key_type='lineno', limit=10):
     total = sum(stat.size for stat in top_stats)
     print("Total allocated size: %.1f KiB" % (total / 1024))
 
+
 def all_reduce(is_distributed, device, t):
     if not is_distributed:
         return t
@@ -462,9 +467,10 @@ def all_reduce(is_distributed, device, t):
     orig_device = t.device
     t = t.to(device)
     torch.distributed.all_reduce(t)
-    
-    t= t.to(device=orig_device)
+
+    t = t.to(device=orig_device)
     return t
+
 
 def convert_weights_to_fp16(model: nn.Module):
     """Convert applicable model parameters to fp16"""
@@ -474,8 +480,10 @@ def convert_weights_to_fp16(model: nn.Module):
             l.weight.data = l.weight.data.to(torch.bfloat16)
             if l.bias is not None:
                 l.bias.data = l.bias.data.to(torch.bfloat16)
+
     model.apply(_convert_weights_to_fp16)
- 
+
+
 def logprobs_from_logits(logits, labels):
     """
     See: https://github.com/pytorch/pytorch/issues/563#issuecomment-330103591
@@ -484,20 +492,22 @@ def logprobs_from_logits(logits, labels):
     logpy = torch.gather(logp, 2, labels.unsqueeze(2)).squeeze(-1)
     return logpy
 
+
 def sum_dict(d1, d2):
     return {k: d1[k] + d2[k] for k in d1.keys() | d2.keys()}
 
+
 def all_gather(q, device, world_size):
     """
-    Gathers tensor arrays of different lengths across multiple gpus. 
+    Gathers tensor arrays of different lengths across multiple gpus.
     Assumes that q.shape[1:] is identical across gpus, and only pads dim=0
-    
+
     Parameters
     ----------
         q : tensor array
         ws : world size
         device : current gpu device
-        
+
     Returns
     -------
         all_q : list of gathered tensor arrays from all the gpus
@@ -518,11 +528,14 @@ def all_gather(q, device, world_size):
     all_qs = torch.cat([q[:size] for q, size in zip(all_qs_padded, all_sizes)])
     return all_qs
 
+
 def find_tensors():
     tensors = []
     for obj in gc.get_objects():
         try:
-            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+            if torch.is_tensor(obj) or (
+                hasattr(obj, "data") and torch.is_tensor(obj.data)
+            ):
                 tensors.append((obj, obj.size()))
         except:
             pass
@@ -530,10 +543,22 @@ def find_tensors():
     return tensors
 
 
-
 @contextmanager
-def catchtime(name="") -> float:
+def catchtime(name=""):
     start = perf_counter()
     yield lambda: perf_counter() - start
-    print(f'TimeIt [{name}]: {perf_counter() - start:.3f} seconds')
-    
+    print(f"TimeIt [{name}]: {perf_counter() - start:.3f} seconds")
+
+
+def forward_minibatches(fn_forward, list_of_tensors, max_batch_size):
+    tensor = torch.cat(list_of_tensors, dim=0)
+    return torch.split(
+        torch.cat(
+            [
+                fn_forward(tensor[i : i + max_batch_size])
+                for i in range(0, tensor.shape[0], max_batch_size)
+            ],
+            dim=0,
+        ),
+        [len(t) for t in list_of_tensors],
+    )

@@ -29,12 +29,12 @@ exp:
   tags: []
 
 train:
-  batch_size: 64
-  minibatch_size: 64
+  batch_size: 128
+  minibatch_size: 128
   num_grad_accums: 1
 
   steps: 10_000
-  episodes_per_batch: 64
+  episodes_per_batch: 100
   lr_schedule:
     lr: 2.5e-3
     gamma: 0.995
