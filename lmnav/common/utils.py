@@ -562,3 +562,26 @@ def forward_minibatches(fn_forward, list_of_tensors, max_batch_size):
         ),
         [len(t) for t in list_of_tensors],
     )
+
+
+def levenshtein_distance(tensor1, tensor2):
+    """
+    Compute the Levenshtein distance between two tensors.
+    """
+    m, n = tensor1.size(0), tensor2.size(0)
+    dp = torch.zeros((m + 1, n + 1), dtype=torch.int)
+
+    for i in range(m + 1):
+        for j in range(n + 1):
+            if i == 0:
+                dp[i, j] = j
+            elif j == 0:
+                dp[i, j] = i
+            elif tensor1[i - 1] == tensor2[j - 1]:
+                dp[i, j] = dp[i - 1, j - 1]
+            else:
+                dp[i, j] = 1 + min(
+                    dp[i - 1, j], dp[i, j - 1], dp[i - 1, j - 1]  # Delete  # Insert
+                )  # Substitute
+
+    return dp[m, n]

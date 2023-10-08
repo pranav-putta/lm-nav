@@ -8,7 +8,7 @@ from habitat.utils.visualizations.utils import observations_to_image
 from habitat_baselines.utils.common import batch_obs, generate_video
 from habitat_sim.utils.datasets_download import argparse
 from habitat_baselines.utils.info_dict import extract_scalars_from_info
-from lmnav.common.utils import catchtime, forward_minibatches
+from lmnav.common.utils import catchtime, forward_minibatches, levenshtein_distance
 
 import numpy as np
 import random
@@ -241,7 +241,27 @@ class BCTrainRunner:
         num_minibatches = batch_size // minibatch_size
         num_grad_accums = self.config.train.num_grad_accums
 
-        stats = {"learner/loss": 0.0, "metrics/frames": 0, "learner/lr": 0}
+        stats = {
+            "learner/loss": 0.0,
+            "metrics/frames": 0,
+            "learner/lr": 0,
+            "learner/edit_distance": 0,
+        }
+
+        def forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t):
+            outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t, vis_embedded=True)
+            loss, probs = outputs.loss, outputs.probs
+            stats["learner/loss"] += loss.item()
+
+            # compute levenshtein distances
+            distances = []
+            for i in range(mask_t.shape[0]):
+                a = torch.argmax(probs[i, : mask_t[i].sum()], dim=-1)
+                b = actions_t[i, : mask_t[i].sum()]
+                distances.append(levenshtein_distance(a, b))
+            stats["learner/edit_distance"] += sum(distances) / len(distances)
+
+            loss.backward()
 
         # extract rgb and goal lists from episodes
         def preprocess_obs(k, max_batch_size):
@@ -326,20 +346,9 @@ class BCTrainRunner:
                 )
                 if g < num_grad_accums - 1:
                     with self.agent.no_sync():
-                        outputs = self.agent(
-                            rgbs_t, goals_t, actions_t, mask_t, vis_embedded=True
-                        )
-                        loss = outputs.loss
-                        stats["learner/loss"] += loss.item()
-                        loss.backward()
+                        forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
                 else:
-                    outputs = self.agent(
-                        rgbs_t, goals_t, actions_t, mask_t, vis_embedded=True
-                    )
-                    loss = outputs.loss
-                    stats["learner/loss"] += loss.item()
-                    loss.backward()
-
+                    forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
                 rgbs_t.to("cpu")
                 goals_t.to("cpu")
 

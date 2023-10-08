@@ -15,92 +15,17 @@ from torch.cuda.amp import autocast as autocast
 
 
 @dataclass
-class NavVanillaTransformerOutput:
+class NavGRUOutput:
     loss: torch.Tensor
     probs: torch.Tensor
 
 
-class MaskedCausalAttention(nn.Module):
-    def __init__(self, h_dim, max_T, n_heads, drop_p):
-        super().__init__()
-
-        self.n_heads = n_heads
-        self.max_T = max_T
-
-        self.q_net = nn.Linear(h_dim, h_dim)
-        self.k_net = nn.Linear(h_dim, h_dim)
-        self.v_net = nn.Linear(h_dim, h_dim)
-
-        self.proj_net = nn.Linear(h_dim, h_dim)
-
-        self.att_drop = nn.Dropout(drop_p)
-        self.proj_drop = nn.Dropout(drop_p)
-
-        ones = torch.ones((max_T, max_T))
-        mask = torch.tril(ones).view(1, 1, max_T, max_T)
-
-        # register buffer makes sure mask does not get updated
-        # during backpropagation
-        self.register_buffer("mask", mask)
-
-    def forward(self, x):
-        B, T, C = x.shape  # batch size, seq length, h_dim * n_heads
-
-        N, D = self.n_heads, C // self.n_heads  # N = num heads, D = attention dim
-
-        # rearrange q, k, v as (B, N, T, D)
-        q = self.q_net(x).view(B, T, N, D).transpose(1, 2)
-        k = self.k_net(x).view(B, T, N, D).transpose(1, 2)
-        v = self.v_net(x).view(B, T, N, D).transpose(1, 2)
-
-        # weights (B, N, T, T)
-        weights = q @ k.transpose(2, 3) / math.sqrt(D)
-        # causal mask applied to weights
-        weights = weights.masked_fill(self.mask[..., :T, :T] == 0, float("-inf"))
-        # normalize weights, all -inf -> 0 after softmax
-        normalized_weights = F.softmax(weights, dim=-1)
-
-        # attention (B, N, T, D)
-        attention = self.att_drop(normalized_weights @ v)
-
-        # gather heads and project (B, N, T, D) -> (B, T, N*D)
-        attention = attention.transpose(1, 2).contiguous().view(B, T, N * D)
-
-        out = self.proj_drop(self.proj_net(attention))
-
-        return out
-
-
-class Block(nn.Module):
-    def __init__(self, h_dim, max_T, n_heads, drop_p):
-        super().__init__()
-        self.attention = MaskedCausalAttention(h_dim, max_T, n_heads, drop_p)
-        self.mlp = nn.Sequential(
-            nn.Linear(h_dim, 4 * h_dim),
-            nn.GELU(),
-            nn.Linear(4 * h_dim, h_dim),
-            nn.Dropout(drop_p),
-        )
-        self.ln1 = nn.LayerNorm(h_dim)
-        self.ln2 = nn.LayerNorm(h_dim)
-
-    def forward(self, x):
-        # Attention -> LayerNorm -> MLP -> LayerNorm
-        x = x + self.attention(x)  # residual
-        x = self.ln1(x)
-        x = x + self.mlp(x)  # residual
-        x = self.ln2(x)
-        return x
-
-
-class NavVanillaTransformer(BaseModel):
+class NavGRU(BaseModel):
     def __init__(
         self,
         vis_encoder,
         d_hidden,
-        d_head,
-        n_heads,
-        n_blocks,
+        n_layer,
         drop_p,
         weight_decay,
         max_trajectory_length,
@@ -113,9 +38,7 @@ class NavVanillaTransformer(BaseModel):
         self.vis_processor = self.vis_encoder.vis_processor
 
         self.d_hidden = d_hidden
-        self.d_head = d_head
-        self.n_heads = n_heads
-        self.n_blocks = n_blocks
+        self.n_layer = n_layer
         self.drop_p = drop_p
         self.weight_decay = weight_decay
 
@@ -124,23 +47,10 @@ class NavVanillaTransformer(BaseModel):
             max_trajectory_length + (max_trajectory_length + 1) * self.tokens_per_img
         )  # action tokens + rgb tokens + goal token
 
-        self.transformer = nn.Sequential(
-            *[
-                Block(d_hidden, self.max_tokens, n_heads, drop_p)
-                for _ in range(n_blocks)
-            ]
-        )
+        self.gru = nn.GRU(d_hidden, d_hidden, n_layer, batch_first=True)
         self.vis_proj = nn.Linear(self.vis_encoder.hidden_size, self.d_hidden)
         self.action_embedding = nn.Embedding(4, self.d_hidden)
-        self.wpe = nn.Embedding(self.max_tokens, self.d_hidden)
         self.action_head = nn.Linear(self.d_hidden, 4)
-
-        self.apply(self._init_weights)
-        for pn, p in self.named_parameters():
-            if pn.endswith("c_proj.weight") and p.requires_grad:
-                torch.nn.init.normal_(
-                    p, mean=0.0, std=0.02 / math.sqrt(2 * self.n_blocks)
-                )
 
     @property
     def hidden_size(self):
@@ -149,17 +59,6 @@ class NavVanillaTransformer(BaseModel):
     @property
     def tokens_per_img(self):
         return self.vis_encoder.num_tokens
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        elif isinstance(module, nn.LayerNorm):
-            torch.nn.init.zeros_(module.bias)
-            torch.nn.init.ones_(module.weight)
 
     def pad_sequences(self, seqs, dim):
         p2d_partial = (0,) * ((len(seqs[0].shape) - dim - 1) * 2 + 1)
@@ -197,65 +96,6 @@ class NavVanillaTransformer(BaseModel):
         else:
             return contextlib.nullcontext()
 
-    def configure_optim_groups(self):
-        """
-        This long function is unfortunately doing something very simple and is being very defensive:
-        We are separating out all parameters of the model into two buckets: those that will experience
-        weight decay for regularization and those that won't (biases, and layernorm/embedding weights).
-        We are then returning the PyTorch optimizer object.
-        """
-
-        # separate out all parameters to those that will and won't experience regularizing weight decay
-        decay = set()
-        no_decay = set()
-        whitelist_weight_modules = (torch.nn.Linear,)
-        blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
-
-        get_optim_params = lambda module: {
-            pn: p for pn, p in module.named_parameters() if p.requires_grad
-        }
-        for mn, m in self.named_modules():
-            for pn, p in get_optim_params(m).items():
-                fpn = "%s.%s" % (mn, pn) if mn else pn  # full param name
-                # random note: because named_modules and named_parameters are recursive
-                # we will see the same tensors p many many times. but doing it this way
-                # allows us to know which parent module any tensor p belongs to...
-                if pn.endswith("bias"):
-                    # all biases will not be decayed
-                    no_decay.add(fpn)
-                elif pn.endswith("weight") and isinstance(m, whitelist_weight_modules):
-                    # weights of whitelist modules will be weight decayed
-                    decay.add(fpn)
-                elif pn.endswith("weight") and isinstance(m, blacklist_weight_modules):
-                    # weights of blacklist modules will NOT be weight decayed
-                    no_decay.add(fpn)
-
-        # validate that we considered every parameter
-        param_dict = get_optim_params(self)
-        inter_params = decay & no_decay
-        union_params = decay | no_decay
-        assert (
-            len(inter_params) == 0
-        ), "parameters %s made it into both decay/no_decay sets!" % (str(inter_params),)
-        assert (
-            len(param_dict.keys() - union_params) == 0
-        ), "parameters %s were not separated into either decay/no_decay set!" % (
-            str(param_dict.keys() - union_params),
-        )
-
-        # create the pytorch optimizer object
-        optim_groups = [
-            {
-                "params": [param_dict[pn] for pn in sorted(list(decay))],
-                "weight_decay": self.weight_decay,
-            },
-            {
-                "params": [param_dict[pn] for pn in sorted(list(no_decay))],
-                "weight_decay": 0.0,
-            },
-        ]
-        return optim_groups
-
     def forward(self, rgbs_t, goals_t, actions_t, mask_t, vis_embedded=False):
         """
         rgbs_t = [B, C, T, H, W]
@@ -286,13 +126,10 @@ class NavVanillaTransformer(BaseModel):
             goals_embd = einops.rearrange(goals_embd, "b t q h -> b (t q) h")
             embd = torch.cat((goals_embd, sa_embds), dim=1)
 
-            # add position embeddings
-            pos = torch.arange(
-                0, embd.shape[1], dtype=torch.long, device=self.device
-            ).unsqueeze(0)
-            pos_emb = self.wpe(pos)
+            import pdb
 
-            logits = self.transformer(embd + pos_emb)
+            pdb.set_trace()
+            logits, hx = self.gru(embd)
             logits = logits[:, self.tokens_per_img :: self.tokens_per_img * 2]
             logits = self.action_head(logits)
             probs = F.softmax(logits, dim=-1)
@@ -306,7 +143,7 @@ class NavVanillaTransformer(BaseModel):
                 * einops.rearrange(mask_t, "b t -> (b t)")
             )
 
-        return NavVanillaTransformerOutput(loss=loss, probs=probs)
+        return NavGRUOutput(loss=loss, probs=probs)
 
     def action_generator(self, num_envs, deterministic=False, max_its=0):
         """

@@ -136,6 +136,19 @@ class BaseNavVanillaTransformerPolicyConfig(BasePolicyConfig):
     max_trajectory_length: int = 200
 
 
+@dataclass
+class BaseNavGRUPolicyConfig(BasePolicyConfig):
+    _target_: str = "lmnav.models.nav_gru.NavGRU"
+
+    vis_encoder: BaseVisualEncoderConfig = MISSING
+
+    d_hidden: int = 512
+    n_layer: int = 2
+    drop_p: float = 0.2
+    weight_decay: float = 0.0
+    max_trajectory_length: int = 200
+
+
 ### FILTER CONFIGS ###
 @dataclass
 class BaseFilterMethodConfig:
@@ -269,6 +282,9 @@ cs.store(
     group="models/policy/nav_vanilla",
     name="base_nav_vanilla",
     node=BaseNavVanillaTransformerPolicyConfig,
+)
+cs.store(
+    group="models/policy/nav_gru", name="base_nav_gru", node=BaseNavGRUPolicyConfig
 )
 cs.store(group="models", name="linear", node=LinearHeadPolicyConfig)
 
