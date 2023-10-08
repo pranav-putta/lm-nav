@@ -60,6 +60,9 @@ class NavGRU(BaseModel):
     def tokens_per_img(self):
         return self.vis_encoder.num_tokens
 
+    def configure_optim_groups(self):
+        return [{"params": [p for p in self.parameters() if p.requires_grad]}]
+
     def pad_sequences(self, seqs, dim):
         p2d_partial = (0,) * ((len(seqs[0].shape) - dim - 1) * 2 + 1)
         max_t = max([seq.shape[dim] for seq in seqs])
@@ -126,21 +129,17 @@ class NavGRU(BaseModel):
             goals_embd = einops.rearrange(goals_embd, "b t q h -> b (t q) h")
             embd = torch.cat((goals_embd, sa_embds), dim=1)
 
-            import pdb
-
-            pdb.set_trace()
             logits, hx = self.gru(embd)
             logits = logits[:, self.tokens_per_img :: self.tokens_per_img * 2]
             logits = self.action_head(logits)
             probs = F.softmax(logits, dim=-1)
 
-            loss = torch.mean(
-                F.cross_entropy(
-                    einops.rearrange(probs, "b t h -> (b t) h"),
-                    einops.rearrange(actions_t, "b t -> (b t)"),
-                    reduction="none",
-                )
-                * einops.rearrange(mask_t, "b t -> (b t)")
+            # compute loss
+            targets = actions_t.long().masked_fill_(~mask_t, -100)
+            loss = F.cross_entropy(
+                einops.rearrange(probs, "b t h -> (b t) h"),
+                einops.rearrange(targets, "b t -> (b t)"),
+                ignore_index=-100,
             )
 
         return NavGRUOutput(loss=loss, probs=probs)
