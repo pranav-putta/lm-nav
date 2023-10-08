@@ -214,7 +214,7 @@ class NavVanillaTransformer(BaseModel):
             pn: p for pn, p in module.named_parameters() if p.requires_grad
         }
         for mn, m in self.named_modules():
-            for pn, p in get_optim_params(m):
+            for pn, p in get_optim_params(m).items():
                 fpn = "%s.%s" % (mn, pn) if mn else pn  # full param name
                 # random note: because named_modules and named_parameters are recursive
                 # we will see the same tensors p many many times. but doing it this way
@@ -286,7 +286,9 @@ class NavVanillaTransformer(BaseModel):
             embd = torch.cat((goals_embd, sa_embds), dim=1)
 
             # add position embeddings
-            pos = torch.arange(0, T, dtype=torch.long, device=self.device).unsqueeze(0)
+            pos = torch.arange(
+                0, embd.shape[1], dtype=torch.long, device=self.device
+            ).unsqueeze(0)
             pos_emb = self.wpe(pos)
 
             logits = self.transformer(embd + pos_emb)
@@ -340,7 +342,8 @@ class NavVanillaTransformer(BaseModel):
             )
             actions = [torch.tensor(t) for t in actions]
             rgb_embds, goal_embds, actions_t = map(
-                lambda t: self.pad_sequences(t, dim=0), (rgb_embds, goal_embds, actions)
+                lambda t: self.pad_sequences(t, dim=0).to(self.device),
+                (rgb_embds, goal_embds, actions),
             )
             goal_embds = goal_embds[:, 0:1]
             mask_t = torch.ones_like(actions_t, dtype=torch.bool).to(self.device)
@@ -356,26 +359,23 @@ class NavVanillaTransformer(BaseModel):
             goals_embd = einops.rearrange(goal_embds, "b t q h -> b (t q) h")
             embd = torch.cat((goals_embd, sa_embds), dim=1)
 
-            embd = embd.to(self.device)
-
             outputs = self.transformer(embd)
-            act_pos_delta = [
-                (self.tokens_per_img + 1) * (max_len - l) + 2 for l in lens
-            ]
+            act_pos_delta = [max_len - l + 1 for l in lens]
+
             logits = self.transformer(embd)[
                 :, self.tokens_per_img :: self.tokens_per_img * 2
             ]
+            probs = F.softmax(self.action_head(logits), dim=-1)
 
             # project onto the action space
             actions = []
             for i in range(len(episodes)):
-                act_logits = logits[i, -act_pos_delta[i]]
-                act_logits = F.softmax(act_logits)
+                act_probs = probs[i, -act_pos_delta[i]]
 
                 if deterministic:
-                    action = act_logits.argmax().cpu().item()
+                    action = act_probs.argmax().cpu().item()
                 else:
-                    action = torch.multinomial(act_logits, 1).cpu().item()
+                    action = torch.multinomial(act_probs, 1).cpu().item()
                 actions.append(action)
 
                 episodes[i][-1]["action"] = action

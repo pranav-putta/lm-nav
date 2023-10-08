@@ -142,7 +142,10 @@ class BCTrainRunner:
         # set up lr scheduler
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer=self.optim,
-            lr_lambda=[get_lr_schedule_lambda(self.config.train.lr_schedule)],
+            lr_lambda=[
+                get_lr_schedule_lambda(self.config.train.lr_schedule)
+                for _ in range(len(optim_groups))
+            ],
         )
         # set up writer and scatter all relevant data to worker nodes
         if rank0_only():
