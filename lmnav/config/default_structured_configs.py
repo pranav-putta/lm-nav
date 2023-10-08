@@ -202,6 +202,15 @@ class ExponentialLRConfig(BaseLRConfig):
 
 
 @dataclass
+class WarmupThenLRConfig(BaseLRConfig):
+    _target_: str = "warmup_then"
+    warmup_start: float = MISSING
+    warmup_end: float = MISSING
+    warmup_steps: int = MISSING
+    after_warmup: BaseLRConfig = MISSING
+
+
+@dataclass
 class ActorCriticLRConfig(BaseLRConfig):
     _target_: str = "group"
     actor: BaseLRConfig = MISSING
@@ -298,6 +307,7 @@ cs.store(group="dataset", name="offline_episode", node=OfflineEpisodeDatasetConf
 cs.store(group="lr", name="base", node=BaseLRConfig)
 cs.store(group="lr", name="constant", node=ConstantLRConfig)
 cs.store(group="lr", name="exponential", node=ExponentialLRConfig)
+cs.store(group="lr", name="warmup_then", node=WarmupThenLRConfig)
 cs.store(group="lr", name="actor_critic", node=ActorCriticLRConfig)
 
 cs.store(group="runner", name="base", node=BaseRunnerConfig)

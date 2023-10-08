@@ -251,6 +251,7 @@ class BCTrainRunner:
         def forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t):
             outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t, vis_embedded=True)
             loss, probs = outputs.loss, outputs.probs
+            print(probs[0, :15])
             stats["learner/loss"] += loss.item()
 
             # compute levenshtein distances
@@ -295,7 +296,7 @@ class BCTrainRunner:
             return x
 
         rgbs, goals = map(
-            lambda k: preprocess_obs(k, max_batch_size=3072), ("rgb", "imagegoal")
+            lambda k: preprocess_obs(k, max_batch_size=2048), ("rgb", "imagegoal")
         )
 
         actions = [episode["action"] for episode in episodes]
