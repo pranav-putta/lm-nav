@@ -40,7 +40,7 @@ train:
     lr: 1e-7
     warmup_start: 1e-7
     warmup_end: 1e-4
-    warmup_steps: 200
+    warmup_steps: 250
     after_warmup:
       lr: 1e-4
       gamma: 0.999

@@ -201,9 +201,8 @@ class NavGRU(BaseModel):
 
             act_pos_delta = [max_len - l + 1 for l in lens]
 
-            logits = self.transformer(embd)[
-                :, self.tokens_per_img :: self.tokens_per_img * 2
-            ]
+            logits, hx = self.gru(embd)
+            logits = logits[:, self.tokens_per_img :: self.tokens_per_img * 2]
             logits = self.action_head(logits)
 
             probs = F.softmax(logits, dim=-1)

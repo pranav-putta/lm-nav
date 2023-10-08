@@ -13,11 +13,9 @@ def get_lr_schedule_lambda(cfg):
 
         def sched(epoch):
             if epoch < cfg.warmup_steps:
-                # log linear warmup
-                # tgt = s * ((t / s) ** (epoch / n))
                 tgt = s + (t - s) * (epoch / n)
             else:
-                tgt = after(epoch)
+                tgt = cfg.after_warmup.lr * after(epoch - cfg.warmup_steps)
             return tgt / cfg.lr
 
         return sched

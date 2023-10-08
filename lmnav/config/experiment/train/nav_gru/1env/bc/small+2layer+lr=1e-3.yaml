@@ -58,4 +58,4 @@ eval:
   num_episodes: 50
   save_videos: True
   deterministic: False
-  num_envs: 10
+  num_envs: 1
