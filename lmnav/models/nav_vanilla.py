@@ -297,13 +297,11 @@ class NavVanillaTransformer(BaseModel):
             logits = self.action_head(logits)
             probs = F.softmax(logits, dim=-1)
 
-            loss = torch.mean(
-                F.cross_entropy(
-                    einops.rearrange(probs, "b t h -> (b t) h"),
-                    einops.rearrange(actions_t, "b t -> (b t)"),
-                    reduction="none",
-                )
-                * einops.rearrange(mask_t, "b t -> (b t)")
+            targets = actions_t.long().masked_fill_(~mask_t, -100)
+            loss = F.cross_entropy(
+                einops.rearrange(probs, "b t h -> (b t) h"),
+                einops.rearrange(targets, "b t -> (b t)"),
+                ignore_index=-100,
             )
 
         return NavVanillaTransformerOutput(loss=loss, probs=probs)
