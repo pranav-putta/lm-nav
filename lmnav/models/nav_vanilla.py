@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-import pdb
 from torch import nn
 
 import math
@@ -135,12 +134,7 @@ class NavVanillaTransformer(BaseModel):
         self.wpe = nn.Embedding(self.max_tokens, self.d_hidden)
         self.action_head = nn.Linear(self.d_hidden, 4)
 
-        self.apply(self._init_weights)
-        for pn, p in self.named_parameters():
-            if pn.endswith("c_proj.weight") and p.requires_grad:
-                torch.nn.init.normal_(
-                    p, mean=0.0, std=0.02 / math.sqrt(2 * self.n_blocks)
-                )
+        self.transformer.apply(self._init_weights)
 
     @property
     def hidden_size(self):
@@ -171,21 +165,18 @@ class NavVanillaTransformer(BaseModel):
         return torch.stack(padded_seqs)
 
     def embed_visual(self, imgs):
-        with self.maybe_autocast():
-            B, _, T, _, _ = imgs.size()
-            imgs = imgs.to(self.device)
-            image = einops.rearrange(imgs, "b c t h w -> (b t) c h w")
+        B, _, T, _, _ = imgs.size()
+        imgs = imgs.to(self.device)
+        image = einops.rearrange(imgs, "b c t h w -> (b t) c h w")
 
-            image_embeds, image_atts = self.vis_encoder.embed_visual(image)
-            inputs = self.vis_proj(image_embeds)
+        image_embeds, image_atts = self.vis_encoder.embed_visual(image)
+        inputs = self.vis_proj(image_embeds)
 
-            atts = torch.ones(inputs.size()[:-1], dtype=torch.long).to(
-                image_embeds.device
-            )
+        atts = torch.ones(inputs.size()[:-1], dtype=torch.long).to(image_embeds.device)
 
-            inputs = einops.rearrange(inputs, "(b t) q h -> b t q h", b=B)
-            atts = einops.rearrange(atts, "(b t) h -> b t h", b=B)
-            return inputs, atts
+        inputs = einops.rearrange(inputs, "(b t) q h -> b t q h", b=B)
+        atts = einops.rearrange(atts, "(b t) h -> b t h", b=B)
+        return inputs, atts
 
     def maybe_autocast(self, dtype=torch.float16):
         # if on cpu, don't use autocast
@@ -348,29 +339,15 @@ class NavVanillaTransformer(BaseModel):
             )
             goal_embds = goal_embds[:, 0:1]
             mask_t = torch.ones_like(actions_t, dtype=torch.bool).to(self.device)
-
             lens = [len(e) for e in episodes]
             max_len = max(lens)
-
-            actions_embd = einops.rearrange(
-                self.action_embedding(actions_t.long()), "b t h -> b t 1 h"
-            )
-            sa_embds = torch.cat((rgb_embds, actions_embd), dim=2)
-            sa_embds = einops.rearrange(sa_embds, "b t q h -> b (t q) h")
-            goals_embd = einops.rearrange(goal_embds, "b t q h -> b (t q) h")
-            embd = torch.cat((goals_embd, sa_embds), dim=1)
-
             act_pos_delta = [max_len - l + 1 for l in lens]
 
-            logits = self.transformer(embd)[
-                :, self.tokens_per_img :: self.tokens_per_img * 2
-            ]
-            logits = self.action_head(logits)
-
-            probs = F.softmax(logits, dim=-1)
+            actions = []
 
             # project onto the action space
-            actions = []
+            output = self(rgb_embds, goal_embds, actions_t, mask_t, vis_embedded=True)
+            probs = output.probs
 
             for i in range(len(episodes)):
                 act_probs = probs[i, -act_pos_delta[i]]

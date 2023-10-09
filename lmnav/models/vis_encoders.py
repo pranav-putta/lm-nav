@@ -269,7 +269,6 @@ class CLIPVisualEncoder(VisualEncoder):
 
         print("Loading CLIP visual encoder...")
         self.model = CLIPVisionModel.from_pretrained(vit_model)
-        # self._vis_processor = CLIPVisualProcessor(CLIPProcessor.from_pretrained(vit_model))
         self._vis_processor = CustomCLIPVisualProcessor()
 
         if freeze_vit:

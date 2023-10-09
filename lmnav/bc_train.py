@@ -39,6 +39,7 @@ from lmnav.config.default_structured_configs import ArtifactConfig
 from lmnav.dataset.data_gen import _init_envs
 from lmnav.models import *
 from lmnav.dataset.offline_episode_dataset import OfflineEpisodeDataset
+from lmnav.models.base_policy import instantiate_model
 from lmnav.processors import *
 from lmnav.common.episode_processor import (
     apply_transforms_images,
@@ -184,7 +185,11 @@ class BCTrainRunner:
             print("Starting train!")
 
     def setup_student(self):
-        model = instantiate(self.config.train.policy)
+        # model = instantiate(self.config.train.policy)
+        OmegaConf.resolve(self.config)
+        model = instantiate_model(
+            self.config.train.policy, writer=self.writer, store=self.artifact_store
+        )
 
         self.vis_encoder = model.vis_encoder
         self.vis_processor = model.vis_encoder.vis_processor
@@ -278,7 +283,7 @@ class BCTrainRunner:
             x = einops.rearrange(x, "t c h w -> c t h w")
             x = x.float()
             x = self.vis_processor.transform(x)
-            x = einops.rearrange(x, "c b h w -> b c 1 h w")
+            x = einops.rearrange(x, "c t h w -> t c 1 h w")
 
             # forward pass in minibatches through visual encoder
             x = torch.split(

@@ -3,3 +3,7 @@ defaults:
   - /models/vis_encoder@vis_encoder: clip
 
 _target_: "lmnav.models.nav_vanilla.NavVanillaTransformer"
+
+# vis_encoder:
+  # vit_precision: 'fp32'
+

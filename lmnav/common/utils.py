@@ -585,3 +585,18 @@ def levenshtein_distance(tensor1, tensor2):
                 )  # Substitute
 
     return dp[m, n]
+
+
+def is_vis_encoder_real(a):
+    from transformers import CLIPVisionModel
+
+    model = CLIPVisionModel.from_pretrained("openai/clip-vit-large-patch14")
+    convert_weights_to_fp16(model)
+    add_prefix = lambda m: {f"model.{k}": v for k, v in m.state_dict().items()}
+    b = add_prefix(model)
+
+    out = [(k, torch.allclose(a[k], b[k])) for k in a.keys() if k in a and k in b]
+    out = [k for k, _ in filter(lambda i: not i[1], out)]
+    diffs = [(k, torch.sum(a[k] - b[k])) for k in out]
+
+    return diffs
