@@ -255,7 +255,8 @@ class BCTrainRunner:
 
         def forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t):
             outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t, vis_embedded=True)
-            loss, probs = outputs.loss, outputs.probs
+            loss, logits = outputs.loss, outputs.logits
+            probs = F.softmax(logits, dim=-1)
             print(probs[0, :15])
             stats["learner/loss"] += loss.item()
 

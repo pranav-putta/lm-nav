@@ -37,7 +37,7 @@ import linecache
 from torch import nn
 import torch.nn.functional as F
 
-from time import perf_counter
+import time
 from contextlib import contextmanager
 
 
@@ -545,9 +545,11 @@ def find_tensors():
 
 @contextmanager
 def catchtime(name=""):
-    start = perf_counter()
-    yield lambda: perf_counter() - start
-    print(f"TimeIt [{name}]: {perf_counter() - start:.3f} seconds")
+    torch.cuda.synchronize()
+    start = time.time()
+    yield lambda: time.time() - start
+    torch.cuda.synchronize()
+    print(f"TimeIt [{name}]: {time.time() - start:.3f} seconds")
 
 
 def forward_minibatches(fn_forward, list_of_tensors, max_batch_size):

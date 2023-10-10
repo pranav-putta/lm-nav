@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import logging
 
 import pdb
@@ -27,6 +28,13 @@ from transformers import LlamaTokenizer, BertConfig
 # from transformers.models.bert.modeling_bert import BertEncoder
 import einops
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
+
+
+@dataclass
+class NavLLAMAOutput:
+    loss: torch.Tensor
+    logits: torch.Tensor
+    last_hidden_state: torch.Tensor
 
 
 class NavLLAMA(Blip2Base):
@@ -231,6 +239,23 @@ class NavLLAMA(Blip2Base):
         else:
             return contextlib.nullcontext()
 
+    def process_output(self, outputs):
+        # extract the action tokens
+        act_tkn_ids = self.llama_tokenizer(
+            "stop forward left right", add_special_tokens=False, return_tensors="pt"
+        )
+        act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
+        T = self.max_trajectory_length
+        act_positions = torch.tensor(
+            [(self.tokens_per_img + 1) * (T - i - 1) + 2 for i in range(T)]
+        ).to(self.device)
+        act_logits = outputs.logits[:, -act_positions][:, :, act_tkn_ids]
+        act_hidden_states = outputs.logits[-1][:, -act_positions]
+
+        return NavLLAMAOutput(
+            logits=act_logits, loss=outputs.loss, last_hidden_state=act_hidden_states
+        )
+
     def forward_with_embds(self, rgb_embds, goal_embds, actions_t, mask_t):
         rgb_t, goal_t, mask_t = map(
             lambda t: t.to(self.device), (rgb_embds, goal_embds, mask_t)
@@ -244,7 +269,7 @@ class NavLLAMA(Blip2Base):
             inputs_embeds=embd, return_dict=True, output_hidden_states=True
         )
 
-        return outputs
+        return self.process_output(outputs)
 
     def forward(self, rgbs_t, goals_t, actions_t, mask_t):
         """
@@ -267,7 +292,7 @@ class NavLLAMA(Blip2Base):
         tgts = tgts.to(self.device)
         outputs = self.llama_model(inputs_embeds=embd, labels=tgts, return_dict=True)
 
-        return outputs
+        return self.process_output(outputs)
 
     def pad_sequences(self, seqs, dim):
         p2d_partial = (0,) * ((len(seqs[0].shape) - dim - 1) * 2 + 1)

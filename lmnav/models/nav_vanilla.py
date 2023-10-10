@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+
+from lmnav.common.utils import catchtime, find_tensors
 from torch import nn
 
 import math
@@ -16,7 +18,8 @@ from torch.cuda.amp import autocast as autocast
 @dataclass
 class NavVanillaTransformerOutput:
     loss: torch.Tensor
-    probs: torch.Tensor
+    logits: torch.Tensor
+    last_hidden_state: torch.Tensor
 
 
 class MaskedCausalAttention(nn.Module):
@@ -178,9 +181,10 @@ class NavVanillaTransformer(BaseModel):
         image = einops.rearrange(imgs, "b c t h w -> (b t) c h w")
 
         image_embeds, image_atts = self.vis_encoder.embed_visual(image)
+
         inputs = self.vis_proj(image_embeds)
 
-        atts = torch.ones(inputs.size()[:-1], dtype=torch.long).to(image_embeds.device)
+        atts = torch.ones(inputs.size()[:-1], dtype=torch.long, device=self.device)
 
         inputs = einops.rearrange(inputs, "(b t) q h -> b t q h", b=B)
         atts = einops.rearrange(atts, "(b t) h -> b t h", b=B)
@@ -255,6 +259,12 @@ class NavVanillaTransformer(BaseModel):
         ]
         return optim_groups
 
+    def forward_with_embds(self, *args):
+        import pdb
+
+        pdb.set_trace()
+        return self.forward(*args, vis_embedded=True)
+
     def forward(self, rgbs_t, goals_t, actions_t, mask_t, vis_embedded=False):
         """
         rgbs_t = [B, C, T, H, W]
@@ -265,6 +275,8 @@ class NavVanillaTransformer(BaseModel):
         rgbs_t, goals_t, actions_t, mask_t = map(
             lambda t: t.to(self.device), (rgbs_t, goals_t, actions_t, mask_t)
         )
+        actions_t = actions_t.long()
+        targets = actions_t.masked_fill_(~mask_t, -100).detach().clone()
 
         # if visual inputs have already been embedded through visual encoder, pass through
         if not vis_embedded:
@@ -275,7 +287,7 @@ class NavVanillaTransformer(BaseModel):
             goals_embd = goals_t
 
         actions_embd = einops.rearrange(
-            self.action_embedding(actions_t.long()), "b t h -> b t 1 h"
+            self.action_embedding(actions_t), "b t h -> b t 1 h"
         )
         mask_t = mask_t.to(torch.bool)
 
@@ -291,18 +303,20 @@ class NavVanillaTransformer(BaseModel):
         pos_emb = self.wpe(pos)
 
         logits = self.transformer(embd + pos_emb)
-        logits = logits[:, self.tokens_per_img :: self.tokens_per_img * 2]
-        logits = self.action_head(logits)
-        probs = F.softmax(logits, dim=-1)
+        last_hidden_state = logits[:, self.tokens_per_img :: self.tokens_per_img * 2]
 
-        targets = actions_t.long().masked_fill_(~mask_t, -100)
+        act_logits = self.action_head(last_hidden_state)
+        probs = F.softmax(act_logits, dim=-1)
+
         loss = F.cross_entropy(
             einops.rearrange(probs, "b t h -> (b t) h"),
             einops.rearrange(targets, "b t -> (b t)"),
             ignore_index=-100,
         )
 
-        return NavVanillaTransformerOutput(loss=loss, probs=probs)
+        return NavVanillaTransformerOutput(
+            loss=loss, logits=act_logits, last_hidden_state=last_hidden_state
+        )
 
     def action_generator(self, num_envs, deterministic=False, max_its=0):
         """
@@ -355,13 +369,10 @@ class NavVanillaTransformer(BaseModel):
 
             # project onto the action space
             output = self(rgb_embds, goal_embds, actions_t, mask_t, vis_embedded=True)
-            probs = output.probs
+            probs = F.softmax(output.logits, dim=-1)
 
             for i in range(len(episodes)):
                 act_probs = probs[i, -act_pos_delta[i]]
-                if i == 0:
-                    print(act_probs)
-
                 if deterministic:
                     action = act_probs.argmax().cpu().item()
                 else:
@@ -371,10 +382,5 @@ class NavVanillaTransformer(BaseModel):
                 episodes[i][-1]["action"] = action
 
             its += 1
-
-            if its == max_its:
-                embd.to("cpu")
-                episodes.clear()
-                torch.cuda.empty_cache()
 
             yield actions

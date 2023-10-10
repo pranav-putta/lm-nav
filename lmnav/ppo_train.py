@@ -1,9 +1,10 @@
 from collections.abc import Mapping
 from itertools import product
 import pdb
+
 # from tqdm import tqdm
 from torch.distributed.elastic.multiprocessing.errors import record
-from lmnav.common.utils import find_tensors
+from lmnav.common.utils import catchtime, find_tensors
 from operator import add
 from collections import Counter
 from functools import reduce
@@ -24,9 +25,14 @@ from habitat_baselines.utils.common import batch_obs
 from pprint import pprint
 from lmnav.common.utils import all_gather, all_reduce, sum_dict
 from lmnav.config.default_structured_configs import ArtifactConfig
-from lmnav.dataset.data_gen import  _init_envs
-from lmnav.common.episode_processor import apply_transforms_inputs 
-from lmnav.common.episode_processor import apply_transforms_actions, apply_transforms_images, apply_transforms_inputs, extract_inputs_from_dataset
+from lmnav.dataset.data_gen import _init_envs
+from lmnav.common.episode_processor import apply_transforms_inputs
+from lmnav.common.episode_processor import (
+    apply_transforms_actions,
+    apply_transforms_images,
+    apply_transforms_inputs,
+    extract_inputs_from_dataset,
+)
 
 from habitat import logger
 from hydra.utils import instantiate
@@ -40,13 +46,19 @@ from lmnav.models.linear_head import LinearHead
 from lmnav.common.lr_utils import get_lr_schedule_lambda
 
 from habitat.config import read_write
-from habitat_baselines.rl.ddppo.ddp_utils import (init_distrib_slurm, get_distrib_size, rank0_only)
+from habitat_baselines.rl.ddppo.ddp_utils import (
+    init_distrib_slurm,
+    get_distrib_size,
+    rank0_only,
+)
 
 import warnings
-warnings.filterwarnings("ignore") 
+
+warnings.filterwarnings("ignore")
 
 import pprofile
-profiler = pprofile.Profile() 
+
+profiler = pprofile.Profile()
 
 
 def entropy_from_logits(logits):
@@ -54,6 +66,7 @@ def entropy_from_logits(logits):
     pd = torch.nn.functional.softmax(logits, dim=-1)
     entropy = torch.logsumexp(logits, axis=-1) - torch.sum(pd * logits, axis=-1)
     return entropy
+
 
 def masked_var(values, mask, unbiased=True):
     """Compute variance of tensor with masked values."""
@@ -73,6 +86,7 @@ def masked_var(values, mask, unbiased=True):
         variance = variance * bessel_correction
     return variance
 
+
 def flatten_dict(nested, sep="."):
     """Flatten dictionary and concatenate nested keys with separator."""
 
@@ -89,29 +103,31 @@ def flatten_dict(nested, sep="."):
     rec(nested, "", flat)
     return flat
 
+
 def masked_mean(values, mask, axis=None):
-        """Compute mean of tensor with a masked values."""
-        if axis is not None:
-            return (values * mask).sum(axis=axis) / mask.sum(axis=axis)
-        else:
-            return (values * mask).sum() / mask.sum()
-     
+    """Compute mean of tensor with a masked values."""
+    if axis is not None:
+        return (values * mask).sum(axis=axis) / mask.sum(axis=axis)
+    else:
+        return (values * mask).sum() / mask.sum()
+
 
 class PPOTrainer:
-
     def __init__(self, config, eval=False, verbose=False):
         self.config = config
-        self.exp_folder = os.path.join(self.config.exp.root_dir,
-                                       self.config.exp.group,
-                                       self.config.exp.job_type,
-                                       self.config.exp.name)
+        self.exp_folder = os.path.join(
+            self.config.exp.root_dir,
+            self.config.exp.group,
+            self.config.exp.job_type,
+            self.config.exp.name,
+        )
         self.writer = instantiate(self.config.exp.logger, eval_mode=eval)
         self.verbose = verbose
 
     def validate_config(self):
         """
         validates that config parameters are constrained properly
-        """ 
+        """
         pass
 
     def initialize_train(self):
@@ -119,11 +135,11 @@ class PPOTrainer:
         Initialize distributed controller for DDP, starts data generator process
         """
         self.validate_config()
-        self.device = torch.device('cuda' if torch.cuda.is_available else 'cpu')
+        self.device = torch.device("cuda" if torch.cuda.is_available else "cpu")
         local_rank, world_rank, world_size = get_distrib_size()
         self.world_size = world_size
         self.is_distributed = world_size > 1 or True
-        
+
         if self.is_distributed:
             self.device = torch.device(f"cuda:{local_rank}")
             torch.cuda.set_device(self.device)
@@ -132,120 +148,147 @@ class PPOTrainer:
             backend = self.config.habitat_baselines.rl.ddppo.distrib_backend
             print(f"Starting distributed controller using {backend}")
             local_rank, tcp_store = init_distrib_slurm(backend)
-            
+
             self.rank = local_rank
 
             if rank0_only():
-                logger.info(f"Initialized DDP-PPO with {torch.distributed.get_world_size()} workers")
-                
+                logger.info(
+                    f"Initialized DDP-PPO with {torch.distributed.get_world_size()} workers"
+                )
+
             # update gpu ids for this process
             with read_write(self.config):
-                self.config.device = f'cuda:{local_rank}'
+                self.config.device = f"cuda:{local_rank}"
                 self.config.habitat_baselines.torch_gpu_id = local_rank
                 self.config.habitat.simulator.habitat_sim_v0.gpu_device_id = local_rank
 
-                self.config.habitat.seed += (torch.distributed.get_rank() * self.config.habitat_baselines.num_environments)
+                self.config.habitat.seed += (
+                    torch.distributed.get_rank()
+                    * self.config.habitat_baselines.num_environments
+                )
 
             random.seed(self.config.habitat.seed)
             np.random.seed(self.config.habitat.seed)
             torch.manual_seed(self.config.habitat.seed)
-            
+
             self.artifact_store = torch.distributed.PrefixStore("artifacts", tcp_store)
-            
+
         os.makedirs(self.exp_folder, exist_ok=True)
-        os.makedirs(os.path.join(self.exp_folder, 'ckpts'), exist_ok=True)
-                                                              
-        self.envs, _ = _init_envs(self.config) 
-        
+        os.makedirs(os.path.join(self.exp_folder, "ckpts"), exist_ok=True)
+
+        self.envs, _ = _init_envs(self.config)
+
         if rank0_only():
             self.writer.open(self.config)
-        
+
         self.model = self.setup_actor_critic()
         self.sample_generator = self.environment_sample_generator()
 
         # TODO; update img size to something from config
-        self.rollouts = RolloutStorage(self.envs.num_envs, self.config.train.num_rollout_steps, self.model.module.actor.tokens_per_img)
+        self.rollouts = RolloutStorage(
+            self.envs.num_envs,
+            self.config.train.num_rollout_steps,
+            self.model.module.actor.tokens_per_img,
+            self.model.module.actor.hidden_size,
+            device=self.device,
+        )
         self.step = 0
-        self.cumstats = {
-            'step': 0,
-            'metrics/total_frames': 0
-        }
+        self.cumstats = {"step": 0, "metrics/total_frames": 0}
 
-        actor_optim_params = list(filter(lambda p: p.requires_grad, self.model.module.actor.parameters()))
-        critic_optim_params = list(filter(lambda p: p.requires_grad, self.model.module.critic.parameters()))
-        self.optim = torch.optim.Adam(params=[
-            {'params': actor_optim_params, 'lr': self.config.train.lr_schedule.actor.lr},
-            {'params': critic_optim_params, 'lr': self.config.train.lr_schedule.critic.lr}
-        ])
+        actor_optim_params = list(
+            filter(lambda p: p.requires_grad, self.model.module.actor.parameters())
+        )
+        critic_optim_params = list(
+            filter(lambda p: p.requires_grad, self.model.module.critic.parameters())
+        )
+        self.optim = torch.optim.Adam(
+            params=[
+                {
+                    "params": actor_optim_params,
+                    "lr": self.config.train.lr_schedule.actor.lr,
+                },
+                {
+                    "params": critic_optim_params,
+                    "lr": self.config.train.lr_schedule.critic.lr,
+                },
+            ]
+        )
 
-        
-        self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer=self.optim,
-                                                              lr_lambda=[get_lr_schedule_lambda(self.config.train.lr_schedule.actor),
-                                                                         get_lr_schedule_lambda(self.config.train.lr_schedule.critic)])
+        self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer=self.optim,
+            lr_lambda=[
+                get_lr_schedule_lambda(self.config.train.lr_schedule.actor),
+                get_lr_schedule_lambda(self.config.train.lr_schedule.critic),
+            ],
+        )
         if self.config.exp.resume_id is not None:
-            ckpt_path = os.path.join(self.exp_folder, 'ckpts', 'latest.pth')
-            self.load_checkpoint(ckpt_path) 
+            ckpt_path = os.path.join(self.exp_folder, "ckpts", "latest.pth")
+            self.load_checkpoint(ckpt_path)
 
         torch.distributed.barrier()
 
-        
-        
     def setup_actor_critic(self):
         """
         Sets up the actor and critic modules, wraps them in DDP if distributed is set
         """
-       
+
         OmegaConf.resolve(self.config)
-        model = instantiate_model(self.config.train.policy, writer=self.writer, store=self.artifact_store)
+        model = instantiate_model(
+            self.config.train.policy, writer=self.writer, store=self.artifact_store
+        )
         model.actor.max_trajectory_length = self.config.train.num_rollout_steps
         model = model.to(self.device)
-        
+
         self.vis_processor = model.vis_processor
-        
+
         if self.is_distributed:
             print(f"Setting up DDP on GPU {self.rank}")
             model = DDP(model, device_ids=[self.rank], find_unused_parameters=True)
 
         if rank0_only():
             num_params = sum([param.numel() for param in model.parameters()])
-            num_trainable_params = sum([param.numel() for param in model.parameters() if param.requires_grad])
-            print(f"Done setting up agent! Total params: {num_params}. Trainable Params: {num_trainable_params}")
-            
+            num_trainable_params = sum(
+                [param.numel() for param in model.parameters() if param.requires_grad]
+            )
+            print(
+                f"Done setting up agent! Total params: {num_params}. Trainable Params: {num_trainable_params}"
+            )
+
         return model
-        
 
     def update_stats(self, episode_stats):
         stats_keys = sorted(episode_stats.keys())
-        episode_stats = torch.tensor([episode_stats[key] for key in stats_keys],
-                                     device=self.device,
-                                     dtype=torch.float32)
+        episode_stats = torch.tensor(
+            [episode_stats[key] for key in stats_keys],
+            device=self.device,
+            dtype=torch.float32,
+        )
         all_reduce(self.is_distributed, self.device, episode_stats)
         episode_stats /= self.world_size
         # write stats if on rank 0
-        episode_stats = { k: episode_stats[i].item() for i, k in enumerate(stats_keys) }
-        self.cumstats['step'] = self.step
-        self.cumstats['metrics/total_frames'] += int(episode_stats['metrics/frames'] * torch.distributed.get_world_size())
-        return { **self.cumstats, **episode_stats }
-         
- 
+        episode_stats = {k: episode_stats[i].item() for i, k in enumerate(stats_keys)}
+        self.cumstats["step"] = self.step
+        self.cumstats["metrics/total_frames"] += int(
+            episode_stats["metrics/frames"] * torch.distributed.get_world_size()
+        )
+        return {**self.cumstats, **episode_stats}
+
     def load_checkpoint(self, ckpt_path):
         # load checkpoint
-        ckpt_state_dict = torch.load(ckpt_path, map_location='cpu')
-        self.model.load_state_dict(ckpt_state_dict['model'], strict=False)
-        self.optim.load_state_dict(ckpt_state_dict['optimizer'])
-        self.lr_scheduler.load_state_dict(ckpt_state_dict['lr_scheduler'])
+        ckpt_state_dict = torch.load(ckpt_path, map_location="cpu")
+        self.model.load_state_dict(ckpt_state_dict["model"], strict=False)
+        self.optim.load_state_dict(ckpt_state_dict["optimizer"])
+        self.lr_scheduler.load_state_dict(ckpt_state_dict["lr_scheduler"])
 
         # TODO; check if saved and loaded configs are the same
 
         # update cum stats
-        self.cumstats = ckpt_state_dict['stats']
-        self.step = self.cumstats['step']
+        self.cumstats = ckpt_state_dict["stats"]
+        self.step = self.cumstats["step"]
 
     def save_checkpoint(self, filename):
         # only save parameters that have been updated
-        param_grad_dict = {
-            k: v.requires_grad for k, v in self.model.named_parameters()
-        }
+        param_grad_dict = {k: v.requires_grad for k, v in self.model.named_parameters()}
 
         state_dict = self.model.state_dict()
         for k in list(state_dict.keys()):
@@ -257,29 +300,36 @@ class PPOTrainer:
             "optimizer": self.optim.state_dict(),
             "lr_scheduler": self.lr_scheduler.state_dict(),
             "config": OmegaConf.to_container(self.config),
-            "stats": self.cumstats
+            "stats": self.cumstats,
         }
 
-        ckpt_filepath = os.path.join(self.exp_folder, 'ckpts', filename)
-        torch.save(save_obj, ckpt_filepath) 
+        ckpt_filepath = os.path.join(self.exp_folder, "ckpts", filename)
+        torch.save(save_obj, ckpt_filepath)
 
         artifact_name = self.config.train.store_artifact.name
-        self.writer.save_artifact(artifact_name, 'model', os.path.abspath(ckpt_filepath))
+        self.writer.save_artifact(
+            artifact_name, "model", os.path.abspath(ckpt_filepath)
+        )
 
-    
     def embed_observations(self, observations):
         observations = batch_obs(observations, self.device)
-        rgbs, goals = map(lambda t: einops.rearrange(t, 'b h w c -> b 1 c h w'), (observations['rgb'], observations['imagegoal']))
-        # start = time.time()
-        rgbs_t, goals_t = apply_transforms_images(self.vis_processor, rgbs, goals) 
-        # end = time.time()
-        # print("apply transforms", end - start, "seconds")
-        img_embds_t, img_atts_t = self.model.module.actor.embed_visual(torch.cat([rgbs_t, goals_t], dim=2).to(self.device))
+        rgbs, goals = map(
+            lambda t: einops.rearrange(t, "b h w c -> b 1 c h w"),
+            (observations["rgb"], observations["imagegoal"]),
+        )
+        rgbs_t, goals_t = apply_transforms_images(self.vis_processor, rgbs, goals)
+
+        imgs_t = torch.cat([rgbs_t, goals_t], dim=2).to(self.device)
+
+        img_embds_t, img_atts_t = self.model.module.actor.embed_visual(imgs_t)
         rgb_embds, goal_embds = img_embds_t[:, 0], img_embds_t[:, 1]
 
-        map(lambda t: t.to('cpu'), (observations['rgb'], observations['imagegoal'], observations['depth']))
+        map(
+            lambda t: t.to("cpu"),
+            (observations["rgb"], observations["imagegoal"], observations["depth"]),
+        )
         del observations
-            
+
         return rgb_embds, goal_embds
 
     def environment_sample_generator(self):
@@ -290,44 +340,48 @@ class PPOTrainer:
         with torch.no_grad(), self.model.no_sync():
             rgb_embds, goal_embds = self.embed_observations(observations)
         dones = [False for _ in range(self.envs.num_envs)]
-        
+
         # insert initial obsevations
         self.rollouts.insert(next_rgbs=rgb_embds, next_goals=goal_embds)
         torch.cuda.empty_cache()
 
         while True:
             # TODO; this needs to be changed if policy history needs to be cached
-            action_generator = self.model.module.actor.action_generator(self.envs.num_envs,
-                                                                        self.config.train.deterministic,
-                                                                        max_its=self.config.train.num_rollout_steps)
+            action_generator = self.model.module.actor.action_generator(
+                self.envs.num_envs,
+                self.config.train.deterministic,
+                max_its=self.config.train.num_rollout_steps,
+            )
+
             with torch.no_grad(), self.model.no_sync():
                 it = range(self.config.train.num_rollout_steps)
-                
-                for _ in it:
-                    start = time.time()
-                    next(action_generator) 
-                    actions = action_generator.send(((rgb_embds, goal_embds), dones))
-                    end = time.time()
-                    action_gen_time = end - start
 
-                    start = time.time()
+                for _ in it:
+                    next(action_generator)
+                    actions = action_generator.send(((rgb_embds, goal_embds), dones))
+
                     outputs = self.envs.step(actions)
-                    end = time.time()
-                    env_time = end - start
-                    
-                    next_observations, rewards, dones, infos = [list(x) for x in zip(*outputs)] 
-                    start = time.time()
-                    rgb_embds, goal_embds = self.embed_observations(next_observations) 
-                    end = time.time()
-                    embed_time = end - start
-                    dones, rewards, actions = map(lambda l: torch.tensor(l), (dones, rewards, actions))
-                    
-                    self.rollouts.insert(next_rgbs=rgb_embds, next_goals=goal_embds, dones=dones, rewards=rewards, actions=actions) 
-                    
+
+                    next_observations, rewards, dones, infos = [
+                        list(x) for x in zip(*outputs)
+                    ]
+
+                    rgb_embds, goal_embds = self.embed_observations(next_observations)
+
+                    dones, rewards, actions = map(
+                        lambda l: torch.tensor(l), (dones, rewards, actions)
+                    )
+                    self.rollouts.insert(
+                        next_rgbs=rgb_embds,
+                        next_goals=goal_embds,
+                        dones=dones,
+                        rewards=rewards,
+                        actions=actions,
+                    )
+
             del action_generator
             yield
             self.rollouts.reset()
-            
 
     def compute_advantages(self, values, rewards):
         lastgaelam = 0
@@ -337,38 +391,46 @@ class PPOTrainer:
         for t in reversed(range(gen_len)):
             nextvalues = values[:, t + 1] if t < gen_len - 1 else 0.0
             delta = rewards[:, t] + self.config.train.gamma * nextvalues - values[:, t]
-            lastgaelam = delta + self.config.train.gamma * self.config.train.lam * lastgaelam
+            lastgaelam = (
+                delta + self.config.train.gamma * self.config.train.lam * lastgaelam
+            )
             advantages_reversed.append(lastgaelam)
         advantages = torch.stack(advantages_reversed[::-1]).transpose(0, 1)
 
         returns = advantages + values
         advantages = advantages.detach()
-        return values, advantages, returns 
+        return values, advantages, returns
 
-    
     def batched_forward_pass(self, rgbs_t, goals_t, actions_t, mask_t):
         E, T = rgbs_t.shape[:2]
         num_minibatches = math.ceil(E / self.config.train.minibatch_size)
         minibatch_size = self.config.train.minibatch_size
 
         actions_t = actions_t.to(self.device)
-        
+
         logits, values, logprobs = [], [], []
         for g in range(0, E, minibatch_size):
-            minibatch = tuple(map(lambda t: t[g: g + minibatch_size], (rgbs_t, goals_t, actions_t, mask_t)))
-            minibatch_act_logits, minibatch_values, minibatch_logprobs = self.model(*minibatch)
-            map(lambda t: t.to('cpu'), minibatch)
-            
+            minibatch = tuple(
+                map(
+                    lambda t: t[g : g + minibatch_size],
+                    (rgbs_t, goals_t, actions_t, mask_t),
+                )
+            )
+            minibatch_act_logits, minibatch_values, minibatch_logprobs = self.model(
+                *minibatch
+            )
+            map(lambda t: t.to("cpu"), minibatch)
+
             logits.append(minibatch_act_logits)
             values.append(minibatch_values)
             logprobs.append(minibatch_logprobs)
-        
-        logits = torch.cat(logits) 
-        values = torch.cat(values).squeeze() # get rid of critic 1 dim
+
+        logits = torch.cat(logits)
+        values = torch.cat(values).squeeze()  # get rid of critic 1 dim
         logprobs = torch.cat(logprobs)
 
         return logits, values, logprobs
-        
+
     def clip_by_value(self, x, tensor_min, tensor_max):
         """
         Tensor extenstion to torch.clamp
@@ -376,18 +438,15 @@ class PPOTrainer:
         """
         clipped = torch.max(torch.min(x, tensor_max), tensor_min)
         return clipped
-    
-    def compute_loss(self,
-                     old_logprobs,
-                     values,
-                     logprobs,
-                     logits,
-                     vpreds,
-                     mask,
-                     advantages,
-                     returns):
-        vpredclipped = self.clip_by_value(vpreds, values - self.config.train.cliprange_value, values +
-            self.config.train.cliprange_value)
+
+    def compute_loss(
+        self, old_logprobs, values, logprobs, logits, vpreds, mask, advantages, returns
+    ):
+        vpredclipped = self.clip_by_value(
+            vpreds,
+            values - self.config.train.cliprange_value,
+            values + self.config.train.cliprange_value,
+        )
 
         vf_losses1 = (vpreds - returns) ** 2
         vf_losses2 = (vpredclipped - returns) ** 2
@@ -397,8 +456,9 @@ class PPOTrainer:
         ratio = torch.exp(logprobs - old_logprobs)
 
         pg_losses = -advantages * ratio
-        pg_losses2 = -advantages * torch.clamp(ratio, 1.0 - self.config.train.cliprange, 1.0 +
-            self.config.train.cliprange)
+        pg_losses2 = -advantages * torch.clamp(
+            ratio, 1.0 - self.config.train.cliprange, 1.0 + self.config.train.cliprange
+        )
 
         pg_loss = masked_mean(torch.max(pg_losses, pg_losses2), mask)
         pg_clipfrac = masked_mean(torch.gt(pg_losses2, pg_losses).float(), mask)
@@ -423,7 +483,11 @@ class PPOTrainer:
         value_mean, value_var = masked_mean(values, mask), masked_var(values, mask)
 
         stats = {
-            "learner/loss": dict(policy=pg_loss.detach().item(), value=vf_loss.detach().item(), total=loss.detach().item()),
+            "learner/loss": dict(
+                policy=pg_loss.detach().item(),
+                value=vf_loss.detach().item(),
+                total=loss.detach().item(),
+            ),
             "learner/policy": dict(
                 entropy=entropy.detach().item(),
                 approxkl=approxkl.detach().item(),
@@ -432,7 +496,9 @@ class PPOTrainer:
                 advantages_mean=masked_mean(advantages, mask).detach().item(),
                 ratio=torch.mean(ratio.detach()).item(),
             ),
-            "learner/returns": dict(mean=return_mean.detach().item(), var=return_var.detach().item()),
+            "learner/returns": dict(
+                mean=return_mean.detach().item(), var=return_var.detach().item()
+            ),
             "learner/val": dict(
                 vpred=masked_mean(vpreds, mask).detach().item(),
                 error=masked_mean((vpreds - returns) ** 2, mask).detach().item(),
@@ -442,95 +508,116 @@ class PPOTrainer:
             ),
         }
         return pg_loss, self.config.train.vf_coef * vf_loss, flatten_dict(stats)
-        
-    
+
     def train_ppo_step(self):
-        import pdb
-        stats = { 'metrics/frames': 0, 'metrics/rollouts_wait_time': 0. }
-        
+        stats = {"metrics/frames": 0, "metrics/rollouts_wait_time": 0.0}
+
         # first collect environment samples
         rollouts_start_time = time.time()
-        next(self.sample_generator)        
-        
+        next(self.sample_generator)
+
         rgbs, goals, actions, rewards = self.rollouts.generate_samples()
         rollouts_end_time = time.time()
-        stats['metrics/rollouts_wait_time'] = rollouts_end_time - rollouts_start_time
-        
+        stats["metrics/rollouts_wait_time"] = rollouts_end_time - rollouts_start_time
+
         T = self.config.train.num_rollout_steps
         minibatch_size = self.config.train.minibatch_size
         num_grad_accums = self.config.train.num_grad_accums
-        
+
         collected_frames = sum([len(t) for t in rgbs])
         assert collected_frames == T * self.envs.num_envs
 
         # gather all episodes from other gpus
-        stats['metrics/frames'] = collected_frames
-        
-        # construct batch
-        mask_t = torch.stack([torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])]) for t in rgbs])
-        mask_t = mask_t.bool()
-        rgbs_t = torch.stack([F.pad(t, (0,)*5 + (T - t.shape[0],), 'constant', 0) for t in rgbs])
-        goals_t = torch.stack([g[0:1] for g in goals]) 
-        actions_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in actions])
-        rewards_t = torch.stack([F.pad(t, (0, T - t.shape[0]), 'constant', 0) for t in rewards])
+        stats["metrics/frames"] = collected_frames
 
-        rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(lambda t: all_gather(t, self.device, self.world_size), (rgbs_t, goals_t, actions_t, rewards_t, mask_t)) 
+        # construct batch
+        mask_t = torch.stack(
+            [
+                torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])])
+                for t in rgbs
+            ]
+        )
+        mask_t = mask_t.bool()
+        rgbs_t = torch.stack(
+            [F.pad(t, (0,) * 5 + (T - t.shape[0],), "constant", 0) for t in rgbs]
+        )
+        goals_t = torch.stack([g[0:1] for g in goals])
+        actions_t = torch.stack(
+            [F.pad(t, (0, T - t.shape[0]), "constant", 0) for t in actions]
+        )
+        rewards_t = torch.stack(
+            [F.pad(t, (0, T - t.shape[0]), "constant", 0) for t in rewards]
+        )
+
+        rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(
+            lambda t: all_gather(t, self.device, self.world_size),
+            (rgbs_t, goals_t, actions_t, rewards_t, mask_t),
+        )
         # slice up the gathered data into equal sized pieces
         E = rgbs_d.shape[0] // self.world_size
-        rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(lambda t: t.cpu(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
-        rgbs_t, goals_t, actions_t, rewards_t, mask_t = map(lambda t: t[self.rank * E:self.rank * E + E].clone(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d))
-         
-        
+        rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(
+            lambda t: t.cpu(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d)
+        )
+        rgbs_t, goals_t, actions_t, rewards_t, mask_t = map(
+            lambda t: t[self.rank * E : self.rank * E + E].clone(),
+            (rgbs_d, goals_d, actions_d, rewards_d, mask_d),
+        )
+
         with torch.no_grad(), self.model.no_sync():
-            old_logits, values, old_logprobs = self.batched_forward_pass(rgbs_t, goals_t, actions_t, mask_t) 
+            old_logits, values, old_logprobs = self.batched_forward_pass(
+                rgbs_t, goals_t, actions_t, mask_t
+            )
 
             # TODO; add reference model kl penalty
             rewards_t = rewards_t.to(self.device)
             values, advantages, returns = self.compute_advantages(values, rewards_t)
-            
+
         E, T = rgbs_t.shape[:2]
         batch_idxs = torch.randperm(E)
-         
+
         cum_train_stats_l = []
-        for _, mb in product(range(self.config.train.ppo_epochs), 
-                             range(0, E, num_grad_accums * minibatch_size)):                 
+        for _, mb in product(
+            range(self.config.train.ppo_epochs),
+            range(0, E, num_grad_accums * minibatch_size),
+        ):
             minibatches_left = math.ceil((E - mb) / minibatch_size)
             num_grad_steps = min(minibatches_left, num_grad_accums)
 
             for g in range(num_grad_steps):
                 start_idx = mb + g * minibatch_size
-                mb_idxs = batch_idxs[start_idx: start_idx + minibatch_size]
+                mb_idxs = batch_idxs[start_idx : start_idx + minibatch_size]
                 minibatch = {
-                    'rgbs': rgbs_t[mb_idxs],
-                    'goals': goals_t[mb_idxs],
-                    'actions': actions_t[mb_idxs],
-                    'masks': mask_t[mb_idxs],
-                    'advantages': advantages[mb_idxs],
-                    'returns': returns[mb_idxs],
-                    'logprobs': old_logprobs[mb_idxs],
-                    'values': values[mb_idxs]
+                    "rgbs": rgbs_t[mb_idxs],
+                    "goals": goals_t[mb_idxs],
+                    "actions": actions_t[mb_idxs],
+                    "masks": mask_t[mb_idxs],
+                    "advantages": advantages[mb_idxs],
+                    "returns": returns[mb_idxs],
+                    "logprobs": old_logprobs[mb_idxs],
+                    "values": values[mb_idxs],
                 }
                 # move all to device
                 minibatch = {k: v.to(self.device) for k, v in minibatch.items()}
 
                 def backwards_loss():
                     logits, vpreds, logprobs = self.batched_forward_pass(
-                        minibatch['rgbs'], 
-                        minibatch['goals'], 
-                        minibatch['actions'],
-                        minibatch['masks'])
+                        minibatch["rgbs"],
+                        minibatch["goals"],
+                        minibatch["actions"],
+                        minibatch["masks"],
+                    )
                     loss_p, loss_v, train_stats = self.compute_loss(
-                         minibatch['logprobs'],
-                         minibatch['values'],
-                         logprobs,
-                         logits,
-                         vpreds,
-                         minibatch['masks'],
-                         minibatch['advantages'],
-                         minibatch['returns']
-                    ) 
+                        minibatch["logprobs"],
+                        minibatch["values"],
+                        logprobs,
+                        logits,
+                        vpreds,
+                        minibatch["masks"],
+                        minibatch["advantages"],
+                        minibatch["returns"],
+                    )
                     loss = loss_p + loss_v
-                    loss.backward() 
+                    loss.backward()
                     return train_stats
 
                 if g < num_grad_steps - 1:
@@ -539,24 +626,24 @@ class PPOTrainer:
                 else:
                     train_stats = backwards_loss()
 
-                map(lambda k: minibatch[k].to('cpu'), minibatch.keys())
+                map(lambda k: minibatch[k].to("cpu"), minibatch.keys())
                 cum_train_stats_l.append(train_stats)
-                
+
             if self.config.train.max_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.train.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.config.train.max_grad_norm
+                )
             self.optim.step()
             self.optim.zero_grad()
-            
-        map(lambda t: t.to('cpu'), (mask_t, rgbs_t, goals_t, actions_t, rewards_t))        
-        dict_cum_train_stats = reduce(sum_dict, cum_train_stats_l)
-        dict_cum_train_stats = { k: v / len(cum_train_stats_l) for k, v in dict_cum_train_stats.items() }
 
-        return {
-            **dict_cum_train_stats,
-            **stats
+        map(lambda t: t.to("cpu"), (mask_t, rgbs_t, goals_t, actions_t, rewards_t))
+        dict_cum_train_stats = reduce(sum_dict, cum_train_stats_l)
+        dict_cum_train_stats = {
+            k: v / len(cum_train_stats_l) for k, v in dict_cum_train_stats.items()
         }
 
-   
+        return {**dict_cum_train_stats, **stats}
+
     def train(self):
         self.initialize_train()
 
@@ -565,7 +652,7 @@ class PPOTrainer:
 
             self.lr_scheduler.step()
             stats = self.update_stats(stats)
-            
+
             torch.distributed.barrier()
 
             if rank0_only():
@@ -575,20 +662,23 @@ class PPOTrainer:
                     filename = f"ckpt.{ckpt_num}.pth"
                 else:
                     filename = "latest.pth"
-                    
-                self.save_checkpoint(filename)
 
+                self.save_checkpoint(filename)
 
             self.step += 1
 
-            
+
 @record
 def main():
     parser = argparse.ArgumentParser(description="Example argparse for cfg_path")
-    parser.add_argument('cfg_path', type=str, help="Path to the configuration file")
-    parser.add_argument('--eval', action='store_true', help='Flag to enable evaluation mode')
-    parser.add_argument('--debug', action='store_true', help='Flag to enable debug mode')
-    parser.add_argument('--resume_run_id', type=str, help="Writer run id to restart")
+    parser.add_argument("cfg_path", type=str, help="Path to the configuration file")
+    parser.add_argument(
+        "--eval", action="store_true", help="Flag to enable evaluation mode"
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Flag to enable debug mode"
+    )
+    parser.add_argument("--resume_run_id", type=str, help="Writer run id to restart")
     args = parser.parse_args()
 
     config = get_config(args.cfg_path)
@@ -600,7 +690,7 @@ def main():
 
         if args.eval:
             config.habitat_baselines.num_environments = config.eval.num_envs
-        
+
     trainer = PPOTrainer(config, eval=args.eval, verbose=args.debug)
 
     if not args.eval:
@@ -608,6 +698,6 @@ def main():
     else:
         trainer.eval()
 
+
 if __name__ == "__main__":
     main()
-    

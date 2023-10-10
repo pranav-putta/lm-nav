@@ -12,7 +12,7 @@ from lmnav.models.Qformer import BertConfig, BertLMHeadModel
 from lmnav.models.perceiver import Perceiver
 
 from lmnav.common.dist_utils import download_cached_file
-from lmnav.common.utils import is_url, convert_weights_to_fp16, catchtime
+from lmnav.common.utils import is_url, convert_weights_to_fp16
 import contextlib
 
 import logging
@@ -269,6 +269,7 @@ class CLIPVisualEncoder(VisualEncoder):
 
         print("Loading CLIP visual encoder...")
         self.model = CLIPVisionModel.from_pretrained(vit_model)
+        self.model = torch.compile(self.model)
         self._vis_processor = CustomCLIPVisualProcessor()
 
         if freeze_vit:
@@ -283,10 +284,11 @@ class CLIPVisualEncoder(VisualEncoder):
             out = self.model(pixel_values=img)
             out = out.pooler_output  # [b h]
             image_embeds = einops.rearrange(out, "b h -> b 1 h")
-            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(
-                self.device
+            image_atts = torch.ones(
+                image_embeds.size()[:-1], dtype=torch.long, device=self.device
             )
-            return image_embeds, image_atts
+
+        return image_embeds, image_atts
 
     @property
     def vis_processor(self):

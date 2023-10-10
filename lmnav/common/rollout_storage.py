@@ -1,23 +1,42 @@
 import torch
 
-class RolloutStorage:
 
-    def __init__(self, num_envs, max_steps, tokens_per_img):
+class RolloutStorage:
+    def __init__(self, num_envs, max_steps, tokens_per_img, hidden_size, device):
         self.num_envs = num_envs
         self.max_steps = max_steps
-        
-        self.rgbs = torch.zeros(num_envs, max_steps + 1, tokens_per_img, 4096, dtype=torch.float32) 
-        self.goals = torch.zeros(num_envs, max_steps + 1, tokens_per_img, 4096, dtype=torch.float32)
-        self.actions = torch.zeros(num_envs, max_steps + 1, dtype=torch.int8)
-        self.dones = torch.zeros(num_envs, max_steps + 1,  dtype=torch.bool)
-        self.rewards = torch.zeros(num_envs, max_steps + 1, dtype=torch.float16)
+
+        self.rgbs = torch.zeros(
+            num_envs,
+            max_steps + 1,
+            tokens_per_img,
+            hidden_size,
+            dtype=torch.float32,
+            device=device,
+        )
+        self.goals = torch.zeros(
+            num_envs,
+            max_steps + 1,
+            tokens_per_img,
+            hidden_size,
+            dtype=torch.float32,
+            device=device,
+        )
+        self.actions = torch.zeros(
+            num_envs, max_steps + 1, dtype=torch.int8, device=device
+        )
+        self.dones = torch.zeros(
+            num_envs, max_steps + 1, dtype=torch.bool, device=device
+        )
+        self.rewards = torch.zeros(
+            num_envs, max_steps + 1, dtype=torch.float16, device=device
+        )
 
         self.current_step_idx = -1
-       
 
     def insert(self, next_rgbs, next_goals, dones=None, actions=None, rewards=None):
-        """ insert observations, dones, and actions into rollout storage tensors """
-        self.rgbs[:, self.current_step_idx + 1] = next_rgbs 
+        """insert observations, dones, and actions into rollout storage tensors"""
+        self.rgbs[:, self.current_step_idx + 1] = next_rgbs
         self.goals[:, self.current_step_idx + 1] = next_goals
 
         if dones is not None:
@@ -26,13 +45,13 @@ class RolloutStorage:
             self.rewards[:, self.current_step_idx] = rewards
         if actions is not None:
             self.actions[:, self.current_step_idx] = actions
-        
+
         self.current_step_idx += 1
 
     def reset(self):
         self.rgbs[:, 0] = self.rgbs[:, -1]
         self.goals[:, 0] = self.goals[:, -1]
-        
+
         self.current_step_idx = 0
 
     def generate_samples(self):
@@ -55,14 +74,24 @@ class RolloutStorage:
             ends = [-1] + ends
             if ends[-1] != self.max_steps - 1:
                 ends = ends + [self.max_steps - 1]
-                
-            slices = [slice(ends[i] + 1, ends[i + 1] + 1) for i in range(len(ends) - 1)] 
-            
+
+            slices = [slice(ends[i] + 1, ends[i + 1] + 1) for i in range(len(ends) - 1)]
+
             for s in slices:
-                samples.append(tuple(map(lambda t: t[b, s], (self.rgbs, self.goals, self.actions, self.rewards))))
-        
+                samples.append(
+                    tuple(
+                        map(
+                            lambda t: t[b, s],
+                            (self.rgbs, self.goals, self.actions, self.rewards),
+                        )
+                    )
+                )
+
         rgbs, goals, actions, rewards = zip(*samples)
         return rgbs, goals, actions, rewards
 
     def to_cpu(self):
-        map(lambda t: t.cpu(), (self.rgbs, self.goals, self.dones, self.rewards, self.actions))
+        map(
+            lambda t: t.cpu(),
+            (self.rgbs, self.goals, self.dones, self.rewards, self.actions),
+        )
