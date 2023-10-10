@@ -132,6 +132,21 @@ class BaseNavVanillaTransformerPolicyConfig(BasePolicyConfig):
     n_heads: int = 8
     n_blocks: int = 2
     drop_p: float = 0.2
+    ln_mode: str = "post"
+    weight_decay: float = 0.0
+    max_trajectory_length: int = 200
+
+
+@dataclass
+class BaseNavGRUPolicyConfig(BasePolicyConfig):
+    _target_: str = "lmnav.models.nav_gru.NavGRU"
+
+    vis_encoder: BaseVisualEncoderConfig = MISSING
+
+    d_hidden: int = 512
+    n_layer: int = 2
+    drop_p: float = 0.2
+    weight_decay: float = 0.0
     max_trajectory_length: int = 200
 
 
@@ -185,6 +200,15 @@ class ConstantLRConfig(BaseLRConfig):
 class ExponentialLRConfig(BaseLRConfig):
     _target_: str = "exponential"
     gamma: float = MISSING
+
+
+@dataclass
+class WarmupThenLRConfig(BaseLRConfig):
+    _target_: str = "warmup_then"
+    warmup_start: float = MISSING
+    warmup_end: float = MISSING
+    warmup_steps: int = MISSING
+    after_warmup: BaseLRConfig = MISSING
 
 
 @dataclass
@@ -269,6 +293,9 @@ cs.store(
     name="base_nav_vanilla",
     node=BaseNavVanillaTransformerPolicyConfig,
 )
+cs.store(
+    group="models/policy/nav_gru", name="base_nav_gru", node=BaseNavGRUPolicyConfig
+)
 cs.store(group="models", name="linear", node=LinearHeadPolicyConfig)
 
 cs.store(group="models/vis_encoder", name="base", node=BaseVisualEncoderConfig)
@@ -281,6 +308,7 @@ cs.store(group="dataset", name="offline_episode", node=OfflineEpisodeDatasetConf
 cs.store(group="lr", name="base", node=BaseLRConfig)
 cs.store(group="lr", name="constant", node=ConstantLRConfig)
 cs.store(group="lr", name="exponential", node=ExponentialLRConfig)
+cs.store(group="lr", name="warmup_then", node=WarmupThenLRConfig)
 cs.store(group="lr", name="actor_critic", node=ActorCriticLRConfig)
 
 cs.store(group="runner", name="base", node=BaseRunnerConfig)

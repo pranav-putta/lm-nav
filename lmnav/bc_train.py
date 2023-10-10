@@ -1,5 +1,6 @@
 import math
 
+import pdb
 import einops
 
 from pprint import pprint
@@ -7,7 +8,7 @@ from habitat.utils.visualizations.utils import observations_to_image
 from habitat_baselines.utils.common import batch_obs, generate_video
 from habitat_sim.utils.datasets_download import argparse
 from habitat_baselines.utils.info_dict import extract_scalars_from_info
-from lmnav.common.utils import catchtime
+from lmnav.common.utils import catchtime, forward_minibatches, levenshtein_distance
 
 import numpy as np
 import random
@@ -38,6 +39,7 @@ from lmnav.config.default_structured_configs import ArtifactConfig
 from lmnav.dataset.data_gen import _init_envs
 from lmnav.models import *
 from lmnav.dataset.offline_episode_dataset import OfflineEpisodeDataset
+from lmnav.models.base_policy import instantiate_model
 from lmnav.processors import *
 from lmnav.common.episode_processor import (
     apply_transforms_images,
@@ -132,13 +134,19 @@ class BCTrainRunner:
         self.agent = self.setup_student()
 
         # set up optimizer
-        optim_params = list(filter(lambda p: p.requires_grad, self.agent.parameters()))
-        self.optim = torch.optim.Adam(
-            params=[{"params": optim_params, "lr": self.config.train.lr_schedule.lr}]
-        )
+        optim_groups = self.agent.module.configure_optim_groups()
+        optim_groups = [
+            {**group, "lr": self.config.train.lr_schedule.lr} for group in optim_groups
+        ]
+        self.optim = torch.optim.Adam(params=optim_groups)
+
+        # set up lr scheduler
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer=self.optim,
-            lr_lambda=[get_lr_schedule_lambda(self.config.train.lr_schedule)],
+            lr_lambda=[
+                get_lr_schedule_lambda(self.config.train.lr_schedule)
+                for _ in range(len(optim_groups))
+            ],
         )
         # set up writer and scatter all relevant data to worker nodes
         if rank0_only():
@@ -177,7 +185,11 @@ class BCTrainRunner:
             print("Starting train!")
 
     def setup_student(self):
-        model = instantiate(self.config.train.policy)
+        # model = instantiate(self.config.train.policy)
+        OmegaConf.resolve(self.config)
+        model = instantiate_model(
+            self.config.train.policy, writer=self.writer, store=self.artifact_store
+        )
 
         self.vis_encoder = model.vis_encoder
         self.vis_processor = model.vis_encoder.vis_processor
@@ -234,67 +246,93 @@ class BCTrainRunner:
         num_minibatches = batch_size // minibatch_size
         num_grad_accums = self.config.train.num_grad_accums
 
-        stats = {"learner/loss": 0.0, "metrics/frames": 0, "learner/lr": 0}
+        stats = {
+            "learner/loss": 0.0,
+            "metrics/frames": 0,
+            "learner/lr": 0,
+            "learner/edit_distance": 0,
+        }
 
-        try:
-            rgbs = [
-                einops.rearrange(episode["rgb"], "t h w c -> t c h w")
+        def forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t):
+            outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t, vis_embedded=True)
+            loss, probs = outputs.loss, outputs.probs
+            print(probs[0, :15])
+            stats["learner/loss"] += loss.item()
+
+            # compute levenshtein distances
+            distances = []
+            for i in range(mask_t.shape[0]):
+                a = torch.argmax(probs[i, : mask_t[i].sum()], dim=-1)
+                b = actions_t[i, : mask_t[i].sum()]
+                distances.append(levenshtein_distance(a, b))
+            stats["learner/edit_distance"] += sum(distances) / len(distances)
+
+            loss.backward()
+
+        # extract rgb and goal lists from episodes
+        def preprocess_obs(k, max_batch_size):
+            # extract observation from episode dictionary
+            list_of_tensors = [
+                einops.rearrange(episode[k], "t h w c -> t c h w")
                 for episode in episodes
             ]
-            goals = [
-                einops.rearrange(episode["imagegoal"], "t h w c -> t c h w")
-                for episode in episodes
-            ]
-            actions = [episode["action"] for episode in episodes]
-        except:
-            print(
-                "There was an error loading data in one of these episode_ids: ",
-                [episode["episode_id"] for episode in episodes],
+            # batch up tensors
+            x = torch.cat(list_of_tensors, dim=0)
+
+            # apply transforms
+            x = einops.rearrange(x, "t c h w -> c t h w")
+            x = x.float()
+            x = self.vis_processor.transform(x)
+            x = einops.rearrange(x, "c t h w -> t c 1 h w")
+
+            # forward pass in minibatches through visual encoder
+            x = torch.split(
+                torch.cat(
+                    [
+                        self.agent.module.embed_visual(x[i : i + max_batch_size])[0]
+                        for i in range(0, x.shape[0], max_batch_size)
+                    ],
+                    dim=0,
+                ),
+                [len(t) for t in list_of_tensors],
             )
-            return stats
 
+            x = [einops.rearrange(t, "b t q h -> (b t) q h") for t in x]
+            return x
+
+        rgbs, goals = map(
+            lambda k: preprocess_obs(k, max_batch_size=2048), ("rgb", "imagegoal")
+        )
+
+        actions = [episode["action"] for episode in episodes]
+
+        # construct subsequences
         rgbs, goals, actions = construct_subsequences(
             batch_size, T, rgbs, goals, actions
         )
+
+        # pad sequences
         mask = torch.stack(
             [
                 torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])])
                 for t in rgbs
             ]
-        )
-        mask = mask.bool()
+        ).bool()
         rgbs = torch.stack(
-            [F.pad(t, (0,) * 7 + (T - t.shape[0],), "constant", 0) for t in rgbs]
+            [F.pad(t, (0, 0, 0, 0, 0, T - t.shape[0]), "constant", 0) for t in rgbs]
         )
         goals = torch.stack(goals)
         actions = torch.stack(
             [F.pad(t, (0, T - t.shape[0]), "constant", 0) for t in actions]
         )
 
-        # embed rgb images before training
-        with torch.no_grad():
-            rgbs, goals, actions = apply_transforms_inputs(
-                self.vis_processor, rgbs, goals, actions
-            )
-
-            max_img_batch_size = 14
-            imgs = torch.cat((goals, rgbs), dim=2)
-            imgs_embd = torch.cat(
-                list(
-                    map(
-                        lambda i: self.agent.module.embed_visual(
-                            imgs[i : i + max_img_batch_size]
-                        )[0],
-                        range(0, imgs.shape[0], max_img_batch_size),
-                    )
-                )
-            )
-        rgbs, goals = imgs_embd[:, 1:], imgs_embd[:, 0:1]
+        # to ensure equal batch sizes across gpus, gather them all
         rgbs, goals, actions, mask = map(
             lambda t: all_gather(t.contiguous(), self.device, self.world_size),
             (rgbs, goals, actions, mask),
         )
         E = rgbs.shape[0] // self.world_size
+
         # TODO; rename these variables to improve readability
         rgbs, goals, actions, mask = map(
             lambda t: t[self.rank * E : self.rank * E + E].clone(),
@@ -314,20 +352,9 @@ class BCTrainRunner:
                 )
                 if g < num_grad_accums - 1:
                     with self.agent.no_sync():
-                        outputs = self.agent(
-                            rgbs_t, goals_t, actions_t, mask_t, vis_embedded=True
-                        )
-                        loss = outputs.loss
-                        stats["learner/loss"] += loss.item()
-                        loss.backward()
+                        forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
                 else:
-                    outputs = self.agent(
-                        rgbs_t, goals_t, actions_t, mask_t, vis_embedded=True
-                    )
-                    loss = outputs.loss
-                    stats["learner/loss"] += loss.item()
-                    loss.backward()
-
+                    forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
                 rgbs_t.to("cpu")
                 goals_t.to("cpu")
 

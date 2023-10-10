@@ -12,7 +12,8 @@ defaults:
     
   # set up train
   - /runner@train: bc
-  - /lr@train.lr_schedule: exponential
+  - /lr@train.lr_schedule: warmup_then
+  - /lr@train.lr_schedule.after_warmup: exponential
   - /models/policy/nav_vanilla@train.policy: clip 
   - /dataset@train.dataset: offline_episode
     
@@ -29,20 +30,25 @@ exp:
   tags: []
 
 train:
-  batch_size: 128
-  minibatch_size: 128
+  batch_size: 32
+  minibatch_size: 32
   num_grad_accums: 1
 
   steps: 10_000
-  episodes_per_batch: 100
+  episodes_per_batch: 32
   lr_schedule:
-    lr: 2.5e-3
-    gamma: 0.995
+    lr: 1e-7
+    warmup_start: 1e-7
+    warmup_end: 1e-4
+    warmup_steps: 100
+    after_warmup:
+      lr: 1e-4
+      gamma: 0.999
   policy:
-    d_hidden: 768
-    d_head: 128
-    n_heads: 6
-    n_blocks: 1 
+    d_hidden: 512
+    d_head: 64
+    n_heads: 8
+    n_blocks: 4
     drop_p: 0.1
     max_trajectory_length: 200
   dataset:
