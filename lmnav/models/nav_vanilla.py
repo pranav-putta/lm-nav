@@ -71,7 +71,7 @@ class MaskedCausalAttention(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, h_dim, max_T, n_heads, drop_p):
+    def __init__(self, h_dim, max_T, n_heads, drop_p, ln_mode):
         super().__init__()
         self.attention = MaskedCausalAttention(h_dim, max_T, n_heads, drop_p)
         self.mlp = nn.Sequential(
@@ -83,12 +83,18 @@ class Block(nn.Module):
         self.ln1 = nn.LayerNorm(h_dim)
         self.ln2 = nn.LayerNorm(h_dim)
 
+        self.ln_mode = ln_mode
+
     def forward(self, x):
         # Attention -> LayerNorm -> MLP -> LayerNorm
-        x = x + self.attention(x)  # residual
-        x = self.ln1(x)
-        x = x + self.mlp(x)  # residual
-        x = self.ln2(x)
+        if self.ln_mode == "post":
+            x = self.ln1(x + self.attention(x))  # residual
+            x = self.ln2(x + self.mlp(x))  # residual
+        elif self.ln_mode == "pre":
+            x = self.attention(self.ln1(x))
+            x = self.mlp(self.ln2(x))
+        else:
+            raise NotImplementedError(f"layer norm mode {self.ln_mode}")
         return x
 
 
@@ -105,7 +111,7 @@ class NavVanillaTransformer(BaseModel):
         max_trajectory_length,
         ln_mode,
         *args,
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
 
@@ -118,6 +124,7 @@ class NavVanillaTransformer(BaseModel):
         self.n_blocks = n_blocks
         self.drop_p = drop_p
         self.weight_decay = weight_decay
+        self.ln_mode = ln_mode
 
         self.max_trajectory_length = max_trajectory_length
         self.max_tokens = (
@@ -126,7 +133,7 @@ class NavVanillaTransformer(BaseModel):
 
         self.transformer = nn.Sequential(
             *[
-                Block(d_hidden, self.max_tokens, n_heads, drop_p)
+                Block(d_hidden, self.max_tokens, n_heads, drop_p, ln_mode)
                 for _ in range(n_blocks)
             ]
         )
