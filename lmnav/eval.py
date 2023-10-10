@@ -244,14 +244,6 @@ class EvalRunner:
 
         while num_episodes_done < N_episodes:
             next(actor)
-            if True:
-                x = torch.load(
-                    "/srv/flash1/pputta7/data/embodiment-transfer/datasets/lmnav/offline_00744/data.0.pth"
-                )
-                y = torch.load("test.pt")
-
-                observations[0]["rgb"] = x["rgb"][0]
-                observations[0]["imagegoal"] = x["imagegoal"][0]
             embds = self.embed_observations(observations)
             actions = actor.send((embds, dones))
 
