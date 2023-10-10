@@ -242,6 +242,8 @@ class EvalRunner:
             self.envs.num_envs, deterministic=self.config.eval.deterministic
         )
 
+        self.agent = self.agent.eval()
+
         while num_episodes_done < N_episodes:
             next(actor)
             embds = self.embed_observations(observations)

@@ -109,7 +109,7 @@ class NavVanillaTransformer(BaseModel):
         drop_p,
         weight_decay,
         max_trajectory_length,
-        ln_mode,
+        ln_mode="post",
         *args,
         **kwargs,
     ):

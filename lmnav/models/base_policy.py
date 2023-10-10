@@ -55,6 +55,7 @@ def instantiate_model(cfg, load_ckpts=True, writer=None, store=None):
     try:
         model = get_class(cfg._target_)(**inputs)
     except Exception as e:
+        print(f"An error ocurred while loading the model: {e}")
         import pdb
 
         pdb.set_trace()
