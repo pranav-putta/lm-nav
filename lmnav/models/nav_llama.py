@@ -19,6 +19,7 @@ from lmnav.common.episode_processor import (
 )
 
 from lmnav.common.registry import registry
+from lmnav.common.utils import convert_weights_to_fp16
 from lmnav.models.blip2 import Blip2Base, disabled_train
 from lmnav.models.modeling_llama import LlamaForCausalLM
 
@@ -103,6 +104,7 @@ class NavLLAMA(Blip2Base):
 
         if self.action_head_mode == "act_linear":
             self.action_head = nn.Linear(self.hidden_size, 4)
+            convert_weights_to_fp16(self.action_head)
         elif self.action_head_mode == "lm" and self.action_head_mode == "lm_slice":
             pass
 
