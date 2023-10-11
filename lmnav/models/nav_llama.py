@@ -290,7 +290,7 @@ class NavLLAMA(Blip2Base):
             [(self.tokens_per_img + 1) * (T - i - 1) + 2 for i in range(T)]
         ).to(self.device)
 
-        act_hidden_states = outputs.logits[-1][:, -act_positions]
+        act_hidden_states = outputs.hidden_states[-1][:, -act_positions]
         # construct action logits
         if self.action_head_mode == "act_linear":
             act_logits = self.action_head(act_hidden_states)
