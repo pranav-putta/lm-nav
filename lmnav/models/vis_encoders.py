@@ -269,7 +269,7 @@ class CLIPVisualEncoder(VisualEncoder):
 
         print("Loading CLIP visual encoder...")
         self.model = CLIPVisionModel.from_pretrained(vit_model)
-        self.model = torch.compile(self.model)
+        # self.model = torch.compile(self.model)
         self._vis_processor = CustomCLIPVisualProcessor()
 
         if freeze_vit:

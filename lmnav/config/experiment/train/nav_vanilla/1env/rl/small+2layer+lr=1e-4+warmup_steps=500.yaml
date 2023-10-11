@@ -31,9 +31,12 @@ exp:
 
 train:
   steps: 10_000
+  gamma: 0.99
+  max_grad_norm: 1.0
   num_envs: 24
   minibatch_size: 24
   num_grad_accums: 1
+  ratio_threshold: 10
 
   num_rollout_steps: 200
   ppo_epochs: 2

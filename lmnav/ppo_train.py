@@ -4,9 +4,6 @@ import pdb
 
 # from tqdm import tqdm
 from torch.distributed.elastic.multiprocessing.errors import record
-from lmnav.common.utils import catchtime, find_tensors
-from operator import add
-from collections import Counter
 from functools import reduce
 import math
 import os
@@ -22,27 +19,17 @@ import time
 import numpy as np
 from habitat_baselines.utils.common import batch_obs
 
-from pprint import pprint
 from lmnav.common.utils import all_gather, all_reduce, sum_dict
-from lmnav.config.default_structured_configs import ArtifactConfig
 from lmnav.dataset.data_gen import _init_envs
-from lmnav.common.episode_processor import apply_transforms_inputs
-from lmnav.common.episode_processor import (
-    apply_transforms_actions,
-    apply_transforms_images,
-    apply_transforms_inputs,
-    extract_inputs_from_dataset,
-)
+from lmnav.common.episode_processor import apply_transforms_images
+
 
 from habitat import logger
 from hydra.utils import instantiate
 from torch.nn.parallel import DistributedDataParallel as DDP
 from lmnav.config.default import get_config
 from lmnav.common.rollout_storage import RolloutStorage
-from lmnav.common.registry import registry
 from lmnav.models.base_policy import instantiate_model
-from lmnav.models.ppo_agent import PPOAgent
-from lmnav.models.linear_head import LinearHead
 from lmnav.common.lr_utils import get_lr_schedule_lambda
 
 from habitat.config import read_write
@@ -55,10 +42,6 @@ from habitat_baselines.rl.ddppo.ddp_utils import (
 import warnings
 
 warnings.filterwarnings("ignore")
-
-import pprofile
-
-profiler = pprofile.Profile()
 
 
 def entropy_from_logits(logits):
@@ -286,7 +269,7 @@ class PPOTrainer:
         self.cumstats = ckpt_state_dict["stats"]
         self.step = self.cumstats["step"]
 
-    def save_checkpoint(self, filename):
+    def save_checkpoint(self, filename, archive_artifact=True):
         # only save parameters that have been updated
         param_grad_dict = {k: v.requires_grad for k, v in self.model.named_parameters()}
 
@@ -306,10 +289,11 @@ class PPOTrainer:
         ckpt_filepath = os.path.join(self.exp_folder, "ckpts", filename)
         torch.save(save_obj, ckpt_filepath)
 
-        artifact_name = self.config.train.store_artifact.name
-        self.writer.save_artifact(
-            artifact_name, "model", os.path.abspath(ckpt_filepath)
-        )
+        if archive_artifact:
+            artifact_name = self.config.train.store_artifact.name
+            self.writer.save_artifact(
+                artifact_name, "model", os.path.abspath(ckpt_filepath)
+            )
 
     def embed_observations(self, observations):
         observations = batch_obs(observations, self.device)
@@ -510,15 +494,20 @@ class PPOTrainer:
         return pg_loss, self.config.train.vf_coef * vf_loss, flatten_dict(stats)
 
     def train_ppo_step(self):
-        stats = {"metrics/frames": 0, "metrics/rollouts_wait_time": 0.0}
+        time_ppo_start = time.time()
+
+        stats = {
+            "metrics/frames": 0,
+            "metrics/rollouts_wait_time": 0.0,
+            "metrics/fps": 0.0,
+        }
 
         # first collect environment samples
-        rollouts_start_time = time.time()
         next(self.sample_generator)
 
         rgbs, goals, actions, rewards = self.rollouts.generate_samples()
-        rollouts_end_time = time.time()
-        stats["metrics/rollouts_wait_time"] = rollouts_end_time - rollouts_start_time
+        time_rollouts_end = time.time()
+        stats["metrics/rollouts_wait_time"] = time_rollouts_end - time_ppo_start
 
         T = self.config.train.num_rollout_steps
         minibatch_size = self.config.train.minibatch_size
@@ -642,6 +631,8 @@ class PPOTrainer:
             k: v / len(cum_train_stats_l) for k, v in dict_cum_train_stats.items()
         }
 
+        time_ppo_end = time.time()
+        stats["metrics/fps"] = stats["metrics/frames"] / (time_ppo_end - time_ppo_start)
         return {**dict_cum_train_stats, **stats}
 
     def train(self):
@@ -659,11 +650,9 @@ class PPOTrainer:
                 self.writer.write(stats)
                 if self.step % self.config.train.ckpt_freq == 0:
                     ckpt_num = self.step // self.config.train.ckpt_freq
-                    filename = f"ckpt.{ckpt_num}.pth"
+                    self.save_checkpoint(f"ckpt.{ckpt_num}.pth", archive_artifact=True)
                 else:
-                    filename = "latest.pth"
-
-                self.save_checkpoint(filename)
+                    self.save_checkpoint("latest.pth", archive_artifact=False)
 
             self.step += 1
 

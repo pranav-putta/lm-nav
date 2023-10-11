@@ -260,9 +260,6 @@ class NavVanillaTransformer(BaseModel):
         return optim_groups
 
     def forward_with_embds(self, *args):
-        import pdb
-
-        pdb.set_trace()
         return self.forward(*args, vis_embedded=True)
 
     def forward(self, rgbs_t, goals_t, actions_t, mask_t, vis_embedded=False):
@@ -271,12 +268,11 @@ class NavVanillaTransformer(BaseModel):
         goals_t = [B, C, 1, H, W]
         actions_t = [B, T]
         """
-        B, T = actions_t.shape
         rgbs_t, goals_t, actions_t, mask_t = map(
             lambda t: t.to(self.device), (rgbs_t, goals_t, actions_t, mask_t)
         )
         actions_t = actions_t.long()
-        targets = actions_t.masked_fill_(~mask_t, -100).detach().clone()
+        targets = actions_t.detach().clone().masked_fill_(~mask_t, -100)
 
         # if visual inputs have already been embedded through visual encoder, pass through
         if not vis_embedded:
