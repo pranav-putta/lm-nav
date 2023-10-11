@@ -17,6 +17,7 @@ import contextlib
 
 import logging
 import os
+from vc_models.models.vit import model_utils as vc_model_utils
 
 
 class LayerNorm(nn.LayerNorm):
@@ -225,6 +226,58 @@ class QformerVisualEncoder(VisualEncoder):
             return 32
 
 
+class VC1VisualProcessor:
+    def __init__(self, transform):
+        self._transform = transform
+
+    def transform(self, imgs):
+        imgs = einops.rearrange(imgs, "c b h w -> b c h w")
+        imgs = self._transform(imgs)
+        imgs = einops.rearrange(imgs, "b c h w -> c b h w")
+        return imgs
+
+
+class VC1VisualEncoder(VisualEncoder):
+    def __init__(self, vit_precision, vit_model, freeze_vit, *args, **kwargs):
+        super().__init__()
+
+        print("Loading VC1 visual encoder...")
+        model, hidden_dim, transforms, _ = vc_model_utils.load_model(vit_model)
+        self.model = model
+        self._vis_processor = VC1VisualProcessor(transforms)
+        self._hidden_dim = hidden_dim
+
+        if freeze_vit:
+            for param in self.model.parameters():
+                param.requires_grad = False
+
+        if vit_precision == "fp16":
+            convert_weights_to_fp16(self.model)
+
+    def embed_visual(self, img):
+        with self.maybe_autocast():
+            img = img.to(self.device)
+            out = self.model(img)
+            image_embeds = einops.rearrange(out, "b h -> b 1 h")
+            image_atts = torch.ones(
+                image_embeds.size()[:-1], dtype=torch.long, device=self.device
+            )
+
+        return image_embeds, image_atts
+
+    @property
+    def vis_processor(self):
+        return self._vis_processor
+
+    @property
+    def hidden_size(self):
+        return self._hidden_dim
+
+    @property
+    def num_tokens(self):
+        return 1
+
+
 class CustomCLIPVisualProcessor:
     def __init__(self) -> None:
         self.transformation = transforms.Compose(
@@ -281,6 +334,7 @@ class CLIPVisualEncoder(VisualEncoder):
 
     def embed_visual(self, img):
         with self.maybe_autocast():
+            img = img.to(self.device)
             out = self.model(pixel_values=img)
             out = out.pooler_output  # [b h]
             image_embeds = einops.rearrange(out, "b h -> b 1 h")

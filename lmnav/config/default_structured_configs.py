@@ -81,6 +81,14 @@ class CLIPVisualEncoderConfig(BaseVisualEncoderConfig):
 
 
 @dataclass
+class VC1VisualEncoderConfig(BaseVisualEncoderConfig):
+    _target_: str = "lmnav.models.vis_encoders.VC1VisualEncoder"
+    vit_precision: str = "fp16"
+    vit_model: str = "vc1_vitl"
+    freeze_vit: bool = True
+
+
+@dataclass
 class BasePolicyConfig(BaseModelConfig):
     pass
 
@@ -119,6 +127,7 @@ class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
 
     llama_model: str = "meta-llama/Llama-2-7b-chat-hf"
     max_trajectory_length: int = MISSING
+    action_head_mode: str = "lm"
 
 
 @dataclass
@@ -301,6 +310,7 @@ cs.store(group="models", name="linear", node=LinearHeadPolicyConfig)
 cs.store(group="models/vis_encoder", name="base", node=BaseVisualEncoderConfig)
 cs.store(group="models/vis_encoder", name="qformer", node=QformerVisualEncoderConfig)
 cs.store(group="models/vis_encoder", name="clip", node=CLIPVisualEncoderConfig)
+cs.store(group="models/vis_encoder", name="vc1", node=VC1VisualEncoderConfig)
 
 cs.store(group="dataset", name="base", node=BaseDatasetConfig)
 cs.store(group="dataset", name="offline_episode", node=OfflineEpisodeDatasetConfig)

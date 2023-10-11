@@ -1,0 +1,61 @@
+# @package _global_
+
+defaults:
+  # set up habitat 
+  - /env@habitat_baselines: habitat_baselines
+  - /env@habitat: habitat 
+  - /dataset/imagenav/hm3d_1env
+    
+  # set up experiment misc.
+  - /exp: base
+  - /logger@exp.logger: wb
+   
+  # set up eval
+  - /runner@eval: eval
+  - /dataset@eval.dataset: offline_episode
+
+  # set up train
+  - /runner@train: bc
+  - /lr@train.lr_schedule: exponential
+  - /dataset@train.dataset: offline_episode
+  - /models/policy/nav_llama/vc1@train.policy: lora 
+ 
+  - _self_
+
+
+exp:
+  group: "lmnav-1env"
+  job_type: "bc"
+  tags: ["lora", "vc1"]
+
+train:
+  batch_size: 9
+  minibatch_size: 3
+  num_grad_accums: 3
+
+  steps: 10_000
+  episodes_per_batch: 6
+
+  lr_schedule:
+    lr: 2.5e-4
+    gamma: 0.9995
+  policy:
+    action_head_mode: 'act_linear'
+    max_trajectory_length: 200    
+  dataset:
+    artifact: 
+      name: "offline_00744"
+      version: "latest"
+  store_artifact:
+    name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
+
+ 
+eval:
+  policy: 
+    load_artifact:
+      name: ${....train.store_artifact.name}
+      version: "latest"
+  num_episodes: 25
+  save_videos: True
+  deterministic: False
+  num_envs: 10
