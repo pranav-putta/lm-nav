@@ -257,7 +257,7 @@ class BCTrainRunner:
             outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t, vis_embedded=True)
             loss, logits = outputs.loss, outputs.logits
             probs = F.softmax(logits, dim=-1)
-            print(probs[0, :15])
+
             stats["learner/loss"] += loss.item()
 
             # compute levenshtein distances
