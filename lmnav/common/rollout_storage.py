@@ -28,19 +28,32 @@ class RolloutStorage:
         self.dones = torch.zeros(
             num_envs, max_steps + 1, dtype=torch.bool, device=device
         )
+        self.successes = torch.zeros(
+            num_envs, max_steps, dtype=torch.bool, device=device
+        )
         self.rewards = torch.zeros(
-            num_envs, max_steps + 1, dtype=torch.float16, device=device
+            num_envs, max_steps + 1, dtype=torch.float, device=device
         )
 
         self.current_step_idx = -1
 
-    def insert(self, next_rgbs, next_goals, dones=None, actions=None, rewards=None):
+    def insert(
+        self,
+        next_rgbs,
+        next_goals,
+        dones=None,
+        actions=None,
+        rewards=None,
+        successes=None,
+    ):
         """insert observations, dones, and actions into rollout storage tensors"""
         self.rgbs[:, self.current_step_idx + 1] = next_rgbs
         self.goals[:, self.current_step_idx + 1] = next_goals
 
         if dones is not None:
             self.dones[:, self.current_step_idx] = dones
+        if successes is not None:
+            self.successes[:, self.current_step_idx] = successes
         if rewards is not None:
             self.rewards[:, self.current_step_idx] = rewards
         if actions is not None:
@@ -66,6 +79,8 @@ class RolloutStorage:
             becaues the positional embedding needs to be shifted
 
         Again, this assumes that self.max_steps = model max trajectory
+
+        return rgbs, goals, actions, rewards, dones, successes
         """
         samples = []
         for b in range(self.num_envs):
@@ -77,18 +92,24 @@ class RolloutStorage:
 
             slices = [slice(ends[i] + 1, ends[i + 1] + 1) for i in range(len(ends) - 1)]
 
-            for s in slices:
-                samples.append(
-                    tuple(
-                        map(
-                            lambda t: t[b, s],
-                            (self.rgbs, self.goals, self.actions, self.rewards),
-                        )
+            samples += [
+                tuple(
+                    map(
+                        lambda t: t[b, s],
+                        (
+                            self.rgbs,
+                            self.goals,
+                            self.actions,
+                            self.rewards,
+                            self.dones,
+                            self.successes,
+                        ),
                     )
                 )
+                for s in slices
+            ]
 
-        rgbs, goals, actions, rewards = zip(*samples)
-        return rgbs, goals, actions, rewards
+        return zip(*samples)
 
     def to_cpu(self):
         map(

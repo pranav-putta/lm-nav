@@ -2,7 +2,6 @@ from collections.abc import Mapping
 from itertools import product
 import pdb
 
-# from tqdm import tqdm
 from torch.distributed.elastic.multiprocessing.errors import record
 from functools import reduce
 import math
@@ -176,7 +175,13 @@ class PPOTrainer:
             device=self.device,
         )
         self.step = 0
-        self.cumstats = {"step": 0, "metrics/total_frames": 0}
+        self.cumstats = {
+            "step": 0,
+            "learner/total_episodes_done": 0,
+            "learner/total_episodes_successful": 0.0,
+            "learner/total_success_rate": 0.0,
+            "metrics/total_frames": 0,
+        }
 
         actor_optim_params = list(
             filter(lambda p: p.requires_grad, self.model.module.actor.parameters())
@@ -252,7 +257,21 @@ class PPOTrainer:
         episode_stats = {k: episode_stats[i].item() for i, k in enumerate(stats_keys)}
         self.cumstats["step"] = self.step
         self.cumstats["metrics/total_frames"] += int(
-            episode_stats["metrics/frames"] * torch.distributed.get_world_size()
+            episode_stats["metrics/frames"] * self.world_size
+        )
+        self.cumstats["learner/total_episodes_done"] += int(
+            episode_stats["learner/num_episodes_done"] * self.world_size
+        )
+        self.cumstats["learner/total_episodes_successful"] += int(
+            episode_stats["learner/num_episodes_successful"] * self.world_size
+        )
+        self.cumstats["learner/total_success_rate"] = (
+            (
+                self.cumstats["learner/total_episodes_successful"]
+                / self.cumstats["learner/total_episodes_done"]
+            )
+            if self.cumstats["learner/total_episodes_done"] > 0
+            else 0.0
         )
         return {**self.cumstats, **episode_stats}
 
@@ -355,12 +374,17 @@ class PPOTrainer:
                     dones, rewards, actions = map(
                         lambda l: torch.tensor(l), (dones, rewards, actions)
                     )
+
+                    successes = torch.tensor(
+                        [info["success"] for info in infos], dtype=torch.bool
+                    )
                     self.rollouts.insert(
                         next_rgbs=rgb_embds,
                         next_goals=goal_embds,
                         dones=dones,
                         rewards=rewards,
                         actions=actions,
+                        successes=successes,
                     )
 
             del action_generator
@@ -500,14 +524,22 @@ class PPOTrainer:
             "metrics/frames": 0,
             "metrics/rollouts_wait_time": 0.0,
             "metrics/fps": 0.0,
+            "learner/num_episodes_done": 0,
+            "learner/num_episodes_successful": 0,
         }
 
         # first collect environment samples
         next(self.sample_generator)
 
-        rgbs, goals, actions, rewards = self.rollouts.generate_samples()
+        (
+            rgbs,
+            goals,
+            actions,
+            rewards,
+            dones,
+            successes,
+        ) = self.rollouts.generate_samples()
         time_rollouts_end = time.time()
-        stats["metrics/rollouts_wait_time"] = time_rollouts_end - time_ppo_start
 
         T = self.config.train.num_rollout_steps
         minibatch_size = self.config.train.minibatch_size
@@ -516,8 +548,13 @@ class PPOTrainer:
         collected_frames = sum([len(t) for t in rgbs])
         assert collected_frames == T * self.envs.num_envs
 
-        # gather all episodes from other gpus
         stats["metrics/frames"] = collected_frames
+        stats["metrics/rollouts_wait_time"] = time_rollouts_end - time_ppo_start
+
+        stats["learner/num_episodes_done"] = sum([torch.sum(d) for d in dones])
+        stats["learner/num_episodes_successful"] = sum(
+            [torch.sum(s) for s in successes]
+        )
 
         # construct batch
         mask_t = torch.stack(
@@ -538,6 +575,7 @@ class PPOTrainer:
             [F.pad(t, (0, T - t.shape[0]), "constant", 0) for t in rewards]
         )
 
+        # gather all episodes from other gpus
         rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(
             lambda t: all_gather(t, self.device, self.world_size),
             (rgbs_t, goals_t, actions_t, rewards_t, mask_t),
