@@ -102,12 +102,6 @@ class NavLLAMA(Blip2Base):
                 torch_dtype=torch.bfloat16,
             )
 
-        if self.action_head_mode == "act_linear":
-            self.action_head = nn.Linear(self.hidden_size, 4)
-            convert_weights_to_fp16(self.action_head)
-        elif self.action_head_mode == "lm" and self.action_head_mode == "lm_slice":
-            pass
-
         for name, param in self.llama_model.named_parameters():
             param.requires_grad = False
         logging.info("Loading LLAMA Done")
@@ -116,6 +110,12 @@ class NavLLAMA(Blip2Base):
         self.llama_proj = nn.Linear(
             self.vis_encoder.hidden_size, self.llama_model.config.hidden_size
         )
+
+        if self.action_head_mode == "act_linear":
+            self.action_head = nn.Linear(self.hidden_size, 4)
+            convert_weights_to_fp16(self.action_head)
+        elif self.action_head_mode == "lm" and self.action_head_mode == "lm_slice":
+            pass
 
         if freeze_llama_proj:
             for name, param in self.llama_proj.named_parameters():
