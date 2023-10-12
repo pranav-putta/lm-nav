@@ -36,7 +36,7 @@ from lmnav.config.default import get_config
 from lmnav.common.utils import all_gather, all_reduce
 
 from lmnav.models import *
-from lmnav.dataset.offline_episode_dataset import OfflineEpisodeDataset
+from lmnav.dataset.datasets import OfflineEpisodeDataset
 from lmnav.models.base_policy import instantiate_model
 from lmnav.processors import *
 from lmnav.common.episode_processor import (
@@ -44,7 +44,6 @@ from lmnav.common.episode_processor import (
 )
 
 from lmnav.common.writer import *
-from lmnav.dataset.offline_episode_dataset import *
 
 
 os.environ["MAGNUM_LOG"] = "quiet"
@@ -127,6 +126,32 @@ class BCTrainRunner:
         os.makedirs(self.exp_folder, exist_ok=True)
         os.makedirs(os.path.join(self.exp_folder, "ckpts"), exist_ok=True)
 
+        # set up writer and scatter all relevant data to worker nodes
+        if rank0_only():
+            self.writer.open(self.config)
+            data_files = self.writer.load_dataset(self.config.train.dataset)
+            self.artifact_store.set("data_files", ";".join(data_files))
+        else:
+            self.artifact_store.wait(["data_files"])
+            data_files = (
+                self.artifact_store.get("data_files").decode("utf-8").split(";")
+            )
+
+        # set up dataset
+        self.transforms = instantiate(self.config.train.transforms)
+        self.dataset = OfflineEpisodeDataset(self.transforms, files=data_files)
+
+        self.sampler = DistributedResumableSampler(
+            self.dataset, self.rank, self.world_size
+        )
+        self.data_loader = DataLoader(
+            self.dataset,
+            batch_size=self.config.train.episodes_per_batch,
+            collate_fn=lambda x: x,
+            num_workers=1,
+            sampler=self.sampler,
+        )
+
         self.agent = self.setup_student()
 
         # set up optimizer
@@ -144,29 +169,6 @@ class BCTrainRunner:
                 for _ in range(len(optim_groups))
             ],
         )
-        # set up writer and scatter all relevant data to worker nodes
-        if rank0_only():
-            self.writer.open(self.config)
-            data_files = self.writer.load_dataset(self.config.train.dataset)
-            self.artifact_store.set("data_files", ";".join(data_files))
-        else:
-            self.artifact_store.wait(["data_files"])
-            data_files = (
-                self.artifact_store.get("data_files").decode("utf-8").split(";")
-            )
-
-        # set up dataset
-        self.dataset = OfflineEpisodeDataset(files=data_files)
-        self.sampler = DistributedResumableSampler(
-            self.dataset, self.rank, self.world_size
-        )
-        self.data_loader = DataLoader(
-            self.dataset,
-            batch_size=self.config.train.episodes_per_batch,
-            collate_fn=lambda x: x,
-            num_workers=1,
-            sampler=self.sampler,
-        )
 
         self.step, self.epoch = 0, 0
         self.cumstats = {"step": 0, "epoch": 0, "metrics/total_frames": 0}
@@ -181,7 +183,6 @@ class BCTrainRunner:
             print("Starting train!")
 
     def setup_student(self):
-        # model = instantiate(self.config.train.policy)
         OmegaConf.resolve(self.config)
         model = instantiate_model(
             self.config.train.policy, writer=self.writer, store=self.artifact_store

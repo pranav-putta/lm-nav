@@ -27,8 +27,6 @@ from lmnav.processors import *
 from lmnav.common.episode_processor import apply_transforms_images
 
 from lmnav.common.writer import *
-from lmnav.dataset.offline_episode_dataset import *
-
 
 os.environ["MAGNUM_LOG"] = "quiet"
 os.environ["HABITAT_SIM_LOG"] = "quiet"

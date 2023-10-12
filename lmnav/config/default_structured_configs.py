@@ -194,6 +194,17 @@ class OfflineEpisodeDatasetConfig(BaseDatasetConfig):
     _target_: str = "datasets.offline_episode"
 
 
+### DATA TRANSFORM CONFIGS ###
+@dataclass
+class BaseDataTransformConfig:
+    _target_: str = "lmnav.dataset.transforms.BaseDataTransform"
+
+
+@dataclass
+class ReverseTurnsTransformConfig(BaseDataTransformConfig):
+    _target_: str = "lmnav.dataset.transforms.ReverseTurnsTransform"
+
+
 ### TRAINER CONFIGS ###
 @dataclass
 class BaseLRConfig:
@@ -242,12 +253,13 @@ class TrainRunnerConfig(BaseRunnerConfig):
     num_grad_accums: int = MISSING
     max_grad_norm: Optional[float] = 1.2
     ckpt_freq: int = 50
+    lr_schedule: BaseLRConfig = MISSING
 
 
 @dataclass
 class BCTrainRunnerConfig(TrainRunnerConfig):
     episodes_per_batch: int = MISSING
-    lr_schedule: BaseLRConfig = MISSING
+    transforms: BaseDataTransformConfig = MISSING
 
 
 @dataclass
@@ -315,6 +327,9 @@ cs.store(group="models/vis_encoder", name="vc1", node=VC1VisualEncoderConfig)
 cs.store(group="dataset", name="base", node=BaseDatasetConfig)
 cs.store(group="dataset", name="offline_episode", node=OfflineEpisodeDatasetConfig)
 
+cs.store(group="transforms", name="base", node=BaseDataTransformConfig)
+cs.store(group="transforms", name="reverse_turns", node=ReverseTurnsTransformConfig)
+
 cs.store(group="lr", name="base", node=BaseLRConfig)
 cs.store(group="lr", name="constant", node=ConstantLRConfig)
 cs.store(group="lr", name="exponential", node=ExponentialLRConfig)
@@ -323,7 +338,7 @@ cs.store(group="lr", name="actor_critic", node=ActorCriticLRConfig)
 
 cs.store(group="runner", name="base", node=BaseRunnerConfig)
 cs.store(group="runner", name="base_train", node=TrainRunnerConfig)
-cs.store(group="runner", name="bc", node=BCTrainRunnerConfig)
+cs.store(group="runner", name="base_bc", node=BCTrainRunnerConfig)
 cs.store(group="runner", name="eval", node=EvalRunnerConfig)
 cs.store(group="runner", name="ppo", node=PPOTrainRunnerConfig)
 

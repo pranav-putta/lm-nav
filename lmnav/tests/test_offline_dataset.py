@@ -9,7 +9,7 @@ import time
 import unittest
     
 from collections import namedtuple
-from lmnav.offline_episode_dataset import OfflineEpisodeDataset
+from lmnav.datasets import OfflineEpisodeDataset
 
    
 class TestOfflineDataset(unittest.TestCase):
