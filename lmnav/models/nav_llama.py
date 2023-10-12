@@ -286,11 +286,13 @@ class NavLLAMA(Blip2Base):
         )
         act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
         T = self.max_trajectory_length
+
         act_positions = torch.tensor(
             [(self.tokens_per_img + 1) * (T - i - 1) + 2 for i in range(T)]
         ).to(self.device)
 
         act_hidden_states = outputs.hidden_states[-1][:, -act_positions]
+
         # construct action logits
         if self.action_head_mode == "act_linear":
             act_logits = self.action_head(act_hidden_states)

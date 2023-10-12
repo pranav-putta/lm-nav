@@ -34,16 +34,12 @@ from lmnav.common.lr_utils import get_lr_schedule_lambda
 from lmnav.common.resumable_random_sampler import DistributedResumableSampler
 from lmnav.config.default import get_config
 from lmnav.common.utils import all_gather, all_reduce
-from lmnav.config.default_structured_configs import ArtifactConfig
 
-from lmnav.dataset.data_gen import _init_envs
 from lmnav.models import *
 from lmnav.dataset.offline_episode_dataset import OfflineEpisodeDataset
 from lmnav.models.base_policy import instantiate_model
 from lmnav.processors import *
 from lmnav.common.episode_processor import (
-    apply_transforms_images,
-    apply_transforms_inputs,
     construct_subsequences,
 )
 
