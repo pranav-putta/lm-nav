@@ -40,8 +40,8 @@ class ExperimentConfig:
 @dataclass
 class ArtifactConfig:
     name: str = "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
+    dirpath: Optional[str] = None
     version: str = MISSING
-    dirpath: Optional[str] = MISSING
 
 
 ### MODEL CONFIGS ###

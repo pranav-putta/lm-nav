@@ -42,7 +42,10 @@ def instantiate_model(cfg, load_ckpts=True, writer=None, store=None):
     # recursively instantiate all models
     inputs = {}
     for k, v in cfg.items():
-        if not isinstance(v, omegaconf.DictConfig):
+        if (
+            not isinstance(v, omegaconf.DictConfig)
+            or cfg[k].get("_target_", None) is None
+        ):
             inputs[k] = v
             continue
         if v.get("is_model", False):
