@@ -15,15 +15,8 @@ class ReverseTurnsTransform(BaseDataTransform):
         ends = (nums_tensor[:-1] == 2) & (nums_tensor[1:] != 2)
 
         # Add position for the case when the tensor starts or ends with a 2
-        if nums_tensor[0] == 2:
-            starts = torch.cat([torch.tensor([True]), starts])
-        else:
-            starts = torch.cat([torch.tensor([False]), starts])
-
-        if nums_tensor[-1] == 2:
-            ends = torch.cat([ends, torch.tensor([True])])
-        else:
-            ends = torch.cat([ends, torch.tensor([False])])
+        starts = torch.cat([nums_tensor[0] == 2, starts])
+        ends = torch.cat([ends, nums_tensor[-1] == 2])
 
         # Extract the indices
         start_indices = torch.nonzero(starts).squeeze(dim=-1).tolist()
