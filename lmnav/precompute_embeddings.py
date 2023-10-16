@@ -1,6 +1,7 @@
 import argparse
 import torch
 import einops
+import math
 
 from lmnav.config.default import get_config
 
@@ -29,12 +30,14 @@ def run(config, rank, world_size):
     dirpath = os.path.join(config.generator.store_artifact.dirpath, "00774_clip")
     os.makedirs(dirpath, exist_ok=True)
 
-    pbar = tqdm(total=total, desc="Computing embeddings for episodes...")
+    pbar = tqdm(
+        total=math.ceil(total / world_size), desc="Computing embeddings for episodes..."
+    )
     while i < total:
         current_batch_size = 0
         episodes = []
 
-        while current_batch_size < 2048 and i < total:
+        while current_batch_size < 3000 and i < total:
             if not os.path.exists(os.path.join(dirpath, f"data.{i}.pth")):
                 episodes.append(dataset[i])
                 current_batch_size += episodes[-1]["rgb"].shape[0]
@@ -47,7 +50,7 @@ def run(config, rank, world_size):
         def apply_fn_in_batches(tensor, fn, max_batch_size):
             out = list(
                 map(
-                    lambda i: fn(tensor[i : i + max_batch_size]),
+                    lambda j: fn(tensor[j : j + max_batch_size]),
                     range(0, tensor.shape[0], max_batch_size),
                 )
             )
@@ -70,16 +73,16 @@ def run(config, rank, world_size):
             goals_e, [episode["imagegoal"].shape[0] for episode in episodes]
         )
 
-        for i in range(len(episodes)):
-            episodes[i]["rgb"] = rgbs_e[i]
-            episodes[i]["imagegoal"] = goals_e[i]
-            del episodes[i]["depth"]
+        for j in range(len(episodes)):
+            episodes[j]["rgb"] = rgbs_e[j].clone()
+            episodes[j]["imagegoal"] = goals_e[j].clone()
+            del episodes[j]["depth"]
 
             torch.save(
-                episodes[i],
+                episodes[j],
                 os.path.join(
                     dirpath,
-                    f"data.{i}.pt",
+                    f"data.{j}.pt",
                 ),
             )
         pbar.update(len(episodes))
