@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import einops
 from torch import nn
-from transformers import CLIPModel, CLIPProcessor, CLIPVisionModel
+from transformers import CLIPVisionModel
 from torchvision import transforms
 
 from lmnav.models.base_model import BaseModel
@@ -29,8 +29,11 @@ class LayerNorm(nn.LayerNorm):
         return ret.type(orig_type)
 
 
-class VisualEncoder(BaseModel):
-    def embed_visual(self, img):
+class ObservationEncoder(BaseModel):
+    def embed_obs(self, obs):
+        """
+        consumes a tensordict of observations and computes an embedding
+        """
         raise NotImplementedError("embed_visual needs to be implemented")
 
     def maybe_autocast(self, dtype=torch.float16):
@@ -56,7 +59,7 @@ class VisualEncoder(BaseModel):
         raise NotImplementedError("num_tokens needs to be implemented")
 
 
-class QformerVisualEncoder(VisualEncoder):
+class QformerObservationEncoder(ObservationEncoder):
     def __init__(
         self,
         image_size,
@@ -138,7 +141,7 @@ class QformerVisualEncoder(VisualEncoder):
                 self_per_cross_attn=qformer_compressor_cfg.self_per_cross_attn,
             )
 
-    def embed_visual(self, image):
+    def embed_obs(self, image):
         """expects tensor of shape [(b t) c h w]"""
         device = image.device
         with self.maybe_autocast():
@@ -237,27 +240,31 @@ class VC1VisualProcessor:
         return imgs
 
 
-class VC1VisualEncoder(VisualEncoder):
-    def __init__(self, vit_precision, vit_model, freeze_vit, *args, **kwargs):
+class VC1ObservationEncoder(ObservationEncoder):
+    def __init__(
+        self, vit_precision, vit_model, freeze_backbone, max_batch_size, *args, **kwargs
+    ):
         super().__init__()
 
         print("Loading VC1 visual encoder...")
         model, hidden_dim, transforms, _ = vc_model_utils.load_model(vit_model)
-        self.model = model
-        self._vis_processor = VC1VisualProcessor(transforms)
+        self.backbone = model
+        torch.compile(self.backbone)
+
+        self.preprocess_transform = VC1VisualProcessor(transforms)
         self._hidden_dim = hidden_dim
 
-        if freeze_vit:
-            for param in self.model.parameters():
+        if freeze_backbone:
+            for param in self.backbone.parameters():
                 param.requires_grad = False
 
         if vit_precision == "fp16":
-            convert_weights_to_fp16(self.model)
+            convert_weights_to_fp16(self.backbone)
 
-    def embed_visual(self, img):
+    def embed_obs(self, img):
         with self.maybe_autocast():
             img = img.to(self.device)
-            out = self.model(img)
+            out = self.backbone(img)
             image_embeds = einops.rearrange(out, "b h -> b 1 h")
             image_atts = torch.ones(
                 image_embeds.size()[:-1], dtype=torch.long, device=self.device
@@ -278,12 +285,31 @@ class VC1VisualEncoder(VisualEncoder):
         return 1
 
 
-class CustomCLIPVisualProcessor:
-    def __init__(self) -> None:
-        self.transformation = transforms.Compose(
+class CLIPObservationEncoder(ObservationEncoder):
+    def __init__(
+        self,
+        vit_precision,
+        vit_model,
+        freeze_backbone,
+        max_batch_size,
+        fuse_rgb_goal,
+        *args,
+        **kwargs
+    ):
+        super().__init__()
+
+        print("Loading CLIP visual encoder...")
+        self.max_batch_size = max_batch_size
+        self.fuse_rgb_goal = fuse_rgb_goal
+
+        self.backbone = CLIPVisionModel.from_pretrained(vit_model)
+        self.backbone = torch.compile(self.backbone)
+        self.preprocess_transform = transforms.Compose(
             [
                 transforms.Resize(
-                    224, interpolation=transforms.InterpolationMode.BICUBIC
+                    224,
+                    interpolation=transforms.InterpolationMode.BICUBIC,
+                    antialias=True,
                 ),
                 transforms.CenterCrop(224),
                 transforms.ConvertImageDtype(torch.float),
@@ -296,53 +322,89 @@ class CustomCLIPVisualProcessor:
             ]
         )
 
-    def transform(self, imgs):
-        imgs = einops.rearrange(imgs, "c b h w -> b c h w")
-        imgs = self.transformation(imgs)
-        imgs = einops.rearrange(imgs, "b c h w -> c b h w")
-        return imgs
-
-
-class CLIPVisualProcessor:
-    def __init__(self, clip_processor):
-        self._processor = clip_processor
-
-    def transform(self, imgs, **kwargs):
-        """imgs in shape [ c (b t) h w ]"""
-        imgs = einops.rearrange(imgs, "c b h w -> b c h w")
-        imgs = self._processor(images=imgs, return_tensors="pt", **kwargs)
-        imgs = imgs["pixel_values"]
-        imgs = einops.rearrange(imgs, "b c h w -> c b h w")
-        return imgs
-
-
-class CLIPVisualEncoder(VisualEncoder):
-    def __init__(self, vit_precision, vit_model, freeze_vit, *args, **kwargs):
-        super().__init__()
-
-        print("Loading CLIP visual encoder...")
-        self.model = CLIPVisionModel.from_pretrained(vit_model)
-        # self.model = torch.compile(self.model)
-        self._vis_processor = CustomCLIPVisualProcessor()
-
-        if freeze_vit:
-            for param in self.model.parameters():
+        if freeze_backbone:
+            for param in self.backbone.parameters():
                 param.requires_grad = False
 
         if vit_precision == "fp16":
-            convert_weights_to_fp16(self.model)
+            convert_weights_to_fp16(self.backbone)
 
-    def embed_visual(self, img):
-        with self.maybe_autocast():
-            img = img.to(self.device)
-            out = self.model(pixel_values=img)
-            out = out.pooler_output  # [b h]
-            image_embeds = einops.rearrange(out, "b h -> b 1 h")
-            image_atts = torch.ones(
-                image_embeds.size()[:-1], dtype=torch.long, device=self.device
+        if fuse_rgb_goal:
+            self.num_patches = self.backbone.vision_model.embeddings.num_patches
+            num_compression_channels = int((self.hidden_size) / self.num_patches)
+
+            self.compression = nn.Sequential(
+                nn.Conv2d(
+                    self.hidden_size * 2,
+                    num_compression_channels,
+                    kernel_size=3,
+                    padding=1,
+                    bias=False,
+                ),
+                nn.GroupNorm(1, num_compression_channels),
+                nn.ReLU(True),
+                nn.Flatten(),
             )
 
-        return image_embeds, image_atts
+    def embed_obs(self, list_of_episodes):
+        """
+        obs is a TensorDict with keys rgb, depth, imagegoal
+        """
+
+        rgbs_l, goals_l = map(
+            lambda k: [
+                einops.rearrange(episode[k], "t h w c -> t c h w")
+                for episode in list_of_episodes
+            ],
+            ("rgb", "imagegoal"),
+        )
+        rgbs_t, goals_t = map(lambda t: torch.cat(t, dim=0), (rgbs_l, goals_l))
+
+        # compute embeddings for goals
+        x = torch.cat([goals_t, rgbs_t], dim=0).float()
+        x = self.preprocess_transform(x)
+
+        with self.maybe_autocast():
+            x = list(
+                map(
+                    lambda i: self.backbone(
+                        pixel_values=x[i : i + self.max_batch_size].to(self.device)
+                    ),
+                    range(0, x.shape[0], self.max_batch_size),
+                )
+            )
+        x = torch.cat([t.last_hidden_state for t in x])
+        goals_e, rgbs_e = x[: goals_t.shape[0]], x[goals_t.shape[0] :]
+        rgbs_e = torch.split(rgbs_e, [len(t) for t in rgbs_l])
+
+        if self.fuse_rgb_goal:
+            # fuse rgbs with goal
+            rgbs_fused = [
+                torch.cat(
+                    [
+                        rgbs_e[i],
+                        einops.repeat(goals_e[i], "... -> t ...", t=rgbs_e[i].shape[0]),
+                    ],
+                    dim=2,
+                )
+                for i in range(len(rgbs_e))
+            ]
+            rgbs_fused = torch.cat(rgbs_fused, dim=0)
+            rgbs_fused = rgbs_fused[:, 1:]
+            rgbs_fused = einops.rearrange(
+                rgbs_fused,
+                "n (p q) c -> n c p q",
+                p=int(self.num_patches**0.5),
+                q=int(self.num_patches**0.5),
+            )
+
+            rgbs_fused = self.compression(rgbs_fused)[:, None, :]
+            rgbs_fused = torch.split(rgbs_fused, [len(t) for t in rgbs_l])
+            goals_out = [goals_e[i, 0:1, None] for i in range(len(goals_l))]
+            return goals_out, rgbs_fused
+        else:
+            goals_e = [goals_e[i, 0:1, None] for i in range(len(goals_l))]
+            return goals_e, rgbs_e
 
     @property
     def vis_processor(self):
@@ -350,7 +412,7 @@ class CLIPVisualEncoder(VisualEncoder):
 
     @property
     def hidden_size(self):
-        return self.model.vision_model.config.hidden_size
+        return self.backbone.vision_model.config.hidden_size
 
     @property
     def num_tokens(self):

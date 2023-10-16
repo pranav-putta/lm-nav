@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
 
-from typing import Optional
+from typing import List, Optional
 from omegaconf import MISSING, OmegaConf
 import torch
 
@@ -52,40 +52,44 @@ class BaseModelConfig:
 
 
 @dataclass
-class BaseVisualEncoderConfig(BaseModelConfig):
+class BaseObservationEncoderConfig(BaseModelConfig):
     _target_: str = MISSING
     vis_processor: Optional[dict] = None
     image_size: int = 224
 
 
 @dataclass
-class QformerVisualEncoderConfig(BaseVisualEncoderConfig):
-    _target_: str = "lmnav.models.vis_encoders.QformerVisualEncoder"
+class QformerObservationEncoderConfig(BaseObservationEncoderConfig):
+    _target_: str = "lmnav.models.vis_encoders.QformerObservationEncoder"
     vit_precision: str = "fp16"
     vit_model: str = "eva_clip_g"
     drop_path_rate: int = 0
     use_grad_checkpoint: bool = False
     num_query_token: int = 32
-    freeze_vit: bool = True
+    freeze_backbone: bool = True
     freeze_qformer: bool = True
     qformer_compressor_cfg: Optional[dict] = None
     qformer_model: str = "https://storage.googleapis.com/sfr-vision-language-research/LAVIS/models/BLIP2/blip2_pretrained_flant5xxl.pth"
+    max_batch_size: int = 1024
 
 
 @dataclass
-class CLIPVisualEncoderConfig(BaseVisualEncoderConfig):
-    _target_: str = "lmnav.models.vis_encoders.CLIPVisualEncoder"
+class CLIPObservationEncoderConfig(BaseObservationEncoderConfig):
+    _target_: str = "lmnav.models.vis_encoders.CLIPObservationEncoder"
     vit_precision: str = "fp16"
     vit_model: str = "openai/clip-vit-large-patch14"
-    freeze_vit: bool = True
+    freeze_backbone: bool = True
+    max_batch_size: int = 1024
+    fuse_rgb_goal: bool = False
 
 
 @dataclass
-class VC1VisualEncoderConfig(BaseVisualEncoderConfig):
-    _target_: str = "lmnav.models.vis_encoders.VC1VisualEncoder"
+class VC1ObservationEncoderConfig(BaseObservationEncoderConfig):
+    _target_: str = "lmnav.models.vis_encoders.VC1ObservationEncoder"
     vit_precision: str = "fp16"
     vit_model: str = "vc1_vitl"
-    freeze_vit: bool = True
+    freeze_backbone: bool = True
+    max_batch_size: int = 3096
 
 
 @dataclass
@@ -118,7 +122,7 @@ class PPOAgentModelConfig(BaseModelConfig):
 class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
     _target_: str = "lmnav.models.nav_llama.NavLLAMA"
 
-    vis_encoder: BaseVisualEncoderConfig = MISSING
+    vis_encoder: BaseObservationEncoderConfig = MISSING
 
     freeze_llama_proj: bool = False
 
@@ -134,7 +138,7 @@ class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
 class BaseNavVanillaTransformerPolicyConfig(BasePolicyConfig):
     _target_: str = "lmnav.models.nav_vanilla.NavVanillaTransformer"
 
-    vis_encoder: BaseVisualEncoderConfig = MISSING
+    vis_encoder: BaseObservationEncoderConfig = MISSING
 
     d_hidden: int = 512
     d_head: int = 64
@@ -150,7 +154,7 @@ class BaseNavVanillaTransformerPolicyConfig(BasePolicyConfig):
 class BaseNavGRUPolicyConfig(BasePolicyConfig):
     _target_: str = "lmnav.models.nav_gru.NavGRU"
 
-    vis_encoder: BaseVisualEncoderConfig = MISSING
+    vis_encoder: BaseObservationEncoderConfig = MISSING
 
     d_hidden: int = 512
     n_layer: int = 2
@@ -198,6 +202,12 @@ class OfflineEpisodeDatasetConfig(BaseDatasetConfig):
 @dataclass
 class BaseDataTransformConfig:
     _target_: str = "lmnav.dataset.transforms.BaseDataTransform"
+
+
+@dataclass
+class SequentialDataTransformConfig:
+    _target_: str = "lmnav.dataset.transforms.SequentialDataTransform"
+    list_of_transforms: List[BaseDataTransformConfig] = MISSING
 
 
 @dataclass
@@ -319,10 +329,12 @@ cs.store(
 )
 cs.store(group="models", name="linear", node=LinearHeadPolicyConfig)
 
-cs.store(group="models/vis_encoder", name="base", node=BaseVisualEncoderConfig)
-cs.store(group="models/vis_encoder", name="qformer", node=QformerVisualEncoderConfig)
-cs.store(group="models/vis_encoder", name="clip", node=CLIPVisualEncoderConfig)
-cs.store(group="models/vis_encoder", name="vc1", node=VC1VisualEncoderConfig)
+cs.store(group="models/vis_encoder", name="base", node=BaseObservationEncoderConfig)
+cs.store(
+    group="models/vis_encoder", name="qformer", node=QformerObservationEncoderConfig
+)
+cs.store(group="models/vis_encoder", name="clip", node=CLIPObservationEncoderConfig)
+cs.store(group="models/vis_encoder", name="vc1", node=VC1ObservationEncoderConfig)
 
 cs.store(group="dataset", name="base", node=BaseDatasetConfig)
 cs.store(group="dataset", name="offline_episode", node=OfflineEpisodeDatasetConfig)

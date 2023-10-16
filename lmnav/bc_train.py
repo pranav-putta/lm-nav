@@ -189,7 +189,6 @@ class BCTrainRunner:
         )
 
         self.vis_encoder = model.vis_encoder
-        self.vis_processor = model.vis_encoder.vis_processor
 
         agent = model.to(self.device)
         agent.train()
@@ -267,40 +266,7 @@ class BCTrainRunner:
 
             loss.backward()
 
-        # extract rgb and goal lists from episodes
-        def preprocess_obs(k, max_batch_size):
-            # extract observation from episode dictionary
-            list_of_tensors = [
-                einops.rearrange(episode[k], "t h w c -> t c h w")
-                for episode in episodes
-            ]
-            # batch up tensors
-            x = torch.cat(list_of_tensors, dim=0)
-
-            # apply transforms
-            x = einops.rearrange(x, "t c h w -> c t h w")
-            x = x.float()
-            x = self.vis_processor.transform(x)
-            x = einops.rearrange(x, "c t h w -> t c 1 h w")
-
-            # forward pass in minibatches through visual encoder
-            x = torch.split(
-                torch.cat(
-                    [
-                        self.agent.module.embed_visual(x[i : i + max_batch_size])[0]
-                        for i in range(0, x.shape[0], max_batch_size)
-                    ],
-                    dim=0,
-                ),
-                [len(t) for t in list_of_tensors],
-            )
-
-            x = [einops.rearrange(t, "b t q h -> (b t) q h") for t in x]
-            return x
-
-        rgbs, goals = map(
-            lambda k: preprocess_obs(k, max_batch_size=2048), ("rgb", "imagegoal")
-        )
+        goals, rgbs = self.agent.module.vis_encoder.embed_obs(episodes)
 
         actions = [episode["action"] for episode in episodes]
 
@@ -366,6 +332,11 @@ class BCTrainRunner:
         stats["learner/loss"] /= num_minibatches
         stats["learner/lr"] = self.lr_scheduler.get_last_lr()[0]
         stats["metrics/frames"] = sum([episode["rgb"].shape[0] for episode in episodes])
+
+        rgbs.to("cpu")
+        goals.to("cpu")
+
+        torch.cuda.empty_cache()
 
         return stats
 

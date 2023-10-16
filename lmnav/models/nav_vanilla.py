@@ -119,7 +119,6 @@ class NavVanillaTransformer(BaseModel):
         super().__init__()
 
         self.vis_encoder = vis_encoder
-        self.vis_processor = self.vis_encoder.vis_processor
 
         self.d_hidden = d_hidden
         self.d_head = d_head
@@ -180,15 +179,8 @@ class NavVanillaTransformer(BaseModel):
         imgs = imgs.to(self.device)
         image = einops.rearrange(imgs, "b c t h w -> (b t) c h w")
 
-        image_embeds, image_atts = self.vis_encoder.embed_visual(image)
-
-        inputs = self.vis_proj(image_embeds)
-
-        atts = torch.ones(inputs.size()[:-1], dtype=torch.long, device=self.device)
-
-        inputs = einops.rearrange(inputs, "(b t) q h -> b t q h", b=B)
-        atts = einops.rearrange(atts, "(b t) h -> b t h", b=B)
-        return inputs, atts
+        image_embeds, _ = self.vis_encoder.embed_visual(image)
+        return image_embeds
 
     def maybe_autocast(self, dtype=torch.float16):
         # if on cpu, don't use autocast
@@ -212,11 +204,17 @@ class NavVanillaTransformer(BaseModel):
         decay = set()
         no_decay = set()
         whitelist_weight_modules = (torch.nn.Linear,)
-        blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
+        blacklist_weight_modules = (
+            torch.nn.LayerNorm,
+            torch.nn.Embedding,
+            torch.nn.Conv2d,
+            torch.nn.GroupNorm,
+        )
 
         get_optim_params = lambda module: {
             pn: p for pn, p in module.named_parameters() if p.requires_grad
         }
+
         for mn, m in self.named_modules():
             for pn, p in get_optim_params(m).items():
                 fpn = "%s.%s" % (mn, pn) if mn else pn  # full param name
@@ -276,11 +274,14 @@ class NavVanillaTransformer(BaseModel):
 
         # if visual inputs have already been embedded through visual encoder, pass through
         if not vis_embedded:
-            rgbs_embd, rgbs_attn = self.embed_visual(rgbs_t)
-            goals_embd, goals_attn = self.embed_visual(goals_t)
+            rgbs_embd = self.embed_visual(rgbs_t)
+            goals_embd = self.embed_visual(goals_t)
         else:
             rgbs_embd = rgbs_t
             goals_embd = goals_t
+
+        rgbs_embd = self.vis_proj(rgbs_embd)
+        goals_embd = self.vis_proj(goals_embd)
 
         actions_embd = einops.rearrange(
             self.action_embedding(actions_t), "b t h -> b t 1 h"
