@@ -2,10 +2,31 @@ from typing import Any
 import torch
 import random
 
+from transformers import CLIPVisionModel
+
 
 class BaseDataTransform:
     def __call__(self, x) -> Any:
         return x
+
+    def output_shape(self, input_shape):
+        return input_shape
+
+
+class SequentialDataTransform(BaseDataTransform):
+    def __init__(self, list_of_transforms) -> None:
+        self.list_of_transforms = list_of_transforms
+
+    def __call__(self, x):
+        for fn in self.list_of_transforms:
+            x = fn(x)
+        return x
+
+    def output_shape(self, input_shape):
+        shape = input_shape
+        for fn in self.list_of_transforms:
+            shape = fn.output_shape(shape)
+        return shape
 
 
 class ReverseTurnsTransform(BaseDataTransform):
