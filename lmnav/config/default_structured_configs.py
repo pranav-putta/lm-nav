@@ -81,6 +81,7 @@ class CLIPObservationEncoderConfig(BaseObservationEncoderConfig):
     freeze_backbone: bool = True
     max_batch_size: int = 1024
     fuse_rgb_goal: bool = False
+    precomputed_embeddings: bool = False
 
 
 @dataclass
@@ -90,6 +91,7 @@ class VC1ObservationEncoderConfig(BaseObservationEncoderConfig):
     vit_model: str = "vc1_vitl"
     freeze_backbone: bool = True
     max_batch_size: int = 3096
+    precomputed_embeddings: bool = False
 
 
 @dataclass

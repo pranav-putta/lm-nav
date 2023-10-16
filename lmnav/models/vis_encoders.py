@@ -293,6 +293,7 @@ class CLIPObservationEncoder(ObservationEncoder):
         freeze_backbone,
         max_batch_size,
         fuse_rgb_goal,
+        precomputed_embeddings,
         *args,
         **kwargs
     ):
@@ -301,9 +302,9 @@ class CLIPObservationEncoder(ObservationEncoder):
         print("Loading CLIP visual encoder...")
         self.max_batch_size = max_batch_size
         self.fuse_rgb_goal = fuse_rgb_goal
+        self.precomputed_embeddings = precomputed_embeddings
 
         self.backbone = CLIPVisionModel.from_pretrained(vit_model)
-        self.backbone = torch.compile(self.backbone)
         self.preprocess_transform = transforms.Compose(
             [
                 transforms.Resize(
@@ -328,6 +329,8 @@ class CLIPObservationEncoder(ObservationEncoder):
 
         if vit_precision == "fp16":
             convert_weights_to_fp16(self.backbone)
+        # compile doesn't seem to work with bfloat16 for some reason
+        # self.backbone = torch.compile(self.backbone)
 
         if fuse_rgb_goal:
             self.num_patches = self.backbone.vision_model.embeddings.num_patches
@@ -351,32 +354,39 @@ class CLIPObservationEncoder(ObservationEncoder):
         obs is a TensorDict with keys rgb, depth, imagegoal
         """
 
-        rgbs_l, goals_l = map(
-            lambda k: [
-                einops.rearrange(episode[k], "t h w c -> t c h w")
-                for episode in list_of_episodes
-            ],
-            ("rgb", "imagegoal"),
-        )
-        rgbs_t, goals_t = map(lambda t: torch.cat(t, dim=0), (rgbs_l, goals_l))
-
-        # compute embeddings for goals
-        x = torch.cat([goals_t, rgbs_t], dim=0).float()
-        x = self.preprocess_transform(x)
-
-        with self.maybe_autocast():
-            x = list(
-                map(
-                    lambda i: self.backbone(
-                        pixel_values=x[i : i + self.max_batch_size].to(self.device)
-                    ),
-                    range(0, x.shape[0], self.max_batch_size),
-                )
+        if self.precomputed_embeddings:
+            rgbs_l, goals_l = map(
+                lambda k: [
+                    einops.rearrange(episode[k], "t h w c -> t c h w")
+                    for episode in list_of_episodes
+                ],
+                ("rgb", "imagegoal"),
             )
-        x = torch.cat([t.last_hidden_state for t in x])
-        goals_e, rgbs_e = x[: goals_t.shape[0]], x[goals_t.shape[0] :]
-        rgbs_e = torch.split(rgbs_e, [len(t) for t in rgbs_l])
+            rgbs_t, goals_t = map(lambda t: torch.cat(t, dim=0), (rgbs_l, goals_l))
 
+            # compute embeddings for goals
+            x = torch.cat([goals_t, rgbs_t], dim=0).float()
+            x = self.preprocess_transform(x)
+
+            with self.maybe_autocast():
+                x = list(
+                    map(
+                        lambda i: self.backbone(
+                            pixel_values=x[i : i + self.max_batch_size].to(self.device)
+                        ),
+                        range(0, x.shape[0], self.max_batch_size),
+                    )
+                )
+            x = torch.cat([t.last_hidden_state for t in x])
+            goals_e, rgbs_e = x[: goals_t.shape[0]], x[goals_t.shape[0] :]
+            rgbs_e = torch.split(rgbs_e, [len(t) for t in rgbs_l])
+        else:
+            rgbs_e, goals_e = map(
+                lambda k: [episode[k] for episode in list_of_episodes],
+                ("rgb", "imagegoal"),
+            )
+
+        goals_out = [goals_e[i, 0:1, None] for i in range(len(list_of_episodes))]
         if self.fuse_rgb_goal:
             # fuse rgbs with goal
             rgbs_fused = [
