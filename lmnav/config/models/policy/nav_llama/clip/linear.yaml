@@ -8,4 +8,4 @@ freeze_llama_proj: False
 low_resource: False
 
 vis_encoder:
-  freeze_vit: True
+  freeze_backbone: True

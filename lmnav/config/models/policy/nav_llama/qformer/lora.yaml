@@ -13,7 +13,7 @@ lora_config:
   dropout: 0.1
 
 vis_encoder:
-  freeze_vit: True
+  freeze_backbone: True
   freeze_qformer: True
   vis_processor:
     _target_: "lmnav.processors.video_processor.AlproVideoTrainProcessor"

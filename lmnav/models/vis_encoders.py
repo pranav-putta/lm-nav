@@ -69,7 +69,7 @@ class QformerObservationEncoder(ObservationEncoder):
         drop_path_rate,
         use_grad_checkpoint,
         num_query_token,
-        freeze_vit,
+        freeze_backbone,
         freeze_qformer,
         qformer_compressor_cfg,
         qformer_model,
@@ -84,7 +84,7 @@ class QformerObservationEncoder(ObservationEncoder):
         self.visual_encoder, self.ln_vision = self.init_vision_encoder(
             vit_model, image_size, drop_path_rate, use_grad_checkpoint, vit_precision
         )
-        if freeze_vit:
+        if freeze_backbone:
             for name, param in self.visual_encoder.named_parameters():
                 param.requires_grad = False
             self.visual_encoder = self.visual_encoder.eval()
