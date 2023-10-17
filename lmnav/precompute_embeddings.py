@@ -36,10 +36,12 @@ def run(config, rank, world_size):
     while i < total:
         current_batch_size = 0
         episodes = []
+        indices = []
 
-        while current_batch_size < 3000 and i < total:
-            if not os.path.exists(os.path.join(dirpath, f"data.{i}.pth")):
+        while current_batch_size < 2048 and i < total:
+            if not os.path.exists(os.path.join(dirpath, f"data.{i}.pt")):
                 episodes.append(dataset[i])
+                indices.append(i)
                 current_batch_size += episodes[-1]["rgb"].shape[0]
 
             i += world_size
@@ -82,7 +84,7 @@ def run(config, rank, world_size):
                 episodes[j],
                 os.path.join(
                     dirpath,
-                    f"data.{j}.pt",
+                    f"data.{indices[j]}.pt",
                 ),
             )
         pbar.update(len(episodes))

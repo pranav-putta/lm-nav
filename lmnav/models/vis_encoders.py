@@ -354,7 +354,7 @@ class CLIPObservationEncoder(ObservationEncoder):
         obs is a TensorDict with keys rgb, depth, imagegoal
         """
 
-        if self.precomputed_embeddings:
+        if not self.precomputed_embeddings:
             rgbs_l, goals_l = map(
                 lambda k: [
                     einops.rearrange(episode[k], "t h w c -> t c h w")
