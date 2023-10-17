@@ -48,6 +48,7 @@ class ArtifactConfig:
 @dataclass
 class BaseModelConfig:
     is_model: bool = True
+    use_artifact_config: bool = False
     load_artifact: Optional[ArtifactConfig] = None
 
 
