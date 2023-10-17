@@ -379,7 +379,7 @@ class CLIPObservationEncoder(ObservationEncoder):
         if not self.precomputed_embeddings:
             # compute embeddings for goals
             rgbs_e, goals_e = map(
-                lambda t: einops.rearrange(t, "b t ... -> (b t) ..."), (rgbs, goals)
+                lambda t: einops.rearrange(t, "b t h w c-> (b t) c h w"), (rgbs, goals)
             )
             x = torch.cat([goals_e, rgbs_e], dim=0).float()
             x = self.preprocess_transform(x)
@@ -393,13 +393,22 @@ class CLIPObservationEncoder(ObservationEncoder):
                         range(0, x.shape[0], self.max_batch_size),
                     )
                 )
-            x = torch.cat([t.last_hidden_state for t in x])
+            if self.fuse_rgb_goal:
+                x = torch.cat([t.last_hidden_state for t in x])
+            else:
+                x = einops.rearrange(
+                    torch.cat([t.pooler_output for t in x]), "b h -> b 1 h"
+                )
             goals_e, rgbs_e = x[: goals_e.shape[0]], x[goals_e.shape[0] :]
             goals_e, rgbs_e = map(
-                lambda t: einops.rearrange(t, "(b t) ... -> b t ..."), (goals_e, rgbs_e)
+                lambda t: einops.rearrange(t, "(b t) ... -> b t ...", b=B),
+                (goals_e, rgbs_e),
             )
         else:
             rgbs_e, goals_e = rgbs, goals
+            if not self.fuse_rgb_goal:
+                rgbs_e = rgbs_e[:, :, 0:1]
+                goals_e = goals_e[:, :, 0:1]
 
         if self.fuse_rgb_goal:
             # fuse rgbs with goal
@@ -421,15 +430,13 @@ class CLIPObservationEncoder(ObservationEncoder):
             )
 
             rgbs_fused = apply_fn_in_batches(
-                rgbs_fused, self.compression, max_batch_size=4096
+                rgbs_fused, self.compression, max_batch_size=3096
             )[:, None, :]
             goals_e = goals_e[:, :, 0:1]
             rgbs_fused = einops.rearrange(rgbs_fused, "(b t) ... -> b t ...", b=B)
 
             return rgbs_fused, goals_e
         else:
-            rgbs_e = rgbs_e[:, :, 0:1]
-            goals_e = goals_e[:, :, 0:1]
             return rgbs_e, goals_e
 
     @property

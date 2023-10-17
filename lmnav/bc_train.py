@@ -9,7 +9,13 @@ from habitat.utils.visualizations.utils import observations_to_image
 from habitat_baselines.utils.common import batch_obs, generate_video
 from habitat_sim.utils.datasets_download import argparse
 from habitat_baselines.utils.info_dict import extract_scalars_from_info
-from lmnav.common.utils import catchtime, forward_minibatches, levenshtein_distance
+from lmnav.common.utils import (
+    apply_fn_in_batches,
+    catchtime,
+    forward_minibatches,
+    levenshtein_distance,
+    pad_along_dim,
+)
 
 import numpy as np
 import random
@@ -196,7 +202,7 @@ class BCTrainRunner:
 
         if self.is_distributed:
             print(f"Setting up DDP on GPU {self.rank}")
-            agent = DDP(agent, device_ids=[self.rank], find_unused_parameters=True)
+            agent = DDP(agent, device_ids=[self.rank])
 
         num_params = sum([param.numel() for param in agent.parameters()])
         num_trainable_params = sum(
@@ -255,24 +261,13 @@ class BCTrainRunner:
 
         def forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t):
             outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t)
-            loss, logits = outputs.loss, outputs.logits
-            probs = F.softmax(logits, dim=-1)
+            stats["learner/loss"] += outputs.loss.item()
+            outputs.loss.backward()
 
-            stats["learner/loss"] += loss.item()
-
-            # compute levenshtein distances
-            # distances = []
-            # for i in range(mask_t.shape[0]):
-            # a = torch.argmax(probs[i, : mask_t[i].sum()], dim=-1)
-            # b = actions_t[i, : mask_t[i].sum()]
-            # distances.append(levenshtein_distance(a, b))
-            # stats["learner/edit_distance"] += sum(distances) / len(distances)
-
-            loss.backward()
-
-        actions = [episode["action"] for episode in episodes]
-        goals = [episode["imagegoal"] for episode in episodes]
-        rgbs = [episode["rgb"] for episode in episodes]
+        actions, goals, rgbs = map(
+            lambda k: [episode[k] for episode in episodes],
+            ("action", "imagegoal", "rgb"),
+        )
 
         # construct subsequences
         rgbs, goals, actions = construct_subsequences(
@@ -286,26 +281,14 @@ class BCTrainRunner:
                 for t in rgbs
             ]
         ).bool()
-        rgbs = torch.stack(
-            [F.pad(t, (0, 0, 0, 0, 0, T - t.shape[0]), "constant", 0) for t in rgbs]
-        )
+        rgbs = pad_along_dim(rgbs, T, dim=0)
         goals = torch.stack(goals)
         actions = torch.stack(
             [F.pad(t, (0, T - t.shape[0]), "constant", 0) for t in actions]
         )
 
-        # to ensure equal batch sizes across gpus, gather them all
-        rgbs, goals, actions, mask = map(
-            lambda t: all_gather(t.contiguous(), self.device, self.world_size),
-            (rgbs, goals, actions, mask),
-        )
-        E = rgbs.shape[0] // self.world_size
-
-        # TODO; rename these variables to improve readability
-        rgbs, goals, actions, mask = map(
-            lambda t: t[self.rank * E : self.rank * E + E].clone(),
-            (rgbs, goals, actions, mask),
-        )
+        assert rgbs.shape[0] == minibatch_size, "batch size was inconsistent!"
+        E = rgbs.shape[0]
         batch_idxs = torch.randperm(E)
 
         for mb in range(0, E, num_grad_accums * minibatch_size):
@@ -314,6 +297,7 @@ class BCTrainRunner:
             for g in range(num_grad_steps):
                 start_idx = mb + g * minibatch_size
                 mb_idxs = batch_idxs[start_idx : start_idx + minibatch_size]
+
                 # construct batch
                 rgbs_t, goals_t, actions_t, mask_t = map(
                     lambda t: t[mb_idxs], (rgbs, goals, actions, mask)
@@ -340,10 +324,9 @@ class BCTrainRunner:
         rgbs.to("cpu")
         goals.to("cpu")
 
-        torch.cuda.empty_cache()
         end_time = time.time()
 
-        stats["frames/fps"] = stats["metrics/frames"] / (end_time - start_time)
+        stats["metrics/fps"] = stats["metrics/frames"] / (end_time - start_time)
 
         return stats
 

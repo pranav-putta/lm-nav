@@ -236,6 +236,9 @@ class EvalRunner:
         )
         num_success = 0
 
+        # if precomputed_embeddings is set, force option off
+        self.agent.vis_encoder.precomputed_embeddings = False
+
         actor = self.agent.action_generator(
             self.envs.num_envs, deterministic=self.config.eval.deterministic
         )
@@ -244,8 +247,7 @@ class EvalRunner:
 
         while num_episodes_done < N_episodes:
             next(actor)
-            embds = self.embed_observations(observations)
-            actions = actor.send((embds, dones))
+            actions = actor.send((observations, dones))
 
             outputs = self.envs.step(actions)
             next_observations, rewards_l, dones, infos = [

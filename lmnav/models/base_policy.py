@@ -34,11 +34,16 @@ def instantiate_model(cfg, load_ckpts=True, writer=None, store=None):
     # first check if cfg is a model
     assert isinstance(cfg, omegaconf.DictConfig) and cfg.get("is_model", False)
 
+    # legacy config changes
+    if cfg.get("freeze_vit", None) is not None:
+        cfg["freeze_backbone"] = cfg["freeze_vit"]
+
     ckpt_state_dict = None
     if cfg.load_artifact is not None:
-        ckpt_state_dict = load_policy_artifact(writer, store, cfg.load_artifact)
-        # old_cfg = OmegaConf.create(ckpt_state_dict["config"]).train.policy
         # todo: figure out how to merge configs
+        ckpt_state_dict = load_policy_artifact(writer, store, cfg.load_artifact)
+        if cfg.use_artifact_config:
+            cfg = OmegaConf.create(ckpt_state_dict["config"]).train.policy
 
     # recursively instantiate all models
     inputs = {}

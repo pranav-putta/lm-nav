@@ -1,24 +1,15 @@
 from dataclasses import dataclass
 import logging
 
-import pdb
 import contextlib
-import random
-import time
 
 import torch.nn.functional as F
 
 import torch
 from torch.cuda.amp import autocast as autocast
 import torch.nn as nn
-from lmnav.common.episode_processor import (
-    apply_transforms_actions,
-    apply_transforms_images,
-    apply_transforms_inputs,
-    extract_inputs_from_dataset,
-)
+from lmnav.common.episode_processor import apply_transforms_actions
 
-from lmnav.common.registry import registry
 from lmnav.common.utils import convert_weights_to_fp16
 from lmnav.models.blip2 import Blip2Base, disabled_train
 from lmnav.models.modeling_llama import LlamaForCausalLM
@@ -172,8 +163,8 @@ class NavLLAMA(Blip2Base):
 
     def embed_visual(self, rgbs, goals):
         rgbs, goals = self.vis_encoder.embed_obs(rgbs, goals)
-        rgbs = rgbs.float()
-        goals = goals.float()
+        rgbs = self.llama_proj(rgbs.float())
+        goals = self.llama_proj(goals.float())
         return rgbs, goals
 
     def prompt1_wrap(self, prompt, rgbs_embd, goals_embd, actions, masks):
@@ -262,9 +253,6 @@ class NavLLAMA(Blip2Base):
         else:
             rgbs_embd, goals_embd = self.embed_visual(rgbs_t, goals_t)
 
-        rgbs_embd = self.llama_proj(rgbs_embd)
-        goals_embd = self.llama_proj(goals_embd)
-
         mask_t = mask_t.to(torch.bool)
 
         embd, tgts = self.prompt1_wrap(
@@ -334,7 +322,6 @@ class NavLLAMA(Blip2Base):
         action generator function, takes in the next rgb, goal, and action
         """
         T = self.max_trajectory_length
-        vis_processor = self.vis_encoder.vis_processor
 
         episodes = [[] for _ in range(num_envs)]
 
@@ -345,7 +332,16 @@ class NavLLAMA(Blip2Base):
 
         its = 0
         while True:
-            (rgb_embds, goal_embds), dones = yield
+            observations, dones = yield
+
+            rgbs, goals = map(
+                lambda k: torch.stack([torch.tensor(obs[k]) for obs in observations]),
+                ("rgb", "imagegoal"),
+            )
+            rgbs, goals = map(
+                lambda t: einops.rearrange(t, "b h w c -> b 1 h w c"), (rgbs, goals)
+            )
+            rgb_embds, goal_embds = self.embed_visual(rgbs, goals)
             if dones is None:
                 episodes.clear()
 
@@ -368,7 +364,7 @@ class NavLLAMA(Blip2Base):
                 ("rgb_embds", "goal_embds", "action"),
             )
             rgb_embds, goal_embds = map(
-                lambda seq: [torch.stack(t, dim=0) for t in seq],
+                lambda seq: [torch.cat(t, dim=1) for t in seq],
                 (rgb_embds, goal_embds),
             )
             actions = [torch.tensor(t) for t in actions]
@@ -383,6 +379,9 @@ class NavLLAMA(Blip2Base):
             lens = [len(e) for e in episodes]
             max_len = max(lens)
 
+            import pdb
+
+            pdb.set_trace()
             embd, tgts = self.prompt1_wrap(
                 self.prompt1, rgb_embds, goal_embds, actions_t, mask_t
             )
@@ -419,7 +418,6 @@ class NavLLAMA(Blip2Base):
                 embd.to("cpu")
                 tgts.to("cpu")
                 episodes.clear()
-                torch.cuda.empty_cache()
             yield actions
 
     def configure_optim_groups(self):
