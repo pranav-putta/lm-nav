@@ -43,21 +43,18 @@ train:
     warmup_steps: 250
     after_warmup:
       lr: 1e-4
-      gamma: 0.9995
+      gamma: 0.999
   policy:
     d_hidden: 1024
     d_head: 128
     n_heads: 8
-    n_blocks: 2
+    n_blocks: 8
     drop_p: 0.1
     max_trajectory_length: 200
-    vis_encoder:
-      precomputed_embeddings: True
-      fuse_rgb_goal: True
   dataset:
     artifact:
       name: "offline_00744"
-      version: "precomputed-clip"
+      version: "v0"
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
       

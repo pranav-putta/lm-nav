@@ -42,21 +42,23 @@ train:
     gamma: 0.9995
   policy:
     max_trajectory_length: 200
-    vis_encoder:
-      precomputed_embeddings: True
+    use_artifact_config: True
+    # vis_encoder:
+      # precomputed_embeddings: True
     load_artifact:
       name: "lmnav-1env-bc-lora_clip_max_trajectory_length_200_batch_size_9"
       version: "latest"
   dataset:
     artifact: 
       name: "offline_00744"
-      version: "precomputed-clip"
+      version: "v0"
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
 
  
 eval:
   policy: 
+    use_artifact_config: True
     load_artifact:
       name: ${....train.store_artifact.name}
       version: "latest"

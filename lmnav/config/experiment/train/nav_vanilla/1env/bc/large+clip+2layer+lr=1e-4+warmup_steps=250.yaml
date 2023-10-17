@@ -23,7 +23,6 @@ defaults:
     
   - _self_
 
-
 exp:
   group: "vanilla-1env"
   job_type: "bc"
@@ -43,17 +42,16 @@ train:
     warmup_steps: 250
     after_warmup:
       lr: 1e-4
-      gamma: 0.9995
+      gamma: 0.999
   policy:
+    vis_encoder:
+      precomputed_embeddings: True
     d_hidden: 1024
     d_head: 128
     n_heads: 8
     n_blocks: 2
     drop_p: 0.1
     max_trajectory_length: 200
-    vis_encoder:
-      precomputed_embeddings: True
-      fuse_rgb_goal: True
   dataset:
     artifact:
       name: "offline_00744"
