@@ -513,12 +513,13 @@ def all_gather(q, device, world_size):
         all_q : list of gathered tensor arrays from all the gpus
 
     """
-    q = q.to(device)
     local_size = torch.tensor(q.shape[0], device=device)
     all_sizes = [torch.zeros_like(local_size) for _ in range(world_size)]
     torch.distributed.all_gather(all_sizes, local_size)
 
+    q = q.to(device)
     size_diff = max(all_sizes).item() - local_size.item()
+    print(size_diff)
     if size_diff:
         padding = torch.zeros((size_diff, *q.shape[1:]), device=device, dtype=q.dtype)
         q = torch.cat((q, padding))
@@ -602,3 +603,26 @@ def is_vis_encoder_real(a):
     diffs = [(k, torch.sum(a[k] - b[k])) for k in out]
 
     return diffs
+
+
+def apply_fn_in_batches(tensor, fn, max_batch_size, args):
+    out = list(
+        map(
+            lambda j: fn(tensor[j : j + max_batch_size], *args),
+            range(0, tensor.shape[0], max_batch_size),
+        )
+    )
+    out = torch.cat(out)
+    return out
+
+
+def pad_along_dim(list_of_tensors, max_len, dim=0):
+    shape = list_of_tensors[0].shape
+    pad_num_zeros = 2 * (len(shape) - dim) - 1
+
+    return torch.stack(
+        [
+            F.pad(t, (0,) * pad_num_zeros + (max_len - t.shape[0],))
+            for t in list_of_tensors
+        ]
+    )
