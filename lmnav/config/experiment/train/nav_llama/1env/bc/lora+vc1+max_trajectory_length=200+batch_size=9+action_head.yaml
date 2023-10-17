@@ -45,7 +45,7 @@ train:
   dataset:
     artifact: 
       name: "offline_00744"
-      version: "latest"
+      version: "v0"
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
 

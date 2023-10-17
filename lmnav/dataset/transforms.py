@@ -48,6 +48,7 @@ class ReverseTurnsTransform(BaseDataTransform):
 
     def __call__(self, x) -> Any:
         seq_idxs = self.find_subsequences_of_2s(x["action"])
+        print("doing transform")
 
         for s, e in seq_idxs:
             length = e - s + 1

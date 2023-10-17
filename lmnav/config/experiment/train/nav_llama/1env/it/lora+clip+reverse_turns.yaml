@@ -33,7 +33,7 @@ train:
   batch_size: 9
   minibatch_size: 3
   num_grad_accums: 3
-  ckpt_freq: 10
+  ckpt_freq: 25
 
   steps: 10_000
   episodes_per_batch: 6
@@ -48,7 +48,7 @@ train:
   dataset:
     artifact: 
       name: "offline_00744"
-      version: "latest"
+      version: "precomputed-clip"
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
 

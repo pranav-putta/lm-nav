@@ -46,7 +46,7 @@ train:
   dataset: 
     artifact:
       name: "offline_00744"
-      version: "latest"
+      version: "v0"
   store_artifact:
     name: ${...exp.name}
  
