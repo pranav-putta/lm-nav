@@ -52,11 +52,12 @@ train:
     drop_p: 0.1
     max_trajectory_length: 200
     vis_encoder:
+      precomputed_embeddings: True
       fuse_rgb_goal: True
   dataset:
     artifact:
       name: "offline_00744"
-      version: "precomputed_clip"
+      version: "precomputed-clip"
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
       

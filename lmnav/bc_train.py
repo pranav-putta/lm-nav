@@ -2,6 +2,7 @@ import math
 
 import pdb
 import einops
+import time
 
 from pprint import pprint
 from habitat.utils.visualizations.utils import observations_to_image
@@ -245,30 +246,33 @@ class BCTrainRunner:
         stats = {
             "learner/loss": 0.0,
             "metrics/frames": 0,
+            "metrics/fps": 0.0,
             "learner/lr": 0,
             "learner/edit_distance": 0,
         }
 
+        start_time = time.time()
+
         def forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t):
-            outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t, vis_embedded=True)
+            outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t)
             loss, logits = outputs.loss, outputs.logits
             probs = F.softmax(logits, dim=-1)
 
             stats["learner/loss"] += loss.item()
 
             # compute levenshtein distances
-            distances = []
-            for i in range(mask_t.shape[0]):
-                a = torch.argmax(probs[i, : mask_t[i].sum()], dim=-1)
-                b = actions_t[i, : mask_t[i].sum()]
-                distances.append(levenshtein_distance(a, b))
-            stats["learner/edit_distance"] += sum(distances) / len(distances)
+            # distances = []
+            # for i in range(mask_t.shape[0]):
+            # a = torch.argmax(probs[i, : mask_t[i].sum()], dim=-1)
+            # b = actions_t[i, : mask_t[i].sum()]
+            # distances.append(levenshtein_distance(a, b))
+            # stats["learner/edit_distance"] += sum(distances) / len(distances)
 
             loss.backward()
 
-        goals, rgbs = self.agent.module.vis_encoder.embed_obs(episodes)
-
         actions = [episode["action"] for episode in episodes]
+        goals = [episode["imagegoal"] for episode in episodes]
+        rgbs = [episode["rgb"] for episode in episodes]
 
         # construct subsequences
         rgbs, goals, actions = construct_subsequences(
@@ -337,6 +341,9 @@ class BCTrainRunner:
         goals.to("cpu")
 
         torch.cuda.empty_cache()
+        end_time = time.time()
+
+        stats["frames/fps"] = stats["metrics/frames"] / (end_time - start_time)
 
         return stats
 

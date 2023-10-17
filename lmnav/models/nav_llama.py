@@ -58,6 +58,7 @@ class NavLLAMA(Blip2Base):
         llama_model,
         max_trajectory_length,
         action_head_mode="lm",
+        *args,
         **kwargs,
     ):
         super().__init__()
@@ -169,20 +170,11 @@ class NavLLAMA(Blip2Base):
         action_embds = torch.cat(action_embds, dim=0)
         return action_embds
 
-    def embed_visual(self, imgs):
-        B, _, T, _, _ = imgs.size()
-        image = einops.rearrange(imgs, "b c t h w -> (b t) c h w")
-        image_embeds, image_atts = self.vis_encoder.embed_visual(image)
-
-        inputs_llama = self.llama_proj(image_embeds)
-        atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(
-            image_embeds.device
-        )
-
-        inputs_llama = einops.rearrange(inputs_llama, "(b t) q h -> b t q h", b=B)
-        atts_llama = einops.rearrange(atts_llama, "(b t) h -> b t h", b=B)
-
-        return inputs_llama, atts_llama
+    def embed_visual(self, rgbs, goals):
+        rgbs, goals = self.vis_encoder.embed_obs(rgbs, goals)
+        rgbs = rgbs.float()
+        goals = goals.float()
+        return rgbs, goals
 
     def prompt1_wrap(self, prompt, rgbs_embd, goals_embd, actions, masks):
         action_idx2token = {0: "stop", 1: "forward", 2: "left", 3: "right"}
@@ -209,6 +201,7 @@ class NavLLAMA(Blip2Base):
         prompt_embd = [embd.repeat(B, 1, 1) for embd in prompt_embd]
 
         actions_embd = einops.rearrange(actions_embd, "b t h -> b t 1 h")
+
         s_a_embds = torch.cat([rgbs_embd, actions_embd], dim=2)
         s_a_embds = s_a_embds.view(B, T * (Q + 1), H)
 
@@ -267,8 +260,11 @@ class NavLLAMA(Blip2Base):
             rgbs_embd = rgbs_t
             goals_embd = goals_t
         else:
-            rgbs_embd, rgbs_attn = self.embed_visual(rgbs_t)
-            goals_embd, goals_attn = self.embed_visual(goals_t)
+            rgbs_embd, goals_embd = self.embed_visual(rgbs_t, goals_t)
+
+        rgbs_embd = self.llama_proj(rgbs_embd)
+        goals_embd = self.llama_proj(goals_embd)
+
         mask_t = mask_t.to(torch.bool)
 
         embd, tgts = self.prompt1_wrap(

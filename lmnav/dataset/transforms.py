@@ -36,8 +36,8 @@ class ReverseTurnsTransform(BaseDataTransform):
         ends = (nums_tensor[:-1] == 2) & (nums_tensor[1:] != 2)
 
         # Add position for the case when the tensor starts or ends with a 2
-        starts = torch.cat([nums_tensor[0] == 2, starts])
-        ends = torch.cat([ends, nums_tensor[-1] == 2])
+        starts = torch.cat([torch.tensor([nums_tensor[0] == 2]), starts])
+        ends = torch.cat([ends, torch.tensor([nums_tensor[-1] == 2])])
 
         # Extract the indices
         start_indices = torch.nonzero(starts).squeeze(dim=-1).tolist()
@@ -48,16 +48,19 @@ class ReverseTurnsTransform(BaseDataTransform):
 
     def __call__(self, x) -> Any:
         seq_idxs = self.find_subsequences_of_2s(x["action"])
-        print("doing transform")
 
         for s, e in seq_idxs:
             length = e - s + 1
             if length >= 12:
                 idx = random.randint(s, e - 11)
                 slice_ = slice(idx, idx + 11, 1)
-                x["rgb"][slice_] = torch.flip(x["rgb"][slice_], dims=(0,))
-                x["depth"][slice_] = torch.flip(x["depth"][slice_], dims=(0,))
-                x["reward"][slice_] = torch.flip(x["reward"][slice_], dims=(0,))
-                x["action"][slice_] = 3
+                if "rgb" in x.keys():
+                    x["rgb"][slice_] = torch.flip(x["rgb"][slice_], dims=(0,))
+                if "depth" in x.keys():
+                    x["depth"][slice_] = torch.flip(x["depth"][slice_], dims=(0,))
+                if "reward" in x.keys():
+                    x["reward"][slice_] = torch.flip(x["reward"][slice_], dims=(0,))
+                if "action" in x.keys():
+                    x["action"][slice_] = 3
 
         return x

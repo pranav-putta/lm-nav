@@ -34,7 +34,7 @@ class ObservationEncoder(BaseModel):
         """
         consumes a tensordict of observations and computes an embedding
         """
-        raise NotImplementedError("embed_visual needs to be implemented")
+        raise NotImplementedError("embed_obs needs to be implemented")
 
     def maybe_autocast(self, dtype=torch.float16):
         # if on cpu, don't use autocast
@@ -242,7 +242,13 @@ class VC1VisualProcessor:
 
 class VC1ObservationEncoder(ObservationEncoder):
     def __init__(
-        self, vit_precision, vit_model, freeze_backbone, max_batch_size, *args, **kwargs
+        self,
+        vit_precision,
+        vit_model,
+        freeze_backbone=False,
+        max_batch_size=2048,
+        *args,
+        **kwargs
     ):
         super().__init__()
 
@@ -290,10 +296,10 @@ class CLIPObservationEncoder(ObservationEncoder):
         self,
         vit_precision,
         vit_model,
-        freeze_backbone,
-        max_batch_size,
-        fuse_rgb_goal,
-        precomputed_embeddings,
+        freeze_backbone=False,
+        max_batch_size=2048,
+        fuse_rgb_goal=False,
+        precomputed_embeddings=False,
         *args,
         **kwargs
     ):
@@ -305,6 +311,7 @@ class CLIPObservationEncoder(ObservationEncoder):
         self.precomputed_embeddings = precomputed_embeddings
 
         self.backbone = CLIPVisionModel.from_pretrained(vit_model)
+
         self.preprocess_transform = transforms.Compose(
             [
                 transforms.Resize(
@@ -327,8 +334,6 @@ class CLIPObservationEncoder(ObservationEncoder):
             for param in self.backbone.parameters():
                 param.requires_grad = False
 
-        if vit_precision == "fp16":
-            convert_weights_to_fp16(self.backbone)
         # compile doesn't seem to work with bfloat16 for some reason
         # self.backbone = torch.compile(self.backbone)
 
@@ -349,23 +354,34 @@ class CLIPObservationEncoder(ObservationEncoder):
                 nn.Flatten(),
             )
 
-    def embed_obs(self, list_of_episodes):
+        if vit_precision == "fp16":
+            convert_weights_to_fp16(self.backbone)
+            if self.fuse_rgb_goal:
+                convert_weights_to_fp16(self.compression)
+
+    def embed_obs(self, rgbs, goals):
         """
         obs is a TensorDict with keys rgb, depth, imagegoal
         """
 
-        if not self.precomputed_embeddings:
-            rgbs_l, goals_l = map(
-                lambda k: [
-                    einops.rearrange(episode[k], "t h w c -> t c h w")
-                    for episode in list_of_episodes
-                ],
-                ("rgb", "imagegoal"),
+        def apply_fn_in_batches(tensor, fn, max_batch_size):
+            out = list(
+                map(
+                    lambda j: fn(tensor[j : j + max_batch_size]),
+                    range(0, tensor.shape[0], max_batch_size),
+                )
             )
-            rgbs_t, goals_t = map(lambda t: torch.cat(t, dim=0), (rgbs_l, goals_l))
+            out = torch.cat(out)
+            return out
 
+        B, T, *_ = rgbs.shape
+
+        if not self.precomputed_embeddings:
             # compute embeddings for goals
-            x = torch.cat([goals_t, rgbs_t], dim=0).float()
+            rgbs_e, goals_e = map(
+                lambda t: einops.rearrange(t, "b t ... -> (b t) ..."), (rgbs, goals)
+            )
+            x = torch.cat([goals_e, rgbs_e], dim=0).float()
             x = self.preprocess_transform(x)
 
             with self.maybe_autocast():
@@ -378,47 +394,47 @@ class CLIPObservationEncoder(ObservationEncoder):
                     )
                 )
             x = torch.cat([t.last_hidden_state for t in x])
-            goals_e, rgbs_e = x[: goals_t.shape[0]], x[goals_t.shape[0] :]
-            rgbs_e = torch.split(rgbs_e, [len(t) for t in rgbs_l])
-        else:
-            rgbs_e, goals_e = map(
-                lambda k: [episode[k] for episode in list_of_episodes],
-                ("rgb", "imagegoal"),
+            goals_e, rgbs_e = x[: goals_e.shape[0]], x[goals_e.shape[0] :]
+            goals_e, rgbs_e = map(
+                lambda t: einops.rearrange(t, "(b t) ... -> b t ..."), (goals_e, rgbs_e)
             )
+        else:
+            rgbs_e, goals_e = rgbs, goals
 
-        goals_out = [goals_e[i, 0:1, None] for i in range(len(list_of_episodes))]
         if self.fuse_rgb_goal:
             # fuse rgbs with goal
-            rgbs_fused = [
-                torch.cat(
-                    [
-                        rgbs_e[i],
-                        einops.repeat(goals_e[i], "... -> t ...", t=rgbs_e[i].shape[0]),
-                    ],
-                    dim=2,
-                )
-                for i in range(len(rgbs_e))
-            ]
-            rgbs_fused = torch.cat(rgbs_fused, dim=0)
+            rgbs_fused = torch.cat(
+                (
+                    rgbs_e,
+                    einops.repeat(goals_e, "b 1 ... -> b t ...", t=rgbs_e.shape[1]),
+                ),
+                dim=-1,
+            )
+            # squeeze batch/time dims
+            rgbs_fused = einops.rearrange(rgbs_fused, "b t ... -> (b t) ...")
             rgbs_fused = rgbs_fused[:, 1:]
             rgbs_fused = einops.rearrange(
                 rgbs_fused,
-                "n (p q) c -> n c p q",
+                "b (p q) h -> b h p q",
                 p=int(self.num_patches**0.5),
                 q=int(self.num_patches**0.5),
             )
 
-            rgbs_fused = self.compression(rgbs_fused)[:, None, :]
-            rgbs_fused = torch.split(rgbs_fused, [len(t) for t in rgbs_l])
-            goals_out = [goals_e[i, 0:1, None] for i in range(len(goals_l))]
-            return goals_out, rgbs_fused
+            rgbs_fused = apply_fn_in_batches(
+                rgbs_fused, self.compression, max_batch_size=4096
+            )[:, None, :]
+            goals_e = goals_e[:, :, 0:1]
+            rgbs_fused = einops.rearrange(rgbs_fused, "(b t) ... -> b t ...", b=B)
+
+            return rgbs_fused, goals_e
         else:
-            goals_e = [goals_e[i, 0:1, None] for i in range(len(goals_l))]
-            return goals_e, rgbs_e
+            rgbs_e = rgbs_e[:, :, 0:1]
+            goals_e = goals_e[:, :, 0:1]
+            return rgbs_e, goals_e
 
     @property
     def vis_processor(self):
-        return self._vis_processor
+        return self.preprocess_transform
 
     @property
     def hidden_size(self):
@@ -427,3 +443,9 @@ class CLIPObservationEncoder(ObservationEncoder):
     @property
     def num_tokens(self):
         return 1
+
+
+# for legacy configs
+CLIPVisualEncoder = CLIPObservationEncoder
+VC1VisualEncoder = VC1ObservationEncoder
+QFormerVisualEncoder = QformerObservationEncoder

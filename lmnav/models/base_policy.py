@@ -37,7 +37,8 @@ def instantiate_model(cfg, load_ckpts=True, writer=None, store=None):
     ckpt_state_dict = None
     if cfg.load_artifact is not None:
         ckpt_state_dict = load_policy_artifact(writer, store, cfg.load_artifact)
-        cfg = OmegaConf.create(ckpt_state_dict["config"]).train.policy
+        # old_cfg = OmegaConf.create(ckpt_state_dict["config"]).train.policy
+        # todo: figure out how to merge configs
 
     # recursively instantiate all models
     inputs = {}

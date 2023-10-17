@@ -174,13 +174,11 @@ class NavVanillaTransformer(BaseModel):
         ]
         return torch.stack(padded_seqs)
 
-    def embed_visual(self, imgs):
-        B, _, T, _, _ = imgs.size()
-        imgs = imgs.to(self.device)
-        image = einops.rearrange(imgs, "b c t h w -> (b t) c h w")
-
-        image_embeds, _ = self.vis_encoder.embed_visual(image)
-        return image_embeds
+    def embed_visual(self, rgbs, goals):
+        rgbs, goals = self.vis_encoder.embed_obs(rgbs, goals)
+        rgbs = rgbs.float()
+        goals = goals.float()
+        return rgbs, goals
 
     def maybe_autocast(self, dtype=torch.float16):
         # if on cpu, don't use autocast
@@ -274,8 +272,7 @@ class NavVanillaTransformer(BaseModel):
 
         # if visual inputs have already been embedded through visual encoder, pass through
         if not vis_embedded:
-            rgbs_embd = self.embed_visual(rgbs_t)
-            goals_embd = self.embed_visual(goals_t)
+            rgbs_embd, goals_embd = self.embed_visual(rgbs_t, goals_t)
         else:
             rgbs_embd = rgbs_t
             goals_embd = goals_t
