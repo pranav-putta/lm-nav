@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from lmnav.common.utils import catchtime, find_tensors
+from lmnav.common.utils import catchtime, convert_weights_to_fp16, find_tensors
 from torch import nn
 
 import math
@@ -146,6 +146,8 @@ class NavVanillaTransformer(BaseModel):
 
         self.transformer.apply(self._init_weights)
 
+        convert_weights_to_fp16(self)
+
     @property
     def hidden_size(self):
         return self.d_hidden
@@ -176,8 +178,6 @@ class NavVanillaTransformer(BaseModel):
 
     def embed_visual(self, rgbs, goals):
         rgbs, goals = self.vis_encoder.embed_obs(rgbs, goals)
-        rgbs = rgbs.float()
-        goals = goals.float()
         return rgbs, goals
 
     def maybe_autocast(self, dtype=torch.float16):
