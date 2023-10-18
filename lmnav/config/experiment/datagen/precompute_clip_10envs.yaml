@@ -1,0 +1,25 @@
+# @package _global_
+
+defaults:
+  - /dataset: offline_episode
+  - /generator: base
+  - /exp: base
+  - /logger@exp.logger: wb
+  - /models/vis_encoder@vis_encoder: clip
+  - /transforms: base
+
+
+exp:
+  group: "vanilla-1env"
+  job_type: "datagen"
+
+
+dataset:
+  artifact:
+    name: "offline_10envs"
+    version: "latest"
+
+generator:
+  store_artifact:
+    name: "offline_10envs_clip"
+    dirpath: "data/datasets/lmnav"
