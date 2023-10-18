@@ -14,6 +14,7 @@ from lmnav.models.base_policy import instantiate_model
 
 
 def run(config, rank, world_size):
+    device = f"cuda:{rank}"
     writer = instantiate(config.exp.logger)
     writer.open(config)
 
@@ -22,12 +23,14 @@ def run(config, rank, world_size):
     data_files = writer.load_dataset(config.dataset)
     dataset = OfflineEpisodeDataset(transforms, files=data_files)
     encoder = instantiate_model(config.vis_encoder)
-    encoder = encoder.to("cuda")
+    encoder = encoder.to(device)
 
     total = len(dataset)
     i = rank
 
-    dirpath = os.path.join(config.generator.store_artifact.dirpath, "00774_clip")
+    dirpath = os.path.join(
+        config.generator.store_artifact.dirpath, config.generator.store_artifact.name
+    )
     os.makedirs(dirpath, exist_ok=True)
 
     pbar = tqdm(
@@ -60,7 +63,7 @@ def run(config, rank, world_size):
             return out
 
         x = torch.cat([rgbs_t, goals_t], dim=0)
-        x = x.to("cuda")
+        x = x.to(device)
         x = einops.rearrange(x, "t h w c -> t c h w")
         x = apply_fn_in_batches(x, encoder.preprocess_transform, 3096)
         with encoder.maybe_autocast():
