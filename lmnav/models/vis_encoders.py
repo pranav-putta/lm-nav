@@ -418,29 +418,30 @@ class CLIPObservationEncoder(ObservationEncoder):
                 goals_e = goals_e[:, :, 0:1]
 
         if self.fuse_rgb_goal:
-            # fuse rgbs with goal
-            rgbs_fused = torch.cat(
-                (
-                    rgbs_e,
-                    einops.repeat(goals_e, "b 1 ... -> b t ...", t=rgbs_e.shape[1]),
-                ),
-                dim=-1,
-            )
-            # squeeze batch/time dims
-            rgbs_fused = einops.rearrange(rgbs_fused, "b t ... -> (b t) ...")
-            rgbs_fused = rgbs_fused[:, 1:]
-            rgbs_fused = einops.rearrange(
-                rgbs_fused,
-                "b (p q) h -> b h p q",
-                p=int(self.num_patches**0.5),
-                q=int(self.num_patches**0.5),
-            )
+            with self.maybe_autocast():
+                # fuse rgbs with goal
+                rgbs_fused = torch.cat(
+                    (
+                        rgbs_e,
+                        einops.repeat(goals_e, "b 1 ... -> b t ...", t=rgbs_e.shape[1]),
+                    ),
+                    dim=-1,
+                )
+                # squeeze batch/time dims
+                rgbs_fused = einops.rearrange(rgbs_fused, "b t ... -> (b t) ...")
+                rgbs_fused = rgbs_fused[:, 1:]
+                rgbs_fused = einops.rearrange(
+                    rgbs_fused,
+                    "b (p q) h -> b h p q",
+                    p=int(self.num_patches**0.5),
+                    q=int(self.num_patches**0.5),
+                )
 
-            rgbs_fused = apply_fn_in_batches(
-                rgbs_fused, self.compression, max_batch_size=3096
-            )[:, None, :]
-            goals_e = goals_e[:, :, 0:1]
-            rgbs_fused = einops.rearrange(rgbs_fused, "(b t) ... -> b t ...", b=B)
+                rgbs_fused = apply_fn_in_batches(
+                    rgbs_fused, self.compression, max_batch_size=3096
+                )[:, None, :]
+                goals_e = goals_e[:, :, 0:1]
+                rgbs_fused = einops.rearrange(rgbs_fused, "(b t) ... -> b t ...", b=B)
 
             return rgbs_fused, goals_e
         else:
