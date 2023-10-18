@@ -241,7 +241,6 @@ class NavLLAMA(Blip2Base):
         goals_t = [B, C, 1, H, W]
         actions_t = [B, T]
         """
-        # with self.maybe_autocast():
         rgbs_t, goals_t, mask_t = map(
             lambda t: t.to(self.device), (rgbs_t, goals_t, mask_t)
         )
@@ -363,8 +362,9 @@ class NavLLAMA(Blip2Base):
                 lambda key: [[step[key] for step in episode] for episode in episodes],
                 ("rgb_embds", "goal_embds", "action"),
             )
+
             rgb_embds, goal_embds = map(
-                lambda seq: [torch.cat(t, dim=1) for t in seq],
+                lambda seq: [torch.cat(t, dim=0) for t in seq],
                 (rgb_embds, goal_embds),
             )
             actions = [torch.tensor(t) for t in actions]
@@ -379,9 +379,6 @@ class NavLLAMA(Blip2Base):
             lens = [len(e) for e in episodes]
             max_len = max(lens)
 
-            import pdb
-
-            pdb.set_trace()
             embd, tgts = self.prompt1_wrap(
                 self.prompt1, rgb_embds, goal_embds, actions_t, mask_t
             )

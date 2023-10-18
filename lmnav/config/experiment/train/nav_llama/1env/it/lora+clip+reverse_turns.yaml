@@ -36,7 +36,7 @@ train:
   ckpt_freq: 25
 
   steps: 10_000
-  episodes_per_batch: 6
+  episodes_per_batch: 9
   lr_schedule:
     lr: 2.5e-4
     gamma: 0.9995

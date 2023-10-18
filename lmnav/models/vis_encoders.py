@@ -364,25 +364,32 @@ class CLIPObservationEncoder(ObservationEncoder):
         obs is a TensorDict with keys rgb, depth, imagegoal
         """
 
-        def apply_fn_in_batches(tensor, fn, max_batch_size):
+        def apply_fn_in_batches(tensor, fn, max_batch_size, rebatch_fn=torch.cat):
             out = list(
                 map(
                     lambda j: fn(tensor[j : j + max_batch_size]),
                     range(0, tensor.shape[0], max_batch_size),
                 )
             )
-            out = torch.cat(out)
-            return out
+            return rebatch_fn(out)
 
         B, T, *_ = rgbs.shape
 
         if not self.precomputed_embeddings:
             # compute embeddings for goals
-            rgbs_e, goals_e = map(
-                lambda t: einops.rearrange(t, "b t h w c-> (b t) c h w"), (rgbs, goals)
+            rgbs, goals = map(
+                lambda t: einops.rearrange(t, "b t h w c -> (b t) c h w"),
+                (rgbs, goals),
             )
-            x = torch.cat([goals_e, rgbs_e], dim=0).float()
-            x = self.preprocess_transform(x)
+
+            rgbs_e, goals_e = map(
+                lambda t: apply_fn_in_batches(
+                    t, self.preprocess_transform, self.max_batch_size
+                ),
+                (rgbs, goals),
+            )
+
+            x = torch.cat([goals_e, rgbs_e], dim=0)
 
             with self.maybe_autocast():
                 x = list(

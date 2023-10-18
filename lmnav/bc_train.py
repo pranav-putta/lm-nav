@@ -283,12 +283,29 @@ class BCTrainRunner:
         ).bool()
         rgbs = pad_along_dim(rgbs, T, dim=0)
         goals = torch.stack(goals)
-        actions = torch.stack(
-            [F.pad(t, (0, T - t.shape[0]), "constant", 0) for t in actions]
-        )
+        actions = pad_along_dim(actions, T, dim=0)
 
-        assert rgbs.shape[0] == minibatch_size, "batch size was inconsistent!"
         E = rgbs.shape[0]
+        local_size = torch.tensor(rgbs.shape[0], device=self.device)
+        all_sizes = [torch.zeros_like(local_size) for _ in range(self.world_size)]
+        torch.distributed.all_gather(all_sizes, local_size)
+
+        size_diff = max(all_sizes).item() - local_size.item()
+
+        if size_diff != 0:
+            # to ensure equal batch sizes across gpus, gather them all
+            rgbs, goals, actions, mask = map(
+                lambda t: all_gather(t.contiguous(), self.device, self.world_size),
+                (rgbs, goals, actions, mask),
+            )
+            E = rgbs.shape[0] // self.world_size
+
+            # TODO; rename these variables to improve readability
+            rgbs, goals, actions, mask = map(
+                lambda t: t[self.rank * E : self.rank * E + E].clone(),
+                (rgbs, goals, actions, mask),
+            )
+
         batch_idxs = torch.randperm(E)
 
         for mb in range(0, E, num_grad_accums * minibatch_size):

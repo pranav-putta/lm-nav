@@ -31,8 +31,8 @@ exp:
 
 train:
   batch_size: 64
-  minibatch_size: 64
-  num_grad_accums: 1
+  minibatch_size: 16
+  num_grad_accums: 4
 
   steps: 10_000
   episodes_per_batch: 64
@@ -46,7 +46,7 @@ train:
       gamma: 0.999
   policy:
     vis_encoder:
-      precomputed_embeddings: True
+      max_batch_size: 1024
     d_hidden: 1024
     d_head: 128
     n_heads: 8
@@ -56,7 +56,7 @@ train:
   dataset:
     artifact:
       name: "offline_00744"
-      version: "precomputed-clip"
+      version: "v0"
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
       
