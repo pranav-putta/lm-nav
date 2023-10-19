@@ -320,7 +320,6 @@ class NavLLAMA(Blip2Base):
         """
         action generator function, takes in the next rgb, goal, and action
         """
-        import pdb
 
         T = self.max_trajectory_length
 
@@ -358,7 +357,6 @@ class NavLLAMA(Blip2Base):
                     }
                 )
 
-            pdb.set_trace()
             episodes = [e[-(T - 1) :] for e in episodes]
 
             rgb_embds, goal_embds, actions = map(

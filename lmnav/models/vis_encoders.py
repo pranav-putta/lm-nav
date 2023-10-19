@@ -314,13 +314,13 @@ class CLIPObservationEncoder(ObservationEncoder):
 
         self.preprocess_transform = transforms.Compose(
             [
+                transforms.ConvertImageDtype(torch.float),
                 transforms.Resize(
                     224,
                     interpolation=transforms.InterpolationMode.BICUBIC,
-                    antialias=True,
+                    # antialias=True,
                 ),
                 transforms.CenterCrop(224),
-                transforms.ConvertImageDtype(torch.float),
                 transforms.Normalize(mean=(0, 0, 0), std=(255, 255, 255), inplace=True),
                 transforms.Normalize(
                     mean=[0.48145466, 0.4578275, 0.40821073],
@@ -378,7 +378,7 @@ class CLIPObservationEncoder(ObservationEncoder):
         if not self.precomputed_embeddings:
             # compute embeddings for goals
             rgbs, goals = map(
-                lambda t: einops.rearrange(t, "b t h w c -> (b t) c h w"),
+                lambda t: einops.rearrange(t, "b t h w c -> (b t) c h w").float(),
                 (rgbs, goals),
             )
 
