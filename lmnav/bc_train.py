@@ -264,6 +264,7 @@ class BCTrainRunner:
             stats["learner/loss"] += outputs.loss.item()
             outputs.loss.backward()
 
+        # pull episode data into tensors
         actions, goals, rgbs = map(
             lambda k: [episode[k] for episode in episodes],
             ("action", "imagegoal", "rgb"),
@@ -293,6 +294,7 @@ class BCTrainRunner:
         size_diff = max(all_sizes).item() - local_size.item()
 
         if size_diff != 0:
+            print(all_sizes)
             # to ensure equal batch sizes across gpus, gather them all
             rgbs, goals, actions, mask = map(
                 lambda t: all_gather(t.contiguous(), self.device, self.world_size),
@@ -334,14 +336,11 @@ class BCTrainRunner:
             self.optim.step()
             self.optim.zero_grad()
 
+        end_time = time.time()
+
         stats["learner/loss"] /= num_minibatches
         stats["learner/lr"] = self.lr_scheduler.get_last_lr()[0]
         stats["metrics/frames"] = sum([episode["rgb"].shape[0] for episode in episodes])
-
-        rgbs.to("cpu")
-        goals.to("cpu")
-
-        end_time = time.time()
 
         stats["metrics/fps"] = stats["metrics/frames"] / (end_time - start_time)
 

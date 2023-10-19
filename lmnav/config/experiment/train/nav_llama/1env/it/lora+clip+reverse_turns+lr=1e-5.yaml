@@ -20,26 +20,34 @@ defaults:
   - /dataset@train.dataset: offline_episode
   - /models/policy/nav_llama/clip@train.policy: lora 
  
-  - _self_
+  # - override /transforms@train.transforms: reverse_turns
 
+  - _self_
 
 exp:
   group: "lmnav-1env"
-  job_type: "bc"
+  job_type: "it"
   tags: ["lora", "clip"]
 
 train:
   batch_size: 9
   minibatch_size: 3
   num_grad_accums: 3
+  ckpt_freq: 25
 
   steps: 10_000
-  episodes_per_batch: 6
+  episodes_per_batch: 9
   lr_schedule:
     lr: 2.5e-4
     gamma: 0.9995
   policy:
-    max_trajectory_length: 200    
+    max_trajectory_length: 200
+    use_artifact_config: True
+    # vis_encoder:
+      # precomputed_embeddings: True
+    load_artifact:
+      name: "lmnav-1env-bc-lora_clip_max_trajectory_length_200_batch_size_9"
+      version: "latest"
   dataset:
     artifact: 
       name: "offline_00744"

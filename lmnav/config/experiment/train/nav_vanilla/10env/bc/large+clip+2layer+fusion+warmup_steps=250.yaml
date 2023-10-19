@@ -56,7 +56,7 @@ train:
       fuse_rgb_goal: True
   dataset:
     artifact:
-      name: "offline_00744"
+      name: "offline_10envs"
       version: "precomputed-clip"
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"

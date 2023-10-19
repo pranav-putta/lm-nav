@@ -163,8 +163,8 @@ class NavLLAMA(Blip2Base):
 
     def embed_visual(self, rgbs, goals):
         rgbs, goals = self.vis_encoder.embed_obs(rgbs, goals)
-        rgbs = self.llama_proj(rgbs.float())
-        goals = self.llama_proj(goals.float())
+        rgbs = self.llama_proj(rgbs)
+        goals = self.llama_proj(goals)
         return rgbs, goals
 
     def prompt1_wrap(self, prompt, rgbs_embd, goals_embd, actions, masks):
@@ -241,8 +241,8 @@ class NavLLAMA(Blip2Base):
         goals_t = [B, C, 1, H, W]
         actions_t = [B, T]
         """
-        rgbs_t, goals_t, mask_t = map(
-            lambda t: t.to(self.device), (rgbs_t, goals_t, mask_t)
+        rgbs_t, goals_t, mask_t, actions_t = map(
+            lambda t: t.to(self.device), (rgbs_t, goals_t, mask_t, actions_t)
         )
         actions_t = actions_t.long()
 
@@ -268,7 +268,7 @@ class NavLLAMA(Blip2Base):
             "stop forward left right", add_special_tokens=False, return_tensors="pt"
         )
         act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
-        T = self.max_trajectory_length
+        B, T, *_ = rgbs_embd.shape
 
         act_positions = torch.tensor(
             [(self.tokens_per_img + 1) * (T - i - 1) + 2 for i in range(T)]
@@ -320,6 +320,8 @@ class NavLLAMA(Blip2Base):
         """
         action generator function, takes in the next rgb, goal, and action
         """
+        import pdb
+
         T = self.max_trajectory_length
 
         episodes = [[] for _ in range(num_envs)]
@@ -356,6 +358,7 @@ class NavLLAMA(Blip2Base):
                     }
                 )
 
+            pdb.set_trace()
             episodes = [e[-(T - 1) :] for e in episodes]
 
             rgb_embds, goal_embds, actions = map(
@@ -374,10 +377,10 @@ class NavLLAMA(Blip2Base):
             goal_embds = goal_embds[:, 0:1]
             mask_t = torch.ones_like(actions_t, dtype=torch.bool).to(self.device)
 
-            actions_t = apply_transforms_actions(actions_t)
-
             lens = [len(e) for e in episodes]
             max_len = max(lens)
+
+            out2 = self.forward_with_embds(rgb_embds, goal_embds, actions_t, mask_t)
 
             embd, tgts = self.prompt1_wrap(
                 self.prompt1, rgb_embds, goal_embds, actions_t, mask_t
