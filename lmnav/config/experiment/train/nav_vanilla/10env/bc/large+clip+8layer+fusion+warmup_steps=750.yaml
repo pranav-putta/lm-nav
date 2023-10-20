@@ -4,7 +4,7 @@ defaults:
   # set up habitat 
   - /env@habitat_baselines: habitat_baselines
   - /env@habitat: habitat 
-  - /dataset/imagenav/hm3d_1env
+  - /dataset/imagenav/hm3d_10env
     
   # set up experiment misc.
   - /exp: base
@@ -25,7 +25,7 @@ defaults:
 
 
 exp:
-  group: "vanilla-1env"
+  group: "vanilla-10env"
   job_type: "bc"
   tags: []
 
@@ -39,8 +39,8 @@ train:
   lr_schedule:
     lr: 1e-7
     warmup_start: 1e-7
-    warmup_end: 1e-4
-    warmup_steps: 400
+    warmup_end: 2.5e-4
+    warmup_steps: 750
     after_warmup:
       lr: 2.5e-4
       gamma: 0.9999
@@ -48,7 +48,7 @@ train:
     d_hidden: 1024
     d_head: 128
     n_heads: 8
-    n_blocks: 2
+    n_blocks: 8
     drop_p: 0.1
     max_trajectory_length: 200
     vis_encoder:
@@ -56,7 +56,7 @@ train:
       fuse_rgb_goal: True
   dataset:
     artifact:
-      name: "offline_00744"
+      name: "offline_10envs"
       version: "precomputed-clip"
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"

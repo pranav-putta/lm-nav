@@ -162,11 +162,11 @@ class BCTrainRunner:
         self.agent = self.setup_student()
 
         # set up optimizer
-        optim_groups = self.agent.module.configure_optim_groups()
-        optim_groups = [
-            {**group, "lr": self.config.train.lr_schedule.lr} for group in optim_groups
-        ]
-        self.optim = torch.optim.Adam(params=optim_groups)
+        self.optim, optim_groups = self.agent.module.configure_optimizers(
+            self.config.train.weight_decay,
+            self.config.train.lr_schedule.lr,
+            self.config.train.betas,
+        )
 
         # set up lr scheduler
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -351,6 +351,7 @@ class BCTrainRunner:
         print(f"Loading model from checkpoint")
         ckpt_state_dict = torch.load(ckpt_path, map_location="cpu")
         self.agent.load_state_dict(ckpt_state_dict["model"], strict=False)
+        self.agent.to(self.device)
         self.optim.load_state_dict(ckpt_state_dict["optimizer"])
         self.lr_scheduler.load_state_dict(ckpt_state_dict["lr_scheduler"])
         self.sampler.load_state_dict(ckpt_state_dict["sampler"])

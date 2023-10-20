@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from lmnav.common.utils import catchtime, convert_weights_to_fp16, find_tensors
 from torch import nn
+import inspect
 
 import math
 import torch
@@ -22,82 +23,119 @@ class NavVanillaTransformerOutput:
     last_hidden_state: torch.Tensor
 
 
-class MaskedCausalAttention(nn.Module):
-    def __init__(self, h_dim, max_T, n_heads, drop_p):
+class LayerNorm(nn.Module):
+    """LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False"""
+
+    def __init__(self, ndim, bias):
         super().__init__()
+        self.weight = nn.Parameter(torch.ones(ndim))
+        self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
 
-        self.n_heads = n_heads
-        self.max_T = max_T
+    def forward(self, input):
+        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
-        self.q_net = nn.Linear(h_dim, h_dim)
-        self.k_net = nn.Linear(h_dim, h_dim)
-        self.v_net = nn.Linear(h_dim, h_dim)
 
-        self.proj_net = nn.Linear(h_dim, h_dim)
-
-        self.att_drop = nn.Dropout(drop_p)
-        self.proj_drop = nn.Dropout(drop_p)
-
-        ones = torch.ones((max_T, max_T))
-        mask = torch.tril(ones).view(1, 1, max_T, max_T)
-
-        # register buffer makes sure mask does not get updated
-        # during backpropagation
-        self.register_buffer("mask", mask)
+class CausalSelfAttention(nn.Module):
+    def __init__(self, n_embd, n_head, bias, dropout, block_size):
+        super().__init__()
+        assert n_embd % n_head == 0
+        # key, query, value projections for all heads, but in a batch
+        self.c_attn = nn.Linear(n_embd, 3 * n_embd, bias=bias)
+        # output projection
+        self.c_proj = nn.Linear(n_embd, n_embd, bias=bias)
+        # regularization
+        self.attn_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
+        self.n_head = n_head
+        self.n_embd = n_embd
+        self.dropout = dropout
+        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+        self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
+        if not self.flash:
+            print(
+                "WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0"
+            )
+            # causal mask to ensure that attention is only applied to the left in the input sequence
+            self.register_buffer(
+                "bias",
+                torch.tril(torch.ones(block_size, block_size)).view(
+                    1, 1, block_size, block_size
+                ),
+            )
 
     def forward(self, x):
-        B, T, C = x.shape  # batch size, seq length, h_dim * n_heads
+        (
+            B,
+            T,
+            C,
+        ) = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
 
-        N, D = self.n_heads, C // self.n_heads  # N = num heads, D = attention dim
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
 
-        # rearrange q, k, v as (B, N, T, D)
-        q = self.q_net(x).view(B, T, N, D).transpose(1, 2)
-        k = self.k_net(x).view(B, T, N, D).transpose(1, 2)
-        v = self.v_net(x).view(B, T, N, D).transpose(1, 2)
+        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        if self.flash:
+            # efficient attention using Flash Attention CUDA kernels
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=None,
+                dropout_p=self.dropout if self.training else 0,
+                is_causal=True,
+            )
+        else:
+            # manual implementation of attention
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
+            att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = (
+            y.transpose(1, 2).contiguous().view(B, T, C)
+        )  # re-assemble all head outputs side by side
 
-        # weights (B, N, T, T)
-        weights = q @ k.transpose(2, 3) / math.sqrt(D)
-        # causal mask applied to weights
-        weights = weights.masked_fill(self.mask[..., :T, :T] == 0, float("-inf"))
-        # normalize weights, all -inf -> 0 after softmax
-        normalized_weights = F.softmax(weights, dim=-1)
+        # output projection
+        y = self.resid_dropout(self.c_proj(y))
+        return y
 
-        # attention (B, N, T, D)
-        attention = self.att_drop(normalized_weights @ v)
 
-        # gather heads and project (B, N, T, D) -> (B, T, N*D)
-        attention = attention.transpose(1, 2).contiguous().view(B, T, N * D)
+class MLP(nn.Module):
+    def __init__(self, n_embd, bias, dropout):
+        super().__init__()
+        self.c_fc = nn.Linear(n_embd, 4 * n_embd, bias=bias)
+        self.gelu = nn.GELU()
+        self.c_proj = nn.Linear(4 * n_embd, n_embd, bias=bias)
+        self.dropout = nn.Dropout(dropout)
 
-        out = self.proj_drop(self.proj_net(attention))
-
-        return out
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        x = self.dropout(x)
+        return x
 
 
 class Block(nn.Module):
-    def __init__(self, h_dim, max_T, n_heads, drop_p, ln_mode):
+    def __init__(self, n_embd, n_head, bias, dropout, block_size):
         super().__init__()
-        self.attention = MaskedCausalAttention(h_dim, max_T, n_heads, drop_p)
-        self.mlp = nn.Sequential(
-            nn.Linear(h_dim, 4 * h_dim),
-            nn.GELU(),
-            nn.Linear(4 * h_dim, h_dim),
-            nn.Dropout(drop_p),
-        )
-        self.ln1 = nn.LayerNorm(h_dim)
-        self.ln2 = nn.LayerNorm(h_dim)
-
-        self.ln_mode = ln_mode
+        self.ln_1 = LayerNorm(n_embd, bias=bias)
+        self.attn = CausalSelfAttention(n_embd, n_head, bias, dropout, block_size)
+        self.ln_2 = LayerNorm(n_embd, bias=bias)
+        self.mlp = MLP(n_embd, bias, dropout)
 
     def forward(self, x):
-        # Attention -> LayerNorm -> MLP -> LayerNorm
-        if self.ln_mode == "post":
-            x = self.ln1(x + self.attention(x))  # residual
-            x = self.ln2(x + self.mlp(x))  # residual
-        elif self.ln_mode == "pre":
-            x = self.attention(self.ln1(x))
-            x = self.mlp(self.ln2(x))
-        else:
-            raise NotImplementedError(f"layer norm mode {self.ln_mode}")
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
         return x
 
 
@@ -110,7 +148,6 @@ class NavVanillaTransformer(BaseModel):
         n_heads,
         n_blocks,
         drop_p,
-        weight_decay,
         max_trajectory_length,
         ln_mode="post",
         *args,
@@ -125,7 +162,6 @@ class NavVanillaTransformer(BaseModel):
         self.n_heads = n_heads
         self.n_blocks = n_blocks
         self.drop_p = drop_p
-        self.weight_decay = weight_decay
         self.ln_mode = ln_mode
 
         self.max_trajectory_length = max_trajectory_length
@@ -133,19 +169,27 @@ class NavVanillaTransformer(BaseModel):
             max_trajectory_length + (max_trajectory_length + 1) * self.tokens_per_img
         )  # action tokens + rgb tokens + goal token
 
-        self.transformer = nn.Sequential(
-            *[
-                Block(d_hidden, self.max_tokens, n_heads, drop_p, ln_mode)
-                for _ in range(n_blocks)
-            ]
+        self.transformer = nn.ModuleDict(
+            dict(
+                action_proj=nn.Embedding(4, self.d_hidden),
+                vis_proj=nn.Linear(self.vis_encoder.hidden_size, d_hidden),
+                wpe=nn.Embedding(self.max_tokens, d_hidden),
+                drop=nn.Dropout(drop_p),
+                h=nn.ModuleList(
+                    [
+                        Block(d_hidden, n_heads, True, drop_p, self.max_tokens)
+                        for _ in range(n_blocks)
+                    ]
+                ),
+                ln_f=LayerNorm(d_hidden, bias=True),
+            )
         )
-        self.vis_proj = nn.Linear(self.vis_encoder.hidden_size, self.d_hidden)
-        self.action_embedding = nn.Embedding(4, self.d_hidden)
-        self.wpe = nn.Embedding(self.max_tokens, self.d_hidden)
         self.action_head = nn.Linear(self.d_hidden, 4)
-        self.ln_f = nn.LayerNorm(self.d_hidden)
 
         self.apply(self._init_weights)
+        for pn, p in self.named_parameters():
+            if pn.endswith("c_proj.weight"):
+                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_blocks))
 
         convert_weights_to_fp16(self)
 
@@ -191,70 +235,29 @@ class NavVanillaTransformer(BaseModel):
         else:
             return contextlib.nullcontext()
 
-    def configure_optim_groups(self):
-        """
-        This long function is unfortunately doing something very simple and is being very defensive:
-        We are separating out all parameters of the model into two buckets: those that will experience
-        weight decay for regularization and those that won't (biases, and layernorm/embedding weights).
-        We are then returning the PyTorch optimizer object.
-        """
-
-        # separate out all parameters to those that will and won't experience regularizing weight decay
-        decay = set()
-        no_decay = set()
-        whitelist_weight_modules = (torch.nn.Linear,)
-        blacklist_weight_modules = (
-            torch.nn.LayerNorm,
-            torch.nn.Embedding,
-            torch.nn.Conv2d,
-            torch.nn.GroupNorm,
-        )
-
-        get_optim_params = lambda module: {
-            pn: p for pn, p in module.named_parameters() if p.requires_grad
-        }
-
-        for mn, m in self.named_modules():
-            for pn, p in get_optim_params(m).items():
-                fpn = "%s.%s" % (mn, pn) if mn else pn  # full param name
-                # random note: because named_modules and named_parameters are recursive
-                # we will see the same tensors p many many times. but doing it this way
-                # allows us to know which parent module any tensor p belongs to...
-                if pn.endswith("bias"):
-                    # all biases will not be decayed
-                    no_decay.add(fpn)
-                elif pn.endswith("weight") and isinstance(m, whitelist_weight_modules):
-                    # weights of whitelist modules will be weight decayed
-                    decay.add(fpn)
-                elif pn.endswith("weight") and isinstance(m, blacklist_weight_modules):
-                    # weights of blacklist modules will NOT be weight decayed
-                    no_decay.add(fpn)
-
-        # validate that we considered every parameter
-        param_dict = get_optim_params(self)
-        inter_params = decay & no_decay
-        union_params = decay | no_decay
-        assert (
-            len(inter_params) == 0
-        ), "parameters %s made it into both decay/no_decay sets!" % (str(inter_params),)
-        assert (
-            len(param_dict.keys() - union_params) == 0
-        ), "parameters %s were not separated into either decay/no_decay set!" % (
-            str(param_dict.keys() - union_params),
-        )
-
-        # create the pytorch optimizer object
+    def configure_optimizers(self, weight_decay, learning_rate, betas):
+        # start with all of the candidate parameters
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        # filter out those that do not require grad
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
+        # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
         optim_groups = [
-            {
-                "params": [param_dict[pn] for pn in sorted(list(decay))],
-                "weight_decay": self.weight_decay,
-            },
-            {
-                "params": [param_dict[pn] for pn in sorted(list(no_decay))],
-                "weight_decay": 0.0,
-            },
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0},
         ]
-        return optim_groups
+        # Create AdamW optimizer and use the fused version if it is available
+        fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available
+        extra_args = dict(fused=True) if use_fused else dict()
+        optimizer = torch.optim.AdamW(
+            optim_groups, lr=learning_rate, betas=betas, **extra_args
+        )
+        print(f"using fused AdamW: {use_fused}")
+
+        return optimizer, optim_groups
 
     def forward_with_embds(self, *args):
         return self.forward(*args, vis_embedded=True)
@@ -279,11 +282,11 @@ class NavVanillaTransformer(BaseModel):
                 rgbs_embd = rgbs_t
                 goals_embd = goals_t
 
-            rgbs_embd = self.vis_proj(rgbs_embd)
-            goals_embd = self.vis_proj(goals_embd)
-
+            # construct transformer input
+            rgbs_embd = self.transformer.vis_proj(rgbs_embd)
+            goals_embd = self.transformer.vis_proj(goals_embd)
             actions_embd = einops.rearrange(
-                self.action_embedding(actions_t), "b t h -> b t 1 h"
+                self.transformer.action_proj(actions_t), "b t h -> b t 1 h"
             )
             mask_t = mask_t.to(torch.bool)
 
@@ -296,13 +299,13 @@ class NavVanillaTransformer(BaseModel):
             pos = torch.arange(
                 0, embd.shape[1], dtype=torch.long, device=self.device
             ).unsqueeze(0)
-            pos_emb = self.wpe(pos)
+            pos_emb = self.transformer.wpe(pos)
 
-            logits = self.transformer(embd + pos_emb)
-            logits = self.ln_f(logits)
-            last_hidden_state = logits[
-                :, self.tokens_per_img :: self.tokens_per_img * 2
-            ]
+            x = self.transformer.drop(embd + pos_emb)
+            for block in self.transformer.h:
+                x = block(x)
+            x = self.transformer.ln_f(x)
+            last_hidden_state = x[:, self.tokens_per_img :: self.tokens_per_img * 2]
 
             act_logits = self.action_head(last_hidden_state)
             probs = F.softmax(act_logits, dim=-1)

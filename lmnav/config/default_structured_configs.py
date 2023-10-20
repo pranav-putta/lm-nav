@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from omegaconf import MISSING, OmegaConf
 import torch
 
@@ -149,7 +149,6 @@ class BaseNavVanillaTransformerPolicyConfig(BasePolicyConfig):
     n_blocks: int = 2
     drop_p: float = 0.2
     ln_mode: str = "post"
-    weight_decay: float = 0.0
     max_trajectory_length: int = 200
 
 
@@ -264,7 +263,9 @@ class TrainRunnerConfig(BaseRunnerConfig):
     batch_size: int = MISSING
     minibatch_size: int = MISSING
     num_grad_accums: int = MISSING
-    max_grad_norm: Optional[float] = 1.2
+    max_grad_norm: Optional[float] = 1.0
+    weight_decay: float = 0.1
+    betas: Tuple[float, float] = (0.9, 0.95)
     ckpt_freq: int = 50
     lr_schedule: BaseLRConfig = MISSING
 

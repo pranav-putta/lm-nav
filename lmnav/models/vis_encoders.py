@@ -310,8 +310,6 @@ class CLIPObservationEncoder(ObservationEncoder):
         self.fuse_rgb_goal = fuse_rgb_goal
         self.precomputed_embeddings = precomputed_embeddings
 
-        self.backbone = CLIPVisionModel.from_pretrained(vit_model)
-
         self.preprocess_transform = transforms.Compose(
             [
                 transforms.ConvertImageDtype(torch.float),
@@ -330,9 +328,12 @@ class CLIPObservationEncoder(ObservationEncoder):
             ]
         )
 
+        self.backbone = CLIPVisionModel.from_pretrained(vit_model)
         if freeze_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad = False
+        if vit_precision == "fp16":
+            convert_weights_to_fp16(self.backbone)
 
         # compile doesn't seem to work with bfloat16 for some reason
         # self.backbone = torch.compile(self.backbone)
@@ -354,9 +355,7 @@ class CLIPObservationEncoder(ObservationEncoder):
                 nn.Flatten(),
             )
 
-        if vit_precision == "fp16":
-            convert_weights_to_fp16(self.backbone)
-            if self.fuse_rgb_goal:
+            if vit_precision == "fp16":
                 convert_weights_to_fp16(self.compression)
 
     def embed_obs(self, rgbs, goals):
