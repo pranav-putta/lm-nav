@@ -12,9 +12,8 @@ defaults:
     
   # set up train
   - /runner@train: bc
-  - /lr@train.lr_schedule: warmup_then
-  - /lr@train.lr_schedule.after_warmup: exponential
-  - /models/policy/nav_vanilla@train.policy: vc1 
+  - /lr@train.lr_schedule: exponential
+  - /models/policy/nav_vanilla@train.policy: clip 
   - /dataset@train.dataset: offline_episode
     
   # set up eval
@@ -27,7 +26,7 @@ defaults:
 exp:
   group: "vanilla-10env"
   job_type: "bc"
-  tags: []
+  tags: ["ln_pre"]
 
 train:
   batch_size: 64
@@ -37,24 +36,22 @@ train:
   steps: 10_000
   episodes_per_batch: 64
   lr_schedule:
-    lr: 1e-7
-    warmup_start: 1e-7
-    warmup_end: 1e-4
-    warmup_steps: 250
-    after_warmup:
-      lr: 1e-4
-      gamma: 0.999
+    lr: 1e-4
+    gamma: 0.999
   policy:
+    vis_encoder:
+      precomputed_embeddings: True
     d_hidden: 1024
     d_head: 128
     n_heads: 8
     n_blocks: 8
     drop_p: 0.1
     max_trajectory_length: 200
+    ln_mode: "pre"
   dataset:
     artifact:
       name: "offline_10envs"
-      version: "latest"
+      version: "precomputed-clip"
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
       
