@@ -143,8 +143,9 @@ class NavVanillaTransformer(BaseModel):
         self.action_embedding = nn.Embedding(4, self.d_hidden)
         self.wpe = nn.Embedding(self.max_tokens, self.d_hidden)
         self.action_head = nn.Linear(self.d_hidden, 4)
+        self.ln_f = nn.LayerNorm(self.d_hidden)
 
-        self.transformer.apply(self._init_weights)
+        self.apply(self._init_weights)
 
         convert_weights_to_fp16(self)
 
@@ -298,6 +299,7 @@ class NavVanillaTransformer(BaseModel):
             pos_emb = self.wpe(pos)
 
             logits = self.transformer(embd + pos_emb)
+            logits = self.ln_f(logits)
             last_hidden_state = logits[
                 :, self.tokens_per_img :: self.tokens_per_img * 2
             ]
