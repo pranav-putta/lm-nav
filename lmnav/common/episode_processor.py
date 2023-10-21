@@ -81,6 +81,7 @@ def construct_subsequences(B, T, rgbs, goals, actions):
         for i in range(n_episodes)
     ]
 
+
     # B can be at most the window lengths so artificially cut it off
     B = min(B, sum(window_lengths))
 

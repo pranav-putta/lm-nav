@@ -1,0 +1,72 @@
+# @package _global_
+
+defaults:
+  # set up habitat 
+  - /env@habitat_baselines: habitat_baselines
+  - /env@habitat: habitat 
+  - /dataset/imagenav/hm3d_10env
+    
+  # set up experiment misc.
+  - /exp: base
+  - /logger@exp.logger: wb
+    
+  # set up train
+  - /runner@train: bc
+  - /lr@train.lr_schedule: warmup_then
+  - /lr@train.lr_schedule.after_warmup: exponential
+  - /models/policy/nav_vanilla@train.policy: clip 
+  - /dataset@train.dataset: offline_episode
+    
+  # set up eval
+  - /runner@eval: eval
+  - /dataset@eval.dataset: offline_episode
+    
+  - _self_
+
+
+exp:
+  group: "vanilla-10env"
+  job_type: "bc"
+  tags: []
+
+train:
+  batch_size: 128
+  minibatch_size: 128
+  num_grad_accums: 1
+
+  steps: 10_000
+  episodes_per_batch: 128
+  lr_schedule:
+    lr: 1e-7
+    warmup_start: 1e-7
+    warmup_end: 2.5e-4
+    warmup_steps: 500
+    after_warmup:
+      lr: 2.5e-4
+      gamma: 0.9995
+  policy:
+    d_hidden: 1024
+    d_head: 128
+    n_heads: 8
+    n_blocks: 8
+    drop_p: 0.0
+    max_trajectory_length: 200
+    vis_encoder:
+      precomputed_embeddings: True
+      fuse_rgb_goal: False
+  dataset:
+    artifact:
+      name: "offline_10envs"
+      version: "precomputed-clip"
+  store_artifact:
+    name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
+      
+eval:
+  policy: 
+    load_artifact:
+      name: ${....train.store_artifact.name}
+      version: "latest"
+  num_episodes: 50
+  save_videos: True
+  deterministic: False
+  num_envs: 10

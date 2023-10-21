@@ -149,11 +149,12 @@ class BCTrainRunner:
         self.dataset = OfflineEpisodeDataset(self.transforms, files=data_files)
 
         self.sampler = DistributedResumableSampler(
-            self.dataset, self.rank, self.world_size
+            self.dataset, self.rank, self.world_size, self.config.train.batch_size
         )
         self.data_loader = DataLoader(
             self.dataset,
             batch_size=self.config.train.episodes_per_batch,
+            # batch_size=2,
             collate_fn=lambda x: x,
             num_workers=1,
             sampler=self.sampler,
@@ -178,7 +179,7 @@ class BCTrainRunner:
         )
 
         self.step, self.epoch = 0, 0
-        self.cumstats = {"step": 0, "epoch": 0, "metrics/total_frames": 0}
+        self.cumstats = {"step": 0, "epoch": 0, "metrics/total_frames": 0, "metrics/total_fps": 0.0}
 
         if self.config.exp.resume_id is not None:
             ckpt_path = os.path.join(self.exp_folder, "ckpts", "latest.pth")
@@ -239,6 +240,7 @@ class BCTrainRunner:
         self.cumstats["metrics/total_frames"] += int(
             episode_stats["metrics/frames"] * torch.distributed.get_world_size()
         )
+        self.cumstats["metrics/total_fps"] = (episode_stats['metrics/fps'] * torch.distributed.get_world_size())
 
         return {**self.cumstats, **episode_stats}
 
@@ -265,86 +267,109 @@ class BCTrainRunner:
             outputs.loss.backward()
 
         # pull episode data into tensors
-        actions, goals, rgbs = map(
-            lambda k: [episode[k] for episode in episodes],
-            ("action", "imagegoal", "rgb"),
-        )
-
-        # construct subsequences
-        rgbs, goals, actions = construct_subsequences(
-            batch_size, T, rgbs, goals, actions
-        )
-
-        # pad sequences
-        mask = torch.stack(
-            [
-                torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])])
-                for t in rgbs
-            ]
-        ).bool()
-        rgbs = pad_along_dim(rgbs, T, dim=0)
-        goals = torch.stack(goals)
-        actions = pad_along_dim(actions, T, dim=0)
-
-        E = rgbs.shape[0]
-        local_size = torch.tensor(rgbs.shape[0], device=self.device)
-        all_sizes = [torch.zeros_like(local_size) for _ in range(self.world_size)]
-        torch.distributed.all_gather(all_sizes, local_size)
-
-        size_diff = max(all_sizes).item() - local_size.item()
-
-        if size_diff != 0:
-            print(all_sizes)
-            # to ensure equal batch sizes across gpus, gather them all
-            rgbs, goals, actions, mask = map(
-                lambda t: all_gather(t.contiguous(), self.device, self.world_size),
-                (rgbs, goals, actions, mask),
-            )
-            E = rgbs.shape[0] // self.world_size
-
-            # TODO; rename these variables to improve readability
-            rgbs, goals, actions, mask = map(
-                lambda t: t[self.rank * E : self.rank * E + E].clone(),
-                (rgbs, goals, actions, mask),
+        with catchtime("construct subsequences"):
+            actions, goals, rgbs = map(
+                lambda k: [episode[k] for episode in episodes],
+                ("action", "imagegoal", "rgb"),
             )
 
-        batch_idxs = torch.randperm(E)
+            # construct subsequences
+            rgbs, goals, actions = construct_subsequences(
+                batch_size, T, rgbs, goals, actions
+            )
 
-        for mb in range(0, E, num_grad_accums * minibatch_size):
-            minibatches_left = math.ceil((E - mb) / minibatch_size)
-            num_grad_steps = min(minibatches_left, num_grad_accums)
-            for g in range(num_grad_steps):
-                start_idx = mb + g * minibatch_size
-                mb_idxs = batch_idxs[start_idx : start_idx + minibatch_size]
 
-                # construct batch
-                rgbs_t, goals_t, actions_t, mask_t = map(
-                    lambda t: t[mb_idxs], (rgbs, goals, actions, mask)
+        with catchtime("Pad"):
+            # pad sequences
+            mask = torch.stack(
+                [
+                    torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])])
+                    for t in rgbs
+                ]
+            ).bool()
+            rgbs = pad_along_dim(rgbs, T)
+            goals = torch.stack(goals)
+            actions = pad_along_dim(actions, T)
+
+        with catchtime("All Gather"):
+            E = rgbs.shape[0]
+            local_size = torch.tensor(rgbs.shape[0], device=self.device)
+            all_sizes = [torch.zeros_like(local_size) for _ in range(self.world_size)]
+            torch.distributed.all_gather(all_sizes, local_size)
+
+            size_diff = max(all_sizes).item() - local_size.item()
+
+            if size_diff != 0:
+                print(all_sizes)
+                return stats
+                # to ensure equal batch sizes across gpus, gather them all
+                rgbs, goals, actions, mask = map(
+                    lambda t: all_gather(t.contiguous(), self.device, self.world_size),
+                    (rgbs, goals, actions, mask),
                 )
-                if g < num_grad_accums - 1:
-                    with self.agent.no_sync():
+                E = rgbs.shape[0] // self.world_size
+
+                # TODO; rename these variables to improve readability
+                rgbs, goals, actions, mask = map(
+                    lambda t: t[self.rank * E : self.rank * E + E].clone(),
+                    (rgbs, goals, actions, mask),
+                )
+
+            batch_idxs = torch.randperm(E)
+
+        with catchtime("Train"):
+            for mb in range(0, E, num_grad_accums * minibatch_size):
+                minibatches_left = math.ceil((E - mb) / minibatch_size)
+                num_grad_steps = min(minibatches_left, num_grad_accums)
+                for g in range(num_grad_steps):
+                    start_idx = mb + g * minibatch_size
+                    mb_idxs = batch_idxs[start_idx : start_idx + minibatch_size]
+
+                    # construct batch
+                    rgbs_t, goals_t, actions_t, mask_t = map(
+                        lambda t: t[mb_idxs], (rgbs, goals, actions, mask)
+                    )
+                    if g < num_grad_accums - 1:
+                        with self.agent.no_sync():
+                            forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
+                    else:
                         forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
-                else:
-                    forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
-                rgbs_t.to("cpu")
-                goals_t.to("cpu")
+                    rgbs_t.to("cpu")
+                    goals_t.to("cpu")
 
-            if self.config.train.max_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(
-                    self.agent.parameters(), self.config.train.max_grad_norm
-                )
-            self.optim.step()
-            self.optim.zero_grad()
+                if self.config.train.max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.agent.parameters(), self.config.train.max_grad_norm
+                    )
+                self.optim.step()
+                self.optim.zero_grad()
 
         end_time = time.time()
 
         stats["learner/loss"] /= num_minibatches
         stats["learner/lr"] = self.lr_scheduler.get_last_lr()[0]
         stats["metrics/frames"] = sum([episode["rgb"].shape[0] for episode in episodes])
-
         stats["metrics/fps"] = stats["metrics/frames"] / (end_time - start_time)
 
+        rgbs.to("cpu")
+        goals.to("cpu")
+        actions.to("cpu")
+
         return stats
+
+    def optimizer_to(self, optim, device):
+        for param in optim.state.values():
+            # Not sure there are any global tensors in the state dict
+            if isinstance(param, torch.Tensor):
+                param.data = param.data.to(device)
+                if param._grad is not None:
+                    param._grad.data = param._grad.data.to(device)
+            elif isinstance(param, dict):
+                for subparam in param.values():
+                    if isinstance(subparam, torch.Tensor):
+                        subparam.data = subparam.data.to(device)
+                        if subparam._grad is not None:
+                            subparam._grad.data = subparam._grad.data.to(device)
 
     def load_checkpoint(self, ckpt_path):
         # load checkpoint
@@ -353,6 +378,7 @@ class BCTrainRunner:
         self.agent.load_state_dict(ckpt_state_dict["model"], strict=False)
         self.agent.to(self.device)
         self.optim.load_state_dict(ckpt_state_dict["optimizer"])
+        self.optimizer_to(self.optim, self.device)
         self.lr_scheduler.load_state_dict(ckpt_state_dict["lr_scheduler"])
         self.sampler.load_state_dict(ckpt_state_dict["sampler"])
 
@@ -394,7 +420,10 @@ class BCTrainRunner:
         self.initialize_train()
 
         while self.step < self.config.train.steps:
+            start_batch_time = time.time()
             for batch in self.data_loader:
+                end_batch_time = time.time()
+                print("Batch time: ", end_batch_time - start_batch_time)
                 stats = self.train_bc_step(batch)
 
                 self.lr_scheduler.step()
@@ -412,6 +441,7 @@ class BCTrainRunner:
                         self.save_checkpoint("latest.pth", archive_artifact=False)
 
                 self.step += 1
+                start_batch_time = time.time()
 
             self.epoch += 1
 

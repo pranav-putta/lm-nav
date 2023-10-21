@@ -173,6 +173,7 @@ class NavVanillaTransformer(BaseModel):
             dict(
                 action_proj=nn.Embedding(4, self.d_hidden),
                 vis_proj=nn.Linear(self.vis_encoder.hidden_size, d_hidden),
+                vis_ln=LayerNorm(d_hidden, bias=True),
                 wpe=nn.Embedding(self.max_tokens, d_hidden),
                 drop=nn.Dropout(drop_p),
                 h=nn.ModuleList(
@@ -191,7 +192,7 @@ class NavVanillaTransformer(BaseModel):
             if pn.endswith("c_proj.weight"):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_blocks))
 
-        convert_weights_to_fp16(self)
+        # convert_weights_to_fp16(self)
 
     @property
     def hidden_size(self):
@@ -256,7 +257,7 @@ class NavVanillaTransformer(BaseModel):
             optim_groups, lr=learning_rate, betas=betas, **extra_args
         )
         print(f"using fused AdamW: {use_fused}")
-
+        
         return optimizer, optim_groups
 
     def forward_with_embds(self, *args):
@@ -268,6 +269,7 @@ class NavVanillaTransformer(BaseModel):
         goals_t = [B, C, 1, H, W]
         actions_t = [B, T]
         """
+
         with self.maybe_autocast():
             rgbs_t, goals_t, actions_t, mask_t = map(
                 lambda t: t.to(self.device), (rgbs_t, goals_t, actions_t, mask_t)
@@ -283,8 +285,8 @@ class NavVanillaTransformer(BaseModel):
                 goals_embd = goals_t
 
             # construct transformer input
-            rgbs_embd = self.transformer.vis_proj(rgbs_embd)
-            goals_embd = self.transformer.vis_proj(goals_embd)
+            rgbs_embd = self.transformer.vis_proj(self.transformer.vis_ln(rgbs_embd))
+            goals_embd = self.transformer.vis_proj(self.transformer.vis_ln(goals_embd))
             actions_embd = einops.rearrange(
                 self.transformer.action_proj(actions_t), "b t h -> b t 1 h"
             )
@@ -309,6 +311,8 @@ class NavVanillaTransformer(BaseModel):
 
             act_logits = self.action_head(last_hidden_state)
             probs = F.softmax(act_logits, dim=-1)
+
+            print(probs[0])
 
             loss = F.cross_entropy(
                 einops.rearrange(probs, "b t h -> (b t) h"),

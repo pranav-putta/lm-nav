@@ -1,0 +1,20 @@
+# @package habitat
+
+defaults:
+  - /benchmark/nav/imagenav/imagenav_base
+  - _self_
+        
+environment:
+  max_episode_steps: 500
+  forward_step_size: 0.25
+simulator:
+  turn_angle: 30
+  agents:
+    main_agent:
+      sim_sensors:
+        rgb_sensor:
+          width: 128
+          height: 128
+  agents_order: ['main_agent']
+  habitat_sim_v0:
+    allow_sliding: true

@@ -264,8 +264,8 @@ class TrainRunnerConfig(BaseRunnerConfig):
     minibatch_size: int = MISSING
     num_grad_accums: int = MISSING
     max_grad_norm: Optional[float] = 1.0
-    weight_decay: float = 0.1
-    betas: Tuple[float, float] = (0.9, 0.95)
+    weight_decay: float = 0.0
+    betas: Tuple[float, float] = (0.9, 0.999)
     ckpt_freq: int = 50
     lr_schedule: BaseLRConfig = MISSING
 

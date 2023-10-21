@@ -550,7 +550,9 @@ def catchtime(name=""):
     start = time.time()
     yield lambda: time.time() - start
     torch.cuda.synchronize()
-    print(f"TimeIt [{name}]: {time.time() - start:.3f} seconds")
+
+    if torch.distributed.get_rank() == 0:
+        print(f"TimeIt [{name}]: {time.time() - start:.3f} seconds")
 
 
 def forward_minibatches(fn_forward, list_of_tensors, max_batch_size):
@@ -616,13 +618,14 @@ def apply_fn_in_batches(tensor, fn, max_batch_size, args):
     return out
 
 
-def pad_along_dim(list_of_tensors, max_len, dim=0):
-    shape = list_of_tensors[0].shape
-    pad_num_zeros = 2 * (len(shape) - dim) - 1
-
-    return torch.stack(
-        [
-            F.pad(t, (0,) * pad_num_zeros + (max_len - t.shape[0],))
-            for t in list_of_tensors
-        ]
-    )
+def pad_along_dim(list_of_tensors, max_len):
+    B = len(list_of_tensors)
+    # Create a zero tensor of the desired shape
+    t0 = list_of_tensors[0]
+    batched_tensor = torch.zeros(B, max_len, *t0.shape[1:], dtype=t0.dtype)
+    
+    # Place each tensor in the appropriate position in the zero tensor
+    for i, tensor in enumerate(list_of_tensors):
+        batched_tensor[i, :tensor.shape[0]] = tensor
+    
+    return batched_tensor
