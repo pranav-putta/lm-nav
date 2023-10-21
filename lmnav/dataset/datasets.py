@@ -1,4 +1,5 @@
 import os
+import numpy as np
 from collections import OrderedDict
 import torch
 from torch.utils.data import Dataset
@@ -34,4 +35,9 @@ class OfflineEpisodeDataset(BaseDataset):
         file = self.files[idx]
         episode = torch.load(file)
         episode = self.transforms(episode)
-        return episode
+
+        return {
+            'rgb': episode['rgb'],
+            'imagegoal': episode['imagegoal'],
+            'action': episode['action'].cpu(),
+        }

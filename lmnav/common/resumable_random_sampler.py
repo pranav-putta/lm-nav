@@ -14,7 +14,7 @@ class DistributedResumableSampler(torch.utils.data.Sampler):
     #data_source: Sized
     #replacement: bool
 
-    def __init__(self, data_source, rank, world_size):
+    def __init__(self, data_source, rank, world_size, batch_size):
         self.data_source = data_source
         self.generator = torch.Generator()
         self.generator = self.generator.manual_seed(47)
@@ -22,14 +22,17 @@ class DistributedResumableSampler(torch.utils.data.Sampler):
         self.perm_index = 0
         self.rank = rank
         self.world_size = world_size
+        self.batch_size = batch_size
         
+        # drop the tail to make sure data source is evenly divisible
         self.perm = torch.randperm(len(self.data_source), generator=self.generator)
         self.total_size = self.num_samples * self.world_size
         
     @property
     def num_samples(self) -> int:
         # drop the tail to make sure data source is evenly divisible
-        return math.floor((len(self.data_source) - self.world_size) / self.world_size)
+        block_size = self.world_size * self.batch_size
+        return math.floor((len(self.data_source) - block_size) / block_size) * self.batch_size
     
     def __iter__(self):
         if self.perm_index >= len(self.perm):
