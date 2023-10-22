@@ -285,8 +285,9 @@ class NavVanillaTransformer(BaseModel):
                 goals_embd = goals_t
 
             # construct transformer input
-            rgbs_embd = self.transformer.vis_proj(self.transformer.vis_ln(rgbs_embd))
-            goals_embd = self.transformer.vis_proj(self.transformer.vis_ln(goals_embd))
+            with torch.no_grad():
+                rgbs_embd = self.transformer.vis_proj(self.transformer.vis_ln(rgbs_embd))
+                goals_embd = self.transformer.vis_proj(self.transformer.vis_ln(goals_embd))
             actions_embd = einops.rearrange(
                 self.transformer.action_proj(actions_t), "b t h -> b t 1 h"
             )
