@@ -70,6 +70,7 @@ class CausalSelfAttention(nn.Module):
             C,
         ) = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
 
+
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(
@@ -191,6 +192,7 @@ class NavVanillaTransformer(BaseModel):
         for pn, p in self.named_parameters():
             if pn.endswith("c_proj.weight"):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_blocks))
+
 
         # convert_weights_to_fp16(self)
 
@@ -318,6 +320,7 @@ class NavVanillaTransformer(BaseModel):
                 einops.rearrange(probs, "b t h -> (b t) h"),
                 einops.rearrange(targets, "b t -> (b t)"),
                 ignore_index=-100,
+                label_smoothing=0.1,
             )
 
         return NavVanillaTransformerOutput(
