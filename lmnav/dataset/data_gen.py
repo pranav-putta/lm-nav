@@ -13,8 +13,6 @@ from habitat_baselines.rl.ddppo.ddp_utils import (
     is_slurm_batch_job,
 )
 import hydra
-from pympler import tracker,summary
-from pympler import muppy
 
 def _init_envs(config=None, is_eval: bool = False):
     # Quiet the Habitat simulator logging
@@ -55,8 +53,6 @@ def collect_episodes(config, setup_teacher, filter_fn, deterministic, conn, q):
     step = 0
 
     actor = teacher.action_generator(envs.num_envs, deterministic=deterministic)
-
- 
     
     while True:
         if conn.poll():

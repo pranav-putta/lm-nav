@@ -3,7 +3,7 @@
 defaults:
   # setup habitat
   - /env@habitat_baselines: habitat_baselines
-  - /env@habitat: habitat
+  - /env@habitat: habitat_karmesh
   - /dataset/imagenav/hm3d_10env
    
     # setup experiment misc.
@@ -31,12 +31,12 @@ generator:
     dtg_threshold: 1.0
     
   policy:
-    _target_: "policies.old_eai_policy"
+    _target_: "policies.karmesh_eai_policy"
     load_artifact:
-      dirpath: "ckpts/uLHP.300.pth"
+      dirpath: "/srv/flash1/pputta7/data/models/mae_vit_base_patch16_HGSP_finetune_vit_runs_goal_image_combined_ckpt.99.pth"
   
   store_artifact:
-    name: "offline_10envs_actprobs"
+    name: "offline_karmesh_10envs"
     dirpath: "data/datasets/lmnav"
   
 
@@ -46,7 +46,7 @@ habitat_baselines:
     policy:
       obs_transforms:
         resize_shortest_edge:
-          size: 120
-          trans_keys: [rgb, depth, imagegoal]
+          size: 128
+          trans_keys: [rgb, imagegoal]
 
 

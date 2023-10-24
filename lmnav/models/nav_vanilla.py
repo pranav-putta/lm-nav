@@ -193,9 +193,6 @@ class NavVanillaTransformer(BaseModel):
             if pn.endswith("c_proj.weight"):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_blocks))
 
-
-        # convert_weights_to_fp16(self)
-
     @property
     def hidden_size(self):
         return self.d_hidden

@@ -106,10 +106,10 @@ class OfflineDataGenerator:
                 
                 # dump data into torch store
                 datanum = self.N // max_buffer_len
-                filepath = os.path.join(exp_folder, f'data.{datanum}.pkl.gz')
+                filepath = os.path.join(exp_folder, f'data.{datanum}.pkl')
                    
                 # gzip file as well
-                with gzip.open(filepath, 'wb+') as f:
+                with open(filepath, 'wb+') as f:
                     # in the special case where each file is only 1 episode, get rid of the list
                     pickle.dump(data[0] if max_buffer_len == 1 else data, f)
 
