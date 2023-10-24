@@ -139,8 +139,14 @@ class VisualEncoder(nn.Module):
         rgb = embed(rgb)
         goal = embed(goal)
 
-        x = torch.cat([rgb, goal], dim=1)
+        x = torch.cat([rgb, goal], dim=2)
+        N, L, D = x.shape
+        H = W = int(L**0.5)
+        x = x.reshape(N, H, W, D)
+        x = torch.einsum("nhwd->ndhw", x)
+
         x = self.compression(x)
+        x = torch.flatten(x, start_dim=1)
         return x
 
 

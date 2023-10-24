@@ -6,9 +6,9 @@ defaults:
         
 environment:
   max_episode_steps: 500
-  forward_step_size: 0.25
 simulator:
   turn_angle: 30
+  forward_step_size: 0.25
   agents:
     main_agent:
       sim_sensors:

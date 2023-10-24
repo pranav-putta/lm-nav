@@ -61,7 +61,6 @@ class EAINet(Net):
         rgb_sensor_shape = observation_space.spaces["rgb"].shape
         rgb_sensor_shape = (
             int(rgb_sensor_shape[0] * scale_obs), int(rgb_sensor_shape[1] * scale_obs), rgb_sensor_shape[2])
-        self.rgb_scaler = T.Resize(rgb_sensor_shape[:2])
 
         name = "resize"
         if use_augmentations and run_type == "train":
@@ -97,7 +96,6 @@ class EAINet(Net):
         self.prev_action_embedding = nn.Embedding(action_space.n + 1, 32)
         rnn_input_size += 32
 
-        # state encoder
         self.state_encoder = build_rnn_state_encoder(
             input_size=rnn_input_size,
             hidden_size=hidden_size,
@@ -150,8 +148,6 @@ class EAINet(Net):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         x = []
 
-        import pdb
-        pdb.set_trace()
         # number of environments
         N = rnn_hidden_states.size(0)
 
@@ -276,7 +272,7 @@ class KarmeshEAIPolicy(NetPolicy):
             vit_use_cls=False,
             vit_mask_ratio=None,
             hidden_size=512,
-            rnn_type='GRU',
+            rnn_type='LSTM',
             num_recurrent_layers=2,
             use_augmentations=False,
             use_augmentations_test_time=False,
@@ -292,7 +288,7 @@ class KarmeshEAIPolicy(NetPolicy):
 
     @staticmethod
     def _construct_state_tensors(num_environments, device):
-        rnn_hx = torch.zeros((num_environments, 2, 512), device=device)
+        rnn_hx = torch.zeros((num_environments, 4, 512), device=device)
         prev_actions = torch.zeros(num_environments, 1, device=device, dtype=torch.long)
         not_done_masks = torch.ones(num_environments, 1, device=device, dtype=torch.bool)
 
