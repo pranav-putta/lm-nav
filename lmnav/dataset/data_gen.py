@@ -74,10 +74,10 @@ def collect_episodes(config, setup_teacher, filter_fn, deterministic, conn, q):
         next(actor)
         actions, probs = actor.send((observations, dones))
         step_data = [a.item() for a in actions.cpu()]
+        current_episodes = envs.current_episodes()
 
         outputs = envs.step(step_data)
         next_observations, rewards_l, dones, infos = [list(x) for x in zip(*outputs)]
-        current_episodes = envs.current_episodes()
 
         # insert episode into list
         for i, episode in enumerate(episodes):

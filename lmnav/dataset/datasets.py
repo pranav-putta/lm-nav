@@ -4,6 +4,7 @@ from collections import OrderedDict
 import torch
 from torch.utils.data import Dataset
 from lmnav.dataset.transforms import BaseDataTransform
+import pickle
 
 
 class BaseDataset(Dataset):
@@ -33,7 +34,14 @@ class OfflineEpisodeDataset(BaseDataset):
 
     def __getitem__(self, idx):
         file = self.files[idx]
-        episode = torch.load(file)
+        if file.endswith(".pth") or file.endswith(".pt"):
+            episode = torch.load(file)
+        elif file.endswith(".pkl"):
+            with open(file, "rb") as f:
+                episode = pickle.load(f)
+        else:
+            raise NotImplementedError(f"File format {file} not recognized.")
+
         episode = self.transforms(episode)
 
         return {

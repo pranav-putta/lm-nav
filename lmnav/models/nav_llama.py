@@ -241,67 +241,68 @@ class NavLLAMA(Blip2Base):
         goals_t = [B, C, 1, H, W]
         actions_t = [B, T]
         """
-        rgbs_t, goals_t, mask_t, actions_t = map(
-            lambda t: t.to(self.device), (rgbs_t, goals_t, mask_t, actions_t)
-        )
-        actions_t = actions_t.long()
-
-        if vis_embedded:
-            rgbs_embd = rgbs_t
-            goals_embd = goals_t
-        else:
-            rgbs_embd, goals_embd = self.embed_visual(rgbs_t, goals_t)
-
-        mask_t = mask_t.to(torch.bool)
-
-        embd, tgts = self.prompt1_wrap(
-            self.prompt1, rgbs_embd, goals_embd, actions_t, mask_t
-        )
-        embd = embd.to(self.device)
-        tgts = tgts.to(self.device)
-        outputs = self.llama_model(
-            inputs_embeds=embd, labels=tgts, return_dict=True, output_hidden_states=True
-        )
-
-        # extract the action tokens
-        act_tkn_ids = self.llama_tokenizer(
-            "stop forward left right", add_special_tokens=False, return_tensors="pt"
-        )
-        act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
-        B, T, *_ = rgbs_embd.shape
-
-        act_positions = torch.tensor(
-            [(self.tokens_per_img + 1) * (T - i - 1) + 2 for i in range(T)]
-        ).to(self.device)
-
-        act_hidden_states = outputs.hidden_states[-1][:, -act_positions]
-
-        # construct action logits
-        if self.action_head_mode == "act_linear":
-            act_logits = self.action_head(act_hidden_states)
-        elif self.action_head_mode == "lm" or self.action_head_mode == "lm_slice":
-            act_logits = outputs.logits[:, -act_positions][:, :, act_tkn_ids]
-        else:
-            print(f"{self.action_head_mode} head mode is not recognized")
-            exit()
-
-        probs = F.softmax(act_logits, dim=-1)
-
-        targets = actions_t.detach().clone().masked_fill_(~mask_t, -100)
-
-        # compute loss
-        if self.action_head_mode == "act_linear" or self.action_head_mode == "lm_slice":
-            loss = F.cross_entropy(
-                einops.rearrange(probs, "b t h -> (b t) h"),
-                einops.rearrange(targets, "b t -> (b t)"),
-                ignore_index=-100,
+        with self.maybe_autocast():
+            rgbs_t, goals_t, mask_t, actions_t = map(
+                lambda t: t.to(self.device), (rgbs_t, goals_t, mask_t, actions_t)
             )
-        else:
-            loss = outputs.loss
+            actions_t = actions_t.long()
 
-        return NavLLAMAOutput(
-            logits=act_logits, loss=loss, last_hidden_state=act_hidden_states
-        )
+            if vis_embedded:
+                rgbs_embd = rgbs_t
+                goals_embd = goals_t
+            else:
+                rgbs_embd, goals_embd = self.embed_visual(rgbs_t, goals_t)
+
+            mask_t = mask_t.to(torch.bool)
+
+            embd, tgts = self.prompt1_wrap(
+                self.prompt1, rgbs_embd, goals_embd, actions_t, mask_t
+            )
+            embd = embd.to(self.device)
+            tgts = tgts.to(self.device)
+            outputs = self.llama_model(
+                inputs_embeds=embd, labels=tgts, return_dict=True, output_hidden_states=True
+            )
+
+            # extract the action tokens
+            act_tkn_ids = self.llama_tokenizer(
+                "stop forward left right", add_special_tokens=False, return_tensors="pt"
+            )
+            act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
+            B, T, *_ = rgbs_embd.shape
+
+            act_positions = torch.tensor(
+                [(self.tokens_per_img + 1) * (T - i - 1) + 2 for i in range(T)]
+            ).to(self.device)
+
+            act_hidden_states = outputs.hidden_states[-1][:, -act_positions]
+
+            # construct action logits
+            if self.action_head_mode == "act_linear":
+                act_logits = self.action_head(act_hidden_states)
+            elif self.action_head_mode == "lm" or self.action_head_mode == "lm_slice":
+                act_logits = outputs.logits[:, -act_positions][:, :, act_tkn_ids]
+            else:
+                print(f"{self.action_head_mode} head mode is not recognized")
+                exit()
+
+            probs = F.softmax(act_logits, dim=-1)
+
+            targets = actions_t.detach().clone().masked_fill_(~mask_t, -100)
+
+            # compute loss
+            if self.action_head_mode == "act_linear" or self.action_head_mode == "lm_slice":
+                loss = F.cross_entropy(
+                    einops.rearrange(probs, "b t h -> (b t) h"),
+                    einops.rearrange(targets, "b t -> (b t)"),
+                    ignore_index=-100,
+                )
+            else:
+                loss = outputs.loss
+
+            return NavLLAMAOutput(
+                logits=act_logits, loss=loss, last_hidden_state=act_hidden_states
+            )
 
     def pad_sequences(self, seqs, dim):
         p2d_partial = (0,) * ((len(seqs[0].shape) - dim - 1) * 2 + 1)
@@ -418,5 +419,11 @@ class NavLLAMA(Blip2Base):
                 episodes.clear()
             yield actions
 
-    def configure_optim_groups(self):
-        return [{"params": [p for p in self.parameters() if p.requires_grad]}]
+    def configure_optimizers(self, weight_decay, learning_rate, betas):
+        optim_groups =  [{"params": [p for p in self.parameters() if p.requires_grad]}]
+        optim_groups = [
+            {**group, "lr": learning_rate, "weight_decay": weight_decay} for group in optim_groups
+        ]
+        optim = torch.optim.Adam(params=optim_groups, betas=betas)
+        return optim, optim_groups
+

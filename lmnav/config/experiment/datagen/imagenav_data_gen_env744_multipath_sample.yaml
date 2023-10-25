@@ -1,10 +1,12 @@
- # @package _global_
+# @package _global_
 
+# used for generating multiple trajectories
+#
 defaults:
   # setup habitat
   - /env@habitat_baselines: habitat_baselines
-  - /env@habitat: habitat_karmesh
-  - /dataset/imagenav/hm3d_10env
+  - /env@habitat: habitat
+  - /dataset/imagenav/hm3d_1env
    
     # setup experiment misc.
   - /exp: base
@@ -19,34 +21,36 @@ defaults:
   - _self_
 
 exp:
-  root_dir: "data/datasets/lmnav"
-  group: "lmnav-10env"
+  name: "offline_00744 multipath"
+  group: "lmnav-1env"
   job_type: "datagen"
-
+  
 generator:
-  num_episodes: 100000
+  num_episodes: 5000
   deterministic: False
   ckpt_freq: 1
   filter_method:
     dtg_threshold: 1.0
     
   policy:
-    _target_: "policies.karmesh_eai_policy"
+    _target_: "policies.old_eai_policy"
     load_artifact:
-      dirpath: "/srv/flash1/pputta7/data/models/mae_vit_base_patch16_HGSP_finetune_vit_runs_goal_image_combined_ckpt.99.pth"
+      dirpath: "ckpts/uLHP.300.pth"
   
   store_artifact:
-    name: "offline_10envs_karmesh"
+    name: "offline_00744_multipath"
     dirpath: "data/datasets/lmnav"
   
 
 habitat_baselines:
-  num_environments: 10
+  num_environments: 20
   rl:
     policy:
       obs_transforms:
         resize_shortest_edge:
-          size: 128
-          trans_keys: [rgb, imagegoal]
+          size: 120
+          trans_keys: [rgb, depth, imagegoal]
 
-
+habitat:
+  dataset:
+    type: CustomFilterDataset

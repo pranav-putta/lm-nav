@@ -81,7 +81,8 @@ def run(config, rank, world_size):
         for j in range(len(episodes)):
             episodes[j]["rgb"] = rgbs_e[j].clone()
             episodes[j]["imagegoal"] = goals_e[j].clone()
-            del episodes[j]["depth"]
+            if "depth" in episodes[j]:
+                del episodes[j]["depth"]
 
             torch.save(
                 episodes[j],

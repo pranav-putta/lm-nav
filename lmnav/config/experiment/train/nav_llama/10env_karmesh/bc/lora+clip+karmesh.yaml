@@ -1,0 +1,63 @@
+# @package _global_
+
+defaults:
+  # set up habitat 
+  - /env@habitat_baselines: habitat_baselines
+  - /env@habitat: habitat 
+  - /dataset/imagenav/hm3d_10env
+    
+  # set up experiment misc.
+  - /exp: base
+  - /logger@exp.logger: wb
+   
+  # set up eval
+  - /runner@eval: eval
+  - /dataset@eval.dataset: offline_episode
+
+  # set up train
+  - /runner@train: bc
+  - /lr@train.lr_schedule: exponential
+  - /dataset@train.dataset: offline_episode
+  - /models/policy/nav_llama/clip@train.policy: lora 
+ 
+  - _self_
+
+
+exp:
+  group: "lmnav-10env"
+  job_type: "bc"
+  tags: ["lora", "clip"]
+
+train:
+  batch_size: 3
+  minibatch_size: 1
+  num_grad_accums: 1
+
+  steps: 10_000
+  episodes_per_batch: 3
+  lr_schedule:
+    lr: 2.5e-4
+    gamma: 0.9995
+  betas: [0.9, 0.999]
+  policy:
+    max_trajectory_length: 200    
+    vis_encoder:
+      precomputed_embeddings: True
+  dataset:
+    artifact: 
+      name: "offline_10envs_karmesh"
+      version: "precomputed-clip"
+  store_artifact:
+    name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
+
+ 
+eval:
+  policy: 
+    use_artifact_config: True
+    load_artifact:
+      name: ${....train.store_artifact.name}
+      version: "latest"
+  num_episodes: 25
+  save_videos: True
+  deterministic: False
+  num_envs: 10

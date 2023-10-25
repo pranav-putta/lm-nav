@@ -1,6 +1,7 @@
 import os
 
 from lmnav.config.default_structured_configs import *
+from lmnav.dataset.habitat_datasets import *
 
 from hydra import initialize, compose
 
