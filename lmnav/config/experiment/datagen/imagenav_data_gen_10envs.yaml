@@ -19,10 +19,10 @@ defaults:
   - _self_
 
 exp:
-  root_dir: "data/datasets/lmnav"
+  name: "offline_10envs"
   group: "lmnav-10env"
   job_type: "datagen"
-
+  
 generator:
   num_episodes: 100000
   deterministic: False
@@ -36,7 +36,7 @@ generator:
       dirpath: "ckpts/uLHP.300.pth"
   
   store_artifact:
-    name: "offline_10envs_actprobs"
+    name: "offline_10envs"
     dirpath: "data/datasets/lmnav"
   
 
