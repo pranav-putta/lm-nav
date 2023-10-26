@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 from functools import partial
 from pympler import tracker
 import gc
@@ -28,6 +29,7 @@ class OfflineDataGenerator:
         self.config = get_config(run)
         self.num_gpus = torch.cuda.device_count()
         self.buffer = []
+        self.episode_repeats = defaultdict(lambda: 0)
         self.N = 0
         self.latest_generator_stats = {}
         
@@ -94,7 +96,11 @@ class OfflineDataGenerator:
 
                     # reformat episode
                     formatted_episode = self.reformat_episode(episode_stats, episode)              
-                    self.buffer.append(formatted_episode) 
+
+                    # check if max episode reached and update
+                    self.episode_repeats[formatted_episode['episode_id']] += 1
+                    if self.episode_repeats[formatted_episode['episode_id']] < self.config.generator.max_episode_id_repeats:
+                        self.buffer.append(formatted_episode) 
 
                     del episode_stats
                     del generator_stats
@@ -108,14 +114,13 @@ class OfflineDataGenerator:
                 datanum = self.N // max_buffer_len
                 filepath = os.path.join(exp_folder, f'data.{datanum}.pkl')
                    
-                # gzip file as well
                 with open(filepath, 'wb+') as f:
-                    # in the special case where each file is only 1 episode, get rid of the list
-                    pickle.dump(data[0] if max_buffer_len == 1 else data, f)
+                # in the special case where each file is only 1 episode, get rid of the list
+                    pickle.dump(data[0] if len(data) == 1 else data, f)
 
                 # del data
                 self.N += max_buffer_len
-               
+           
 
             step += 1
             time.sleep(1)

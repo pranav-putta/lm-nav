@@ -186,6 +186,7 @@ class EpisodeGeneratorConfig:
     deterministic: bool = MISSING
     ckpt_freq: int = 1
     store_artifact: ArtifactConfig = MISSING
+    max_episode_id_repeats: int = -1
 
 
 ### DATASET CONFIGS ###

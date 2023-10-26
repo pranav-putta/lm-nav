@@ -27,6 +27,7 @@ exp:
   
 generator:
   num_episodes: 5000
+  max_episode_id_repeats: 10
   deterministic: False
   ckpt_freq: 1
   filter_method:
