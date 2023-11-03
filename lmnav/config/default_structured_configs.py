@@ -151,6 +151,22 @@ class BaseNavVanillaTransformerPolicyConfig(BasePolicyConfig):
     ln_mode: str = "post"
     max_trajectory_length: int = 200
 
+@dataclass
+class BaseNavTransformerXLPolicyConfig(BasePolicyConfig):
+    _target_: str = "lmnav.models.nav_txl.TransformerXL"
+
+    vis_encoder: BaseObservationEncoderConfig = MISSING
+
+    d_hidden: int = 512
+    n_heads: int = 8
+    n_blocks: int = 2
+    drop_p: float = 0.2
+    ln_mode: str = "post"
+    max_trajectory_length: int = 200
+    positional_encoding: str = "learned"
+    use_gtrxl: bool = True
+    gtrxl_bias: float = 0.0
+
 
 @dataclass
 class BaseNavGRUPolicyConfig(BasePolicyConfig):
@@ -329,6 +345,12 @@ cs.store(
     name="base_nav_vanilla",
     node=BaseNavVanillaTransformerPolicyConfig,
 )
+cs.store(
+    group="models/policy/nav_txl",
+    name="base_nav_txl",
+    node=BaseNavTransformerXLPolicyConfig,
+)
+
 cs.store(
     group="models/policy/nav_gru", name="base_nav_gru", node=BaseNavGRUPolicyConfig
 )
