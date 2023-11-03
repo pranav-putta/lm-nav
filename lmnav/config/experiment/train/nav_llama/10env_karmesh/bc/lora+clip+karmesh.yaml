@@ -3,8 +3,11 @@
 defaults:
   # set up habitat 
   - /env@habitat_baselines: habitat_baselines
-  - /env@habitat: habitat 
+  - /env@habitat: habitat_karmesh 
   - /dataset/imagenav/hm3d_10env
+  - /habitat_baselines/rl/policy/obs_transforms:
+    - resize_shortest_edge_base 
+
     
   # set up experiment misc.
   - /exp: base
@@ -61,3 +64,14 @@ eval:
   save_videos: True
   deterministic: False
   num_envs: 10
+
+habitat_baselines:
+  num_environments: 10
+  rl:
+    policy:
+      obs_transforms:
+        resize_shortest_edge:
+          size: 128
+          trans_keys: [rgb, imagegoal]
+
+

@@ -15,6 +15,9 @@ simulator:
         rgb_sensor:
           width: 128
           height: 128
+        depth_sensor:
+          width: 128
+          height: 128
   agents_order: ['main_agent']
   habitat_sim_v0:
     allow_sliding: true
