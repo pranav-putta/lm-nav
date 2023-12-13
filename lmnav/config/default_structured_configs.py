@@ -132,7 +132,7 @@ class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
     low_resource: bool = False
     lora_config: Optional[dict] = None
 
-    llama_model: str = "meta-llama/Llama-2-7b-chat-hf"
+    llama_model: str = "meta-llama/Llama-2-7b-hf"
     max_trajectory_length: int = MISSING
     action_head_mode: str = "lm"
 
