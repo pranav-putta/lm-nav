@@ -416,10 +416,7 @@ class BCTrainRunner:
         self.initialize_train()
 
         while self.step < self.config.train.steps:
-            start_batch_time = time.time()
             for batch in self.data_loader:
-                end_batch_time = time.time()
-                print("Batch time: ", end_batch_time - start_batch_time)
                 stats = self.train_bc_step(batch)
 
                 self.lr_scheduler.step()
