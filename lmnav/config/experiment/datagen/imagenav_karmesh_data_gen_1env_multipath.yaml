@@ -1,10 +1,12 @@
  # @package _global_
 
+ # generates 10 samples per episode
+ 
 defaults:
   # setup habitat
   - /env@habitat_baselines: habitat_baselines
   - /env@habitat: habitat_karmesh
-  - /dataset/imagenav/hm3d_10env
+  - /dataset/imagenav/hm3d_1env
    
     # setup experiment misc.
   - /exp: base
@@ -20,12 +22,12 @@ defaults:
 
 exp:
   root_dir: "data/datasets/lmnav"
-  group: "lmnav-10env"
+  group: "lmnav-1env"
   job_type: "datagen"
 
 generator:
-  num_episodes: 45000
-  max_episode_id_repeats: 5
+  num_episodes: 10000
+  max_episode_id_repeats: 10
   deterministic: False
   ckpt_freq: 1
   filter_method:
@@ -37,12 +39,12 @@ generator:
       dirpath: "/srv/flash1/pputta7/data/models/mae_vit_base_patch16_HGSP_finetune_vit_runs_goal_image_combined_ckpt.99.pth"
   
   store_artifact:
-    name: "offline_10envs_karmesh"
+    name: "offline_1env_karmesh_multipath"
     dirpath: "data/datasets/lmnav"
   
 
 habitat_baselines:
-  num_environments: 20
+  num_environments: 10
   rl:
     policy:
       obs_transforms:

@@ -79,6 +79,7 @@ class OfflineDataGenerator:
         exp_folder = os.path.join(generator_cfg.store_artifact.dirpath, generator_cfg.store_artifact.name)
         
         print(f"Starting generation with {self.num_gpus} gpus")
+        print(f"Max episode id repeats: {generator_cfg.max_episode_id_repeats}")
         print(f"Saving data to {exp_folder}")
         
         self.cfgs, self.processes, self.conns, self.queues = zip(*[self.initialize_data_generator(exp_folder, max_buffer_len, i) for i in range(self.num_gpus)]) 
@@ -98,8 +99,8 @@ class OfflineDataGenerator:
                     formatted_episode = self.reformat_episode(episode_stats, episode)              
 
                     # check if max episode reached and update
-                    self.episode_repeats[formatted_episode['episode_id']] += 1
-                    if self.episode_repeats[formatted_episode['episode_id']] < self.config.generator.max_episode_id_repeats:
+                    self.episode_repeats[(formatted_episode['scene_id'], formatted_episode['episode_id'])] += 1
+                    if self.episode_repeats[(formatted_episode['scene_id'], formatted_episode['episode_id'])] < generator_cfg.max_episode_id_repeats:
                         self.buffer.append(formatted_episode) 
 
                     del episode_stats

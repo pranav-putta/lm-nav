@@ -1,6 +1,9 @@
 from functools import partial
+import habitat
+import habitat.config
 import pickle
 import os
+from habitat.config.default_structured_configs import TopDownMapMeasurementConfig
 import torch.multiprocessing as mp
 import gc
 import torch
@@ -21,6 +24,23 @@ def _init_envs(config=None, is_eval: bool = False):
 
     env_factory = hydra.utils.instantiate(config.habitat_baselines.vector_env_factory)
     print(f"Initializing environment on gpu: {config.habitat.simulator.habitat_sim_v0.gpu_device_id}")
+
+    # update config
+    with habitat.config.read_write(config):
+        config.habitat.task.measurements.update(
+            {
+                "top_down_map": TopDownMapMeasurementConfig(
+                    map_padding=0,
+                    map_resolution=128,
+                    draw_source=False,
+                    draw_border=False,
+                    draw_shortest_path=False,
+                    draw_view_points=False,
+                    draw_goal_positions=False,
+                    draw_goal_aabbs=False,
+                ),
+            }
+        )
     envs = env_factory.construct_envs(
             config,
             workers_ignore_signals=is_slurm_batch_job(),

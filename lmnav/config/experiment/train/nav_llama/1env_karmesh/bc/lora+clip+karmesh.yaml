@@ -3,8 +3,11 @@
 defaults:
   # set up habitat 
   - /env@habitat_baselines: habitat_baselines
-  - /env@habitat: habitat 
+  - /env@habitat: habitat_karmesh 
   - /dataset/imagenav/hm3d_1env
+  - /habitat_baselines/rl/policy/obs_transforms:
+    - resize_shortest_edge_base 
+
     
   # set up experiment misc.
   - /exp: base
@@ -29,21 +32,24 @@ exp:
   tags: ["lora", "clip"]
 
 train:
-  batch_size: 9
-  minibatch_size: 3
-  num_grad_accums: 3
+  batch_size: 3
+  minibatch_size: 1
+  num_grad_accums: 1
 
   steps: 10_000
-  episodes_per_batch: 6
+  episodes_per_batch: 3
   lr_schedule:
     lr: 2.5e-4
     gamma: 0.9995
+  betas: [0.9, 0.999]
   policy:
     max_trajectory_length: 200    
+    vis_encoder:
+      precomputed_embeddings: True
   dataset:
     artifact: 
-      name: "offline_00744"
-      version: "v0"
+      name: "offline_1env_karmesh"
+      version: "precomputed-clip"
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
 
@@ -57,4 +63,15 @@ eval:
   num_episodes: 25
   save_videos: True
   deterministic: False
-  num_envs: 10
+  num_envs: 1
+
+habitat_baselines:
+  num_environments: 10
+  rl:
+    policy:
+      obs_transforms:
+        resize_shortest_edge:
+          size: 128
+          trans_keys: [rgb, imagegoal]
+
+
