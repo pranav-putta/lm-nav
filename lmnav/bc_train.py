@@ -43,7 +43,7 @@ from lmnav.config.default import get_config
 from lmnav.common.utils import all_gather, all_reduce
 
 from lmnav.models import *
-from lmnav.dataset.datasets import OfflineEpisodeDataset
+from lmnav.dataset.datasets import *
 from lmnav.models.base_policy import instantiate_model
 from lmnav.processors import *
 from lmnav.common.episode_processor import (
@@ -146,7 +146,7 @@ class BCTrainRunner:
 
         # set up dataset
         self.transforms = instantiate(self.config.train.transforms)
-        self.dataset = OfflineEpisodeDataset(self.transforms, files=data_files)
+        self.dataset = instantiate(self.config.train.dataset, files=data_files, transforms=self.transforms)
 
         self.sampler = DistributedResumableSampler(
             self.dataset, self.rank, self.world_size, self.config.train.batch_size
@@ -267,82 +267,78 @@ class BCTrainRunner:
             outputs.loss.backward()
 
         # pull episode data into tensors
-        with catchtime("construct subsequences"):
-            actions, goals, rgbs = map(
-                lambda k: [episode[k] for episode in episodes],
-                ("action", "imagegoal", "rgb"),
+        actions, goals, rgbs = map(
+            lambda k: [episode[k] for episode in episodes],
+            ("action", "imagegoal", "rgb"),
+        )
+
+        # construct subsequences
+        rgbs, goals, actions = construct_subsequences(
+            batch_size, T, rgbs, goals, actions
+        )
+
+
+        # pad sequences
+        mask = torch.stack(
+            [
+                torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])])
+                for t in rgbs
+            ]
+        ).bool()
+        rgbs = pad_along_dim(rgbs, T)
+        goals = torch.stack(goals)
+        actions = pad_along_dim(actions, T)
+
+        E = rgbs.shape[0]
+        local_size = torch.tensor(rgbs.shape[0], device=self.device)
+        all_sizes = [torch.zeros_like(local_size) for _ in range(self.world_size)]
+        torch.distributed.all_gather(all_sizes, local_size)
+
+        size_diff = max(all_sizes).item() - local_size.item()
+
+        if size_diff != 0:
+            print(all_sizes)
+            return stats
+            # to ensure equal batch sizes across gpus, gather them all
+            rgbs, goals, actions, mask = map(
+                lambda t: all_gather(t.contiguous(), self.device, self.world_size),
+                (rgbs, goals, actions, mask),
+            )
+            E = rgbs.shape[0] // self.world_size
+
+            # TODO; rename these variables to improve readability
+            rgbs, goals, actions, mask = map(
+                lambda t: t[self.rank * E : self.rank * E + E].clone(),
+                (rgbs, goals, actions, mask),
             )
 
-            # construct subsequences
-            rgbs, goals, actions = construct_subsequences(
-                batch_size, T, rgbs, goals, actions
-            )
+        batch_idxs = torch.randperm(E)
 
+        for mb in range(0, E, num_grad_accums * minibatch_size):
+            minibatches_left = math.ceil((E - mb) / minibatch_size)
+            num_grad_steps = min(minibatches_left, num_grad_accums)
+            for g in range(num_grad_steps):
+                start_idx = mb + g * minibatch_size
+                mb_idxs = batch_idxs[start_idx : start_idx + minibatch_size]
 
-        with catchtime("Pad"):
-            # pad sequences
-            mask = torch.stack(
-                [
-                    torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])])
-                    for t in rgbs
-                ]
-            ).bool()
-            rgbs = pad_along_dim(rgbs, T)
-            goals = torch.stack(goals)
-            actions = pad_along_dim(actions, T)
-
-        with catchtime("All Gather"):
-            E = rgbs.shape[0]
-            local_size = torch.tensor(rgbs.shape[0], device=self.device)
-            all_sizes = [torch.zeros_like(local_size) for _ in range(self.world_size)]
-            torch.distributed.all_gather(all_sizes, local_size)
-
-            size_diff = max(all_sizes).item() - local_size.item()
-
-            if size_diff != 0:
-                print(all_sizes)
-                return stats
-                # to ensure equal batch sizes across gpus, gather them all
-                rgbs, goals, actions, mask = map(
-                    lambda t: all_gather(t.contiguous(), self.device, self.world_size),
-                    (rgbs, goals, actions, mask),
+                # construct batch
+                rgbs_t, goals_t, actions_t, mask_t = map(
+                    lambda t: t[mb_idxs], (rgbs, goals, actions, mask)
                 )
-                E = rgbs.shape[0] // self.world_size
-
-                # TODO; rename these variables to improve readability
-                rgbs, goals, actions, mask = map(
-                    lambda t: t[self.rank * E : self.rank * E + E].clone(),
-                    (rgbs, goals, actions, mask),
-                )
-
-            batch_idxs = torch.randperm(E)
-
-        with catchtime("Train"):
-            for mb in range(0, E, num_grad_accums * minibatch_size):
-                minibatches_left = math.ceil((E - mb) / minibatch_size)
-                num_grad_steps = min(minibatches_left, num_grad_accums)
-                for g in range(num_grad_steps):
-                    start_idx = mb + g * minibatch_size
-                    mb_idxs = batch_idxs[start_idx : start_idx + minibatch_size]
-
-                    # construct batch
-                    rgbs_t, goals_t, actions_t, mask_t = map(
-                        lambda t: t[mb_idxs], (rgbs, goals, actions, mask)
-                    )
-                    if g < num_grad_accums - 1:
-                        with self.agent.no_sync():
-                            forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
-                    else:
+                if g < num_grad_accums - 1:
+                    with self.agent.no_sync():
                         forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
-                    rgbs_t.to("cpu")
-                    goals_t.to("cpu")
+                else:
+                    forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
+                rgbs_t.to("cpu")
+                goals_t.to("cpu")
 
-                if self.config.train.max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.agent.parameters(), self.config.train.max_grad_norm
-                    )
-                self.optim.step()
-                self.optim.zero_grad()
+            if self.config.train.max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(
+                    self.agent.parameters(), self.config.train.max_grad_norm
+                )
+            self.optim.step()
+            self.optim.zero_grad()
 
         end_time = time.time()
 

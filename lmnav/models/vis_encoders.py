@@ -412,7 +412,12 @@ class CLIPObservationEncoder(ObservationEncoder):
             )
         else:
             rgbs_e, goals_e = rgbs, goals
-            if not self.fuse_rgb_goal:
+            if len(rgbs_e.shape) == 3:
+                # rgb and goal tensors are of shape (b, t, h), we want (b, t, q, h)
+                # where q = 1
+                rgbs_e = rgbs_e[:, :, None, :]
+                goals_e = goals_e[:, None, None, :]
+            elif not self.fuse_rgb_goal:
                 rgbs_e = rgbs_e[:, :, 0:1]
                 goals_e = goals_e[:, :, 0:1]
 

@@ -20,7 +20,7 @@ defaults:
   # set up train
   - /runner@train: bc
   - /lr@train.lr_schedule: exponential
-  - /dataset@train.dataset: offline_episode
+  - /dataset@train.dataset: offline_instruction
   - /models/policy/nav_llama/clip@train.policy: lora 
  
   - _self_
@@ -36,7 +36,7 @@ train:
   minibatch_size: 1
   num_grad_accums: 1
 
-  steps: 10_000
+  steps: 100_000
   episodes_per_batch: 3
   lr_schedule:
     lr: 2.5e-4

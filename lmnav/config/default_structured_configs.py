@@ -214,7 +214,11 @@ class BaseDatasetConfig:
 
 @dataclass
 class OfflineEpisodeDatasetConfig(BaseDatasetConfig):
-    _target_: str = "datasets.offline_episode"
+    _target_: str = "lmnav.dataset.datasets.OfflineEpisodeDataset"
+
+@dataclass
+class OfflineInstructionEpisodeDatasetConfig(BaseDatasetConfig):
+    _target_: str = "lmnav.dataset.datasets.OfflineInstructionEpisodeDataset"
 
 
 ### DATA TRANSFORM CONFIGS ###
@@ -365,6 +369,7 @@ cs.store(group="models/vis_encoder", name="vc1", node=VC1ObservationEncoderConfi
 
 cs.store(group="dataset", name="base", node=BaseDatasetConfig)
 cs.store(group="dataset", name="offline_episode", node=OfflineEpisodeDatasetConfig)
+cs.store(group="dataset", name="offline_instruction", node=OfflineInstructionEpisodeDatasetConfig)
 
 cs.store(group="transforms", name="base", node=BaseDataTransformConfig)
 cs.store(group="transforms", name="reverse_turns", node=ReverseTurnsTransformConfig)
