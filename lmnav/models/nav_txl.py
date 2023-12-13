@@ -367,6 +367,7 @@ class TransformerXL(BaseModel):
         act_logits = self.action_head(last_hidden_state)
         probs = F.softmax(act_logits, dim=-1)
 
+        print(probs[0])
 
         loss = F.cross_entropy(
             einops.rearrange(probs, "b t h -> (b t) h"),
