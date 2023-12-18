@@ -13,15 +13,16 @@ def apply_transforms_actions(actions):
 def apply_transforms_images(vis_processor, rgbs, goals):
     B, T, _, _, _ = rgbs.shape
     imgs = torch.cat([goals, rgbs], dim=1)
-    imgs = einops.rearrange(imgs, "b t c h w -> c (b t) h w")
+    imgs = einops.rearrange(imgs, "b t c h w -> (b t) c h w")
     imgs = imgs.float()
 
     # apply transform
-    imgs = vis_processor.transform(imgs)
-    imgs = einops.rearrange(imgs, "c (b t) h w -> b c t h w", b=B)
+    imgs = vis_processor(imgs)
+    imgs = einops.rearrange(imgs, "(b t) c h w -> b t c h w", b=B)
+    # imgs = einops.rearrange(imgs, "(b t) h w c -> b t c h w", b=B)
 
     # separate goal and rgb
-    goals, rgbs = imgs[:, :, 0:1], imgs[:, :, 1:]
+    goals, rgbs = imgs[:, 0:1], imgs[:, 1:]
     return rgbs, goals
 
 

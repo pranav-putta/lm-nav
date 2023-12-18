@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import einops
 from torch import nn
-from transformers import CLIPVisionModel
+from transformers import CLIPProcessor, CLIPVisionModel
 from torchvision import transforms
 
 from lmnav.models.base_model import BaseModel
@@ -12,7 +12,7 @@ from lmnav.models.Qformer import BertConfig, BertLMHeadModel
 from lmnav.models.perceiver import Perceiver
 
 from lmnav.common.dist_utils import download_cached_file
-from lmnav.common.utils import is_url, convert_weights_to_fp16
+from lmnav.common.utils import  is_url, convert_weights_to_fp16
 import contextlib
 
 import logging
@@ -299,7 +299,6 @@ class CLIPObservationEncoder(ObservationEncoder):
         freeze_backbone=False,
         max_batch_size=2048,
         fuse_rgb_goal=False,
-        precomputed_embeddings=False,
         *args,
         **kwargs
     ):
@@ -308,7 +307,6 @@ class CLIPObservationEncoder(ObservationEncoder):
         print("Loading CLIP visual encoder...")
         self.max_batch_size = max_batch_size
         self.fuse_rgb_goal = fuse_rgb_goal
-        self.precomputed_embeddings = precomputed_embeddings
 
         self.preprocess_transform = transforms.Compose(
             [
@@ -316,7 +314,7 @@ class CLIPObservationEncoder(ObservationEncoder):
                 transforms.Resize(
                     224,
                     interpolation=transforms.InterpolationMode.BICUBIC,
-                    # antialias=True,
+                    antialias=True,
                 ),
                 transforms.CenterCrop(224),
                 transforms.Normalize(mean=(0, 0, 0), std=(255, 255, 255), inplace=True),
@@ -328,6 +326,7 @@ class CLIPObservationEncoder(ObservationEncoder):
             ]
         )
 
+        # self.preprocess_transform = CLIPProcessor.from_pretrained(vit_model)
         self.backbone = CLIPVisionModel.from_pretrained(vit_model)
         if freeze_backbone:
             for param in self.backbone.parameters():
@@ -358,11 +357,10 @@ class CLIPObservationEncoder(ObservationEncoder):
             if vit_precision == "fp16":
                 convert_weights_to_fp16(self.compression)
 
-    def embed_obs(self, rgbs, goals):
+    def embed_obs(self, rgbs, goals, precomputed_embeddings=False):
         """
         obs is a TensorDict with keys rgb, depth, imagegoal
         """
-
         def apply_fn_in_batches(tensor, fn, max_batch_size, rebatch_fn=torch.cat):
             out = list(
                 map(
@@ -374,28 +372,21 @@ class CLIPObservationEncoder(ObservationEncoder):
 
         B, T, *_ = rgbs.shape
 
-        if not self.precomputed_embeddings:
+        if not precomputed_embeddings:
             # compute embeddings for goals
             rgbs, goals = map(
-                lambda t: einops.rearrange(t, "b t h w c -> (b t) c h w").float(),
+                lambda t: einops.rearrange(t, "b t c h w -> (b t) c h w").float(),
                 (rgbs, goals),
             )
 
-            rgbs_e, goals_e = map(
-                lambda t: apply_fn_in_batches(
-                    t, self.preprocess_transform, self.max_batch_size
-                ),
-                (rgbs, goals),
-            )
+            x = torch.cat([goals, rgbs], dim=0).cuda().to(torch.bfloat16)
+            x = self.vis_processor(x)
 
-            x = torch.cat([goals_e, rgbs_e], dim=0)
-
-            with self.maybe_autocast():
+            with self.maybe_autocast(), torch.no_grad():
                 x = list(
                     map(
                         lambda i: self.backbone(
-                            pixel_values=x[i : i + self.max_batch_size].to(self.device)
-                        ),
+                            pixel_values=x[i : i + self.max_batch_size]),
                         range(0, x.shape[0], self.max_batch_size),
                     )
                 )
@@ -405,9 +396,9 @@ class CLIPObservationEncoder(ObservationEncoder):
                 x = einops.rearrange(
                     torch.cat([t.pooler_output for t in x]), "b h -> b 1 h"
                 )
-            goals_e, rgbs_e = x[: goals_e.shape[0]], x[goals_e.shape[0] :]
+            goals_e, rgbs_e = x[: goals.shape[0]], x[goals.shape[0] :]
             goals_e, rgbs_e = map(
-                lambda t: einops.rearrange(t, "(b t) ... -> b t ...", b=B),
+                lambda t: einops.rearrange(t, "(b t) ... -> b t ...", t=T),
                 (goals_e, rgbs_e),
             )
         else:
@@ -453,6 +444,7 @@ class CLIPObservationEncoder(ObservationEncoder):
 
     @property
     def vis_processor(self):
+        # return lambda x: self.preprocess_transform(images=x, return_tensors="pt", device=self.device)['pixel_values']
         return self.preprocess_transform
 
     @property
