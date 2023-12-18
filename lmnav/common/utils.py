@@ -519,7 +519,6 @@ def all_gather(q, device, world_size):
 
     q = q.to(device)
     size_diff = max(all_sizes).item() - local_size.item()
-    print(size_diff)
     if size_diff:
         padding = torch.zeros((size_diff, *q.shape[1:]), device=device, dtype=q.dtype)
         q = torch.cat((q, padding))
@@ -551,7 +550,7 @@ def catchtime(name=""):
     yield lambda: time.time() - start
     torch.cuda.synchronize()
 
-    if torch.distributed.get_rank() == 0:
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
         print(f"TimeIt [{name}]: {time.time() - start:.3f} seconds")
 
 

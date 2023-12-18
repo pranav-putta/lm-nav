@@ -11,7 +11,7 @@ class RolloutStorage:
             max_steps + 1,
             tokens_per_img,
             hidden_size,
-            dtype=torch.float32,
+            dtype=torch.bfloat16,
             device=device,
         )
         self.goals = torch.zeros(
@@ -19,7 +19,7 @@ class RolloutStorage:
             max_steps + 1,
             tokens_per_img,
             hidden_size,
-            dtype=torch.float32,
+            dtype=torch.bfloat16,
             device=device,
         )
         self.actions = torch.zeros(

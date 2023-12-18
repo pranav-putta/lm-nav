@@ -196,8 +196,6 @@ class BCTrainRunner:
             self.config.train.policy, writer=self.writer, store=self.artifact_store
         )
 
-        self.vis_encoder = model.vis_encoder
-
         agent = model.to(self.device)
         agent.train()
 
@@ -262,7 +260,7 @@ class BCTrainRunner:
         start_time = time.time()
 
         def forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t):
-            outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t)
+            outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t, precomputed_embeddings=self.config.train.precomputed_embeddings)
             stats["learner/loss"] += outputs.loss.item()
             outputs.loss.backward()
 
@@ -276,7 +274,6 @@ class BCTrainRunner:
         rgbs, goals, actions = construct_subsequences(
             batch_size, T, rgbs, goals, actions
         )
-
 
         # pad sequences
         mask = torch.stack(

@@ -31,6 +31,7 @@ def load_policy_artifact(writer, store, cfg):
 
 
 def instantiate_model(cfg, load_ckpts=True, writer=None, store=None):
+
     # first check if cfg is a model
     assert isinstance(cfg, omegaconf.DictConfig) and cfg.get("is_model", False)
 

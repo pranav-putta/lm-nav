@@ -1,6 +1,9 @@
 from collections.abc import Mapping
+import numpy as np
 from itertools import product
 import pdb
+from tqdm import tqdm
+from habitat.config.default_structured_configs import CollisionsMeasurementConfig, TopDownMapMeasurementConfig
 
 from torch.distributed.elastic.multiprocessing.errors import record
 from functools import reduce
@@ -18,7 +21,7 @@ import time
 import numpy as np
 from habitat_baselines.utils.common import batch_obs
 
-from lmnav.common.utils import all_gather, all_reduce, sum_dict
+from lmnav.common.utils import all_gather, all_reduce, catchtime, convert_weights_to_fp16, sum_dict
 from lmnav.dataset.data_gen import _init_envs
 from lmnav.common.episode_processor import apply_transforms_images
 
@@ -143,11 +146,26 @@ class PPOTrainer:
                 self.config.device = f"cuda:{local_rank}"
                 self.config.habitat_baselines.torch_gpu_id = local_rank
                 self.config.habitat.simulator.habitat_sim_v0.gpu_device_id = local_rank
-
                 self.config.habitat.seed += (
                     torch.distributed.get_rank()
                     * self.config.habitat_baselines.num_environments
                 )
+                self.config.habitat.task.measurements.update(
+                    {
+                        "top_down_map": TopDownMapMeasurementConfig(
+                            map_padding=0,
+                            map_resolution=128,
+                            draw_source=False,
+                            draw_border=False,
+                            draw_shortest_path=False,
+                            draw_view_points=False,
+                            draw_goal_positions=False,
+                            draw_goal_aabbs=False,
+                        ),
+                        "collisions": CollisionsMeasurementConfig(),
+                    }
+                )
+
 
             random.seed(self.config.habitat.seed)
             np.random.seed(self.config.habitat.seed)
@@ -224,8 +242,10 @@ class PPOTrainer:
         model = instantiate_model(
             self.config.train.policy, writer=self.writer, store=self.artifact_store
         )
-        model.actor.max_trajectory_length = self.config.train.num_rollout_steps
+        # force max trajectory length to be the same as rollout length
+        model.max_trajectory_length = self.config.train.num_rollout_steps
         model = model.to(self.device)
+
 
         self.vis_processor = model.vis_processor
 
@@ -314,54 +334,47 @@ class PPOTrainer:
                 artifact_name, "model", os.path.abspath(ckpt_filepath)
             )
 
-    def embed_observations(self, observations):
+    def embed_observations(self, observations, goal_idxs_to_embed=None):
         observations = batch_obs(observations, self.device)
         rgbs, goals = map(
             lambda t: einops.rearrange(t, "b h w c -> b 1 c h w"),
             (observations["rgb"], observations["imagegoal"]),
         )
-        rgbs_t, goals_t = apply_transforms_images(self.vis_processor, rgbs, goals)
+        if goal_idxs_to_embed is not None:
+            goals = goals[goal_idxs_to_embed]
+            
+        return self.model.module.actor.embed_visual(rgbs, goals)
 
-        imgs_t = torch.cat([rgbs_t, goals_t], dim=2).to(self.device)
-
-        img_embds_t, img_atts_t = self.model.module.actor.embed_visual(imgs_t)
-        rgb_embds, goal_embds = img_embds_t[:, 0], img_embds_t[:, 1]
-
-        map(
-            lambda t: t.to("cpu"),
-            (observations["rgb"], observations["imagegoal"], observations["depth"]),
-        )
-        del observations
-
-        return rgb_embds, goal_embds
 
     def environment_sample_generator(self):
         # we use an abstract action generator fn so that different models
         # can preserve their state in the way that makes sense for them
-        torch.cuda.empty_cache()
+        dones = [True for _ in range(self.envs.num_envs)]
+
+        # initialize rollouts
         observations = self.envs.reset()
         with torch.no_grad(), self.model.no_sync():
             rgb_embds, goal_embds = self.embed_observations(observations)
-        dones = [False for _ in range(self.envs.num_envs)]
+        self.rollouts.insert(next_rgbs=rgb_embds[:, 0], next_goals=goal_embds[:, 0])
 
-        # insert initial obsevations
-        self.rollouts.insert(next_rgbs=rgb_embds, next_goals=goal_embds)
-        torch.cuda.empty_cache()
+        self.model.eval()
 
         while True:
-            # TODO; this needs to be changed if policy history needs to be cached
-            action_generator = self.model.module.actor.action_generator(
-                self.envs.num_envs,
-                self.config.train.deterministic,
+            g_cpu = torch.Generator(device=self.device)
+            g_cpu.manual_seed(0)
+            action_generator = self.model.module.actor.fast_action_generator(
+                rollout_storage=self.rollouts,
+                sampler=instantiate(self.config.train.sampler),
+                use_cache=True,
                 max_its=self.config.train.num_rollout_steps,
             )
 
             with torch.no_grad(), self.model.no_sync():
                 it = range(self.config.train.num_rollout_steps)
 
-                for _ in it:
+                for _ in tqdm(it):
                     next(action_generator)
-                    actions = action_generator.send(((rgb_embds, goal_embds), dones))
+                    actions = action_generator.send(dones)
 
                     outputs = self.envs.step(actions)
 
@@ -369,7 +382,10 @@ class PPOTrainer:
                         list(x) for x in zip(*outputs)
                     ]
 
-                    rgb_embds, goal_embds = self.embed_observations(next_observations)
+                    # only embed goals if new episode has started
+                    goal_idxs_to_embed = torch.tensor([i for i in range(len(dones)) if dones[i]], dtype=torch.long)
+                    rgb_embds, new_goal_embds = self.embed_observations(next_observations, goal_idxs_to_embed=goal_idxs_to_embed)
+                    goal_embds[goal_idxs_to_embed] = new_goal_embds
 
                     dones, rewards, actions = map(
                         lambda l: torch.tensor(l), (dones, rewards, actions)
@@ -379,8 +395,8 @@ class PPOTrainer:
                         [info["success"] for info in infos], dtype=torch.bool
                     )
                     self.rollouts.insert(
-                        next_rgbs=rgb_embds,
-                        next_goals=goal_embds,
+                        next_rgbs=rgb_embds[:, 0],
+                        next_goals=goal_embds[:, 0],
                         dones=dones,
                         rewards=rewards,
                         actions=actions,
@@ -424,9 +440,7 @@ class PPOTrainer:
                     (rgbs_t, goals_t, actions_t, mask_t),
                 )
             )
-            minibatch_act_logits, minibatch_values, minibatch_logprobs = self.model(
-                *minibatch
-            )
+            minibatch_act_logits, minibatch_values, minibatch_logprobs = self.model(*minibatch)
             map(lambda t: t.to("cpu"), minibatch)
 
             logits.append(minibatch_act_logits)
@@ -676,23 +690,25 @@ class PPOTrainer:
     def train(self):
         self.initialize_train()
 
-        while self.step < self.config.train.steps:
-            stats = self.train_ppo_step()
+        with tqdm(total=self.config.train.steps) as pbar:
+            while self.step < self.config.train.steps:
+                stats = self.train_ppo_step()
 
-            self.lr_scheduler.step()
-            stats = self.update_stats(stats)
+                self.lr_scheduler.step()
+                stats = self.update_stats(stats)
 
-            torch.distributed.barrier()
+                torch.distributed.barrier()
 
-            if rank0_only():
-                self.writer.write(stats)
-                if self.step % self.config.train.ckpt_freq == 0:
-                    ckpt_num = self.step // self.config.train.ckpt_freq
-                    self.save_checkpoint(f"ckpt.{ckpt_num}.pth", archive_artifact=True)
-                else:
-                    self.save_checkpoint("latest.pth", archive_artifact=False)
+                if rank0_only():
+                    self.writer.write(stats)
+                    if self.step % self.config.train.ckpt_freq == 0:
+                        ckpt_num = self.step // self.config.train.ckpt_freq
+                        self.save_checkpoint(f"ckpt.{ckpt_num}.pth", archive_artifact=True)
+                    else:
+                        self.save_checkpoint("latest.pth", archive_artifact=False)
 
-            self.step += 1
+                self.step += 1
+                pbar.update(1)
 
 
 @record
