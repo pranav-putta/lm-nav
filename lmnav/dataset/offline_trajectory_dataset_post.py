@@ -13,6 +13,7 @@ from torch.multiprocessing import Process
 from lmnav.common.utils import convert_weights_to_fp16
 from lmnav.config.default import get_config
 from tqdm import tqdm
+from torchvision import transforms
 
 from lmnav.dataset.offline_trajectory_dataset import OfflineTrajectory
 from transformers import CLIPProcessor, CLIPModel
@@ -138,12 +139,13 @@ def _embed_trajectories(trajectories, model, processor):
     
     x = np.concatenate([rgb_frames, goal_frames], axis=0)
     x = torch.from_numpy(x)
-    x = processor(images=x, return_tensors="pt", device=device)
+    # x = processor(images=x, return_tensors="pt", device=device)
+    x = processor(x.permute(0, 3, 1, 2))
     x = x.to(device)
-    print(f"Embedding {x['pixel_values'].shape} frames")
+    print(f"Embedding {x.shape} frames")
 
     with torch.cuda.amp.autocast(dtype=torch.bfloat16), torch.no_grad():
-        x = model.vision_model(x['pixel_values'])
+        x = model.vision_model(x)
     embeddings = x.pooler_output.detach().cpu()
 
     rgb_embds, goal_embds = torch.split(embeddings, [len(rgb_frames), len(goal_frames)])
@@ -207,7 +209,25 @@ def resample_dataset(config, dataset):
     model = model.to(device)
     model = model.eval()
     convert_weights_to_fp16(model)
-    processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+    # processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+    processor = transforms.Compose(
+            [
+                transforms.ConvertImageDtype(torch.float),
+                transforms.Resize(
+                    224,
+                    interpolation=transforms.InterpolationMode.BICUBIC,
+                    antialias=True,
+                ),
+                transforms.CenterCrop(224),
+                transforms.Normalize(mean=(0, 0, 0), std=(255, 255, 255), inplace=True),
+                transforms.Normalize(
+                    mean=[0.48145466, 0.4578275, 0.40821073],
+                    std=[0.26862954, 0.26130258, 0.27577711],
+                    inplace=True,
+                ),
+            ]
+        )
+
 
     buffer = []
     new_path = os.path.join(config.generator.store_artifact.dirpath, f"{config.generator.store_artifact.name}+clip")
