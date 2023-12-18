@@ -82,7 +82,6 @@ class CLIPObservationEncoderConfig(BaseObservationEncoderConfig):
     freeze_backbone: bool = True
     max_batch_size: int = 1024
     fuse_rgb_goal: bool = False
-    precomputed_embeddings: bool = False
 
 
 @dataclass
@@ -295,6 +294,23 @@ class TrainRunnerConfig(BaseRunnerConfig):
 class BCTrainRunnerConfig(TrainRunnerConfig):
     episodes_per_batch: int = MISSING
     transforms: BaseDataTransformConfig = MISSING
+    precomputed_embeddings: bool = False
+
+
+@dataclass
+class BaseSamplerConfig:
+    _target_: str = MISSING
+
+@dataclass
+class MaximumLikelihoodSampler(BaseSamplerConfig):
+    _target_: str = "lmnav.util.samplers.MaximumLikelihoodSampler"
+
+@dataclass
+class NucleusSampler(BaseSamplerConfig):
+    _target_: str = "lmnav.util.samplers.NucleusSampler"
+    p: float = 1.0
+    temp: float = 1.0
+    seed: Optional[int] = None
 
 
 @dataclass
@@ -311,7 +327,7 @@ class PPOTrainRunnerConfig(TrainRunnerConfig):
     gamma: float = 1
     lam: float = 0.95
     ratio_threshold: float = 10.0
-    deterministic: bool = False
+    sampler: BaseSamplerConfig = MISSING
 
 
 @dataclass
@@ -385,6 +401,10 @@ cs.store(group="runner", name="base_train", node=TrainRunnerConfig)
 cs.store(group="runner", name="base_bc", node=BCTrainRunnerConfig)
 cs.store(group="runner", name="eval", node=EvalRunnerConfig)
 cs.store(group="runner", name="ppo", node=PPOTrainRunnerConfig)
+
+cs.store(group="sampler", name="base", node=BaseSamplerConfig)
+cs.store(group="sampler", name="max_likelihood", node=MaximumLikelihoodSampler)
+cs.store(group="sampler", name="nucleus", node=NucleusSampler)
 
 OmegaConf.register_new_resolver(
     "quote", lambda x: x.replace("+", "_").replace("=", "_")
