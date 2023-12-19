@@ -321,20 +321,22 @@ class NavLLAMA(Blip2Base):
     def tokens_per_img(self):
         return self.vis_encoder.num_tokens
 
-    def fast_action_generator(self, rollout_storage, sampler, use_cache=True, max_its=None):
+    def fast_action_generator(self, rollout_storage, sampler, use_cache=True):
         """
         action generator function, takes in the next rgb, goal, and action
         """
 
         past_kv_cache = None
         start_token_idx = [0] * rollout_storage.num_envs
-        its, seq_len = 0, 0
+        seq_len = 0
 
         while True:
             dones = yield
-            
+            its = rollout_storage.current_step_idx
+
             # construct embedding for the current step
             if use_cache:
+                # construct the embeddings for the next rgb and goal step
                 rgb_embd = rollout_storage.rgbs[:, its]
                 goal_embd = rollout_storage.goals[:, its]
                 act_embd, _ = self.embed_actions(rollout_storage.actions[:, its - 1][..., None])
@@ -421,8 +423,17 @@ class NavLLAMA(Blip2Base):
                 start_token_idx = [min(0, new_seq_len - reset_embd.shape[1]) + t for t in start_token_idx]
                 for i, idx in enumerate(reset_idx):
                     logits[idx] = reset_outputs.logits[i, -1]
-                    start_token_idx[idx] = max(0, seq_len - reset_embd.shape[1])
+                    start_token_idx[idx] = max(0, new_seq_len - reset_embd.shape[1])
 
+                # if there's empty history trim the past key value cache
+                earliest_start_idx = min(start_token_idx)
+                if earliest_start_idx > 0:
+                    new_past_kv_cache = ()
+                    for j in range(len(past_kv_cache)):
+                        new_past_kv_cache += ((past_kv_cache[j][0][:, :, earliest_start_idx:], past_kv_cache[j][1][:, :, earliest_start_idx:]),)
+                    for env in range(len(start_token_idx)):
+                        start_token_idx[env] -= earliest_start_idx
+                    past_kv_cache = new_past_kv_cache
 
             act_tkn_ids = self.llama_tokenizer(
                 "stop forward left right", add_special_tokens=False, return_tensors="pt"
@@ -433,16 +444,11 @@ class NavLLAMA(Blip2Base):
             actions = [sampler(logits[i, act_tkn_ids]) for i in range(rollout_storage.num_envs)]
             seq_len = past_kv_cache[0][0].shape[2]
 
-            its += 1
-
-            if its == max_its:
-                del past_kv_cache
-
             yield actions
 
 
 
-    def action_generator(self, num_envs, maximum_likelihood=False, generator=None, max_its=0):
+    def action_generator(self, num_envs, maximum_likelihood=False, generator=None):
         """
         action generator function, takes in the next rgb, goal, and action
         """
@@ -456,7 +462,6 @@ class NavLLAMA(Blip2Base):
         )
         act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
 
-        its = 0
         while True:
             (rgb_embds, goal_embds), dones = yield
 

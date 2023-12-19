@@ -34,6 +34,9 @@ class RolloutStorage:
         self.rewards = torch.zeros(
             num_envs, max_steps + 1, dtype=torch.float, device=device
         )
+        self.dtgs = torch.zeros(
+            num_envs, max_steps + 1, dtype=torch.float, device=device
+        )
 
         self.current_step_idx = -1
 
@@ -45,6 +48,7 @@ class RolloutStorage:
         actions=None,
         rewards=None,
         successes=None,
+        dtgs=None
     ):
         """insert observations, dones, and actions into rollout storage tensors"""
         self.rgbs[:, self.current_step_idx + 1] = next_rgbs
@@ -58,6 +62,8 @@ class RolloutStorage:
             self.rewards[:, self.current_step_idx] = rewards
         if actions is not None:
             self.actions[:, self.current_step_idx] = actions
+        if dtgs is not None:
+            self.dtgs[:, self.current_step_idx] = dtgs
 
         self.current_step_idx += 1
 
@@ -103,6 +109,7 @@ class RolloutStorage:
                             self.rewards,
                             self.dones,
                             self.successes,
+                            self.dtgs
                         ),
                     )
                 )

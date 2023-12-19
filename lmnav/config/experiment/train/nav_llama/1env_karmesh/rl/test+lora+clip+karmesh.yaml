@@ -36,7 +36,7 @@ exp:
 
 train:
   steps: 100_000
-  num_envs: 20
+  num_envs: 2
   minibatch_size: 2
   num_grad_accums: 6
   cliprange_value: 0.1
@@ -58,19 +58,19 @@ train:
       lr: 2.5e-6
       warmup_start: 0
       warmup_end: 0
-      warmup_steps: 100
+      warmup_steps: 150
       after_warmup:
         lr: 2.5e-6
         warmup_start: 0
         warmup_end: 2.5e-6
-        warmup_steps: 100
+        warmup_steps: 200
         after_warmup:
           lr: 2.5e-6
     critic:
       lr: 2.5e-6
       warmup_start: 2.5e-4
       warmup_end: 2.5e-6
-      warmup_steps: 200
+      warmup_steps: 300
       after_warmup:
         lr: 2.5e-6
     

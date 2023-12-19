@@ -1,7 +1,6 @@
 from collections.abc import Mapping
 import numpy as np
 from itertools import product
-import pdb
 from tqdm import tqdm
 from habitat.config.default_structured_configs import CollisionsMeasurementConfig, TopDownMapMeasurementConfig
 
@@ -242,8 +241,6 @@ class PPOTrainer:
         model = instantiate_model(
             self.config.train.policy, writer=self.writer, store=self.artifact_store
         )
-        # force max trajectory length to be the same as rollout length
-        model.max_trajectory_length = self.config.train.num_rollout_steps
         model = model.to(self.device)
 
 
@@ -359,20 +356,20 @@ class PPOTrainer:
 
         self.model.eval()
 
-        while True:
-            g_cpu = torch.Generator(device=self.device)
-            g_cpu.manual_seed(0)
-            action_generator = self.model.module.actor.fast_action_generator(
-                rollout_storage=self.rollouts,
-                sampler=instantiate(self.config.train.sampler),
-                use_cache=True,
-                max_its=self.config.train.num_rollout_steps,
-            )
+        g_cpu = torch.Generator(device=self.device)
+        g_cpu.manual_seed(0)
+        action_generator = self.model.module.actor.fast_action_generator(
+            rollout_storage=self.rollouts,
+            sampler=instantiate(self.config.train.sampler),
+            use_cache=True,
+            # max_its=self.config.train.num_rollout_steps,
+        )
 
+        while True:
             with torch.no_grad(), self.model.no_sync():
                 it = range(self.config.train.num_rollout_steps)
 
-                for _ in tqdm(it):
+                for i in tqdm(it):
                     next(action_generator)
                     actions = action_generator.send(dones)
 
@@ -394,6 +391,9 @@ class PPOTrainer:
                     successes = torch.tensor(
                         [info["success"] for info in infos], dtype=torch.bool
                     )
+                    dtgs = torch.tensor(
+                        [info["distance_to_goal"] for info in infos], dtype=torch.float
+                    )
                     self.rollouts.insert(
                         next_rgbs=rgb_embds[:, 0],
                         next_goals=goal_embds[:, 0],
@@ -401,9 +401,9 @@ class PPOTrainer:
                         rewards=rewards,
                         actions=actions,
                         successes=successes,
+                        dtgs=dtgs
                     )
 
-            del action_generator
             yield
             self.rollouts.reset()
 
@@ -540,6 +540,9 @@ class PPOTrainer:
             "metrics/fps": 0.0,
             "learner/num_episodes_done": 0,
             "learner/num_episodes_successful": 0,
+            "learner/distance_to_goal": 0.0,
+            "learner/actor_lr": 0.0,
+            "learner/critic_lr": 0.0,
         }
 
         # first collect environment samples
@@ -552,6 +555,7 @@ class PPOTrainer:
             rewards,
             dones,
             successes,
+            dtgs
         ) = self.rollouts.generate_samples()
         time_rollouts_end = time.time()
 
@@ -569,6 +573,7 @@ class PPOTrainer:
         stats["learner/num_episodes_successful"] = sum(
             [torch.sum(s) for s in successes]
         )
+        stats["learner/distance_to_goal"] = sum([d[-1].item() for d in dtgs]) / len(dtgs)
 
         # construct batch
         mask_t = torch.stack(
@@ -685,6 +690,8 @@ class PPOTrainer:
 
         time_ppo_end = time.time()
         stats["metrics/fps"] = stats["metrics/frames"] / (time_ppo_end - time_ppo_start)
+        stats["learner/actor_lr"] = self.lr_scheduler.get_last_lr()[0]
+        stats["learner/critic_lr"] = self.lr_scheduler.get_last_lr()[1]
         return {**dict_cum_train_stats, **stats}
 
     def train(self):

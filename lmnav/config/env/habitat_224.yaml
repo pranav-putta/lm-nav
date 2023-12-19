@@ -21,3 +21,9 @@ simulator:
   agents_order: ['main_agent']
   habitat_sim_v0:
     allow_sliding: true
+
+task:
+  measurements:
+    success:
+      success_distance: 1.0
+  

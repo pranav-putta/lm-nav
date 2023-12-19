@@ -321,12 +321,12 @@ class PPOTrainRunnerConfig(TrainRunnerConfig):
     num_rollout_steps: int = MISSING
     ppo_epochs: int = MISSING
     num_envs: int = MISSING
-    cliprange_value: float = 0.2
-    cliprange: float = 0.2
+    cliprange_value: float = 0.1
+    cliprange: float = 0.1
     vf_coef: float = 0.1
-    gamma: float = 1
+    gamma: float = 0.99
     lam: float = 0.95
-    ratio_threshold: float = 10.0
+    ratio_threshold: float = 5.0
     sampler: BaseSamplerConfig = MISSING
 
 
