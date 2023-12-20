@@ -25,7 +25,7 @@ class PPOAgent(nn.Module):
         output = self.actor.forward_with_embds(rgbs_t, goals_t, actions_t, mask_t, pvk_t, attnm_t)
 
         logits = output.logits
-        values = self.critic(output.last_hidden_state.to(torch.float32)).squeeze()
+        values = self.critic(output.last_hidden_state.to(torch.float32)).squeeze(-1)
         logprobs = logprobs_from_logits(logits, actions_t)
 
         return logits, values, logprobs

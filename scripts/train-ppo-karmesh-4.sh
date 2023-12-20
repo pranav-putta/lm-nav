@@ -18,4 +18,6 @@ zsh
 source ~/.zshrc
 mamba activate lmnav
 
-torchrun --standalone --nnodes=1 --nproc_per_node=4 lmnav/ppo_train.py train/nav_llama/1env_karmesh/rl/lora+clip+karmesh+3
+torchrun --standalone --nnodes=1 --nproc_per_node=4 lmnav/ppo_train.py train/nav_llama/1env_karmesh/rl/lora+clip+karmesh+4
+
+# description: normalized advantages, increased clip range, increased lr over experiment 3

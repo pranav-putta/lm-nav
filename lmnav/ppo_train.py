@@ -444,13 +444,32 @@ class PPOTrainer:
             raise NotImplementedError
 
 
-    def batched_forward_pass(self, *args):
-        for arg in args:
-            arg = arg.to(self.device)
+    def batched_forward_pass(self, rgbs_t, goals_t, actions_t, mask_t, past_kv_cache_t, attn_mask_t, minibatch_size):
+        E, T = rgbs_t.shape[:2]
 
-        logits, values, logprobs = self.model(*args)
+        actions_t = actions_t.to(self.device)
+
+        logits, values, logprobs = [], [], []
+        for g in range(0, E, minibatch_size):
+            minibatch = tuple(
+                map(
+                    lambda t: t[g : g + minibatch_size],
+                    (rgbs_t, goals_t, actions_t, mask_t, past_kv_cache_t, attn_mask_t),
+                )
+            )
+            minibatch_act_logits, minibatch_values, minibatch_logprobs = self.model(*minibatch)
+            map(lambda t: t.to("cpu"), minibatch)
+
+            logits.append(minibatch_act_logits)
+            values.append(minibatch_values)
+            logprobs.append(minibatch_logprobs)
+
+        logits = torch.cat(logits)
+        values = torch.cat(values).squeeze()  # get rid of critic 1 dim
+        logprobs = torch.cat(logprobs)
 
         return logits, values, logprobs
+
 
     def clip_by_value(self, x, tensor_min, tensor_max):
         """
@@ -626,7 +645,7 @@ class PPOTrainer:
         with torch.no_grad(), self.model.no_sync():
             old_logits, values, old_logprobs = self.batched_forward_pass(
                 rgbs_t, goals_t, actions_t, mask_t, 
-                past_kv_cache_t, attn_mask_t
+                past_kv_cache_t, attn_mask_t, 8
             )
 
             # TODO; add reference model kl penalty
@@ -669,7 +688,8 @@ class PPOTrainer:
                         minibatch["actions"],
                         minibatch["masks"],
                         minibatch["past_kv_cache"],
-                        minibatch["attn_mask"]
+                        minibatch["attn_mask"],
+                        self.config.train.minibatch_size,
                     )
                     loss_p, loss_v, train_stats = self.compute_loss(
                         minibatch["logprobs"],
