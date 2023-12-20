@@ -409,49 +409,46 @@ class PPOTrainer:
             yield
             self.rollouts.reset()
 
-    def compute_advantages(self, values, rewards):
-        lastgaelam = 0
-        advantages_reversed = []
-        gen_len = rewards.shape[-1]
+    def compute_advantages(self, rewards, values, mask):
+        rewards = rewards.to(self.device).squeeze()
+        values = values.to(self.device).squeeze()
+        if self.config.train.use_gae:
+            lastgaelam = 0
+            advantages_reversed = []
+            gen_len = rewards.shape[1]
 
-        for t in reversed(range(gen_len)):
-            nextvalues = values[:, t + 1] if t < gen_len - 1 else 0.0
-            delta = rewards[:, t] + self.config.train.gamma * nextvalues - values[:, t]
-            lastgaelam = (
-                delta + self.config.train.gamma * self.config.train.lam * lastgaelam
-            )
-            advantages_reversed.append(lastgaelam)
-        advantages = torch.stack(advantages_reversed[::-1]).transpose(0, 1)
-
-        returns = advantages + values
-        advantages = advantages.detach()
-        return values, advantages, returns
-
-    def batched_forward_pass(self, rgbs_t, goals_t, actions_t, mask_t, past_kv_cache_t, attn_mask_t):
-        E, T = rgbs_t.shape[:2]
-        num_minibatches = math.ceil(E / self.config.train.minibatch_size)
-        minibatch_size = self.config.train.minibatch_size
-
-        actions_t = actions_t.to(self.device)
-
-        logits, values, logprobs = [], [], []
-        for g in range(0, E, minibatch_size):
-            minibatch = tuple(
-                map(
-                    lambda t: t[g : g + minibatch_size],
-                    (rgbs_t, goals_t, actions_t, mask_t, past_kv_cache_t, attn_mask_t),
+            for t in reversed(range(gen_len)):
+                nextvalues = values[:, t + 1] if t < gen_len - 1 else 0.0
+                delta = rewards[:, t] + self.config.train.gamma * nextvalues - values[:, t]
+                lastgaelam = (
+                    delta + self.config.train.gamma * self.config.train.lam * lastgaelam
                 )
-            )
-            minibatch_act_logits, minibatch_values, minibatch_logprobs = self.model(*minibatch)
-            map(lambda t: t.to("cpu"), minibatch)
+                advantages_reversed.append(lastgaelam)
+            advantages = torch.stack(advantages_reversed[::-1]).transpose(0, 1)
 
-            logits.append(minibatch_act_logits)
-            values.append(minibatch_values)
-            logprobs.append(minibatch_logprobs)
+            returns = advantages + values
+            advantages = advantages.detach()
+            # normalize advantages
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            return values, advantages, returns
+        else:
+            returns = torch.zeros(rewards.shape[0], rewards.shape[1] + 1)
+            advantages = torch.zeros_like(rewards)
+            for step in reversed(range(rewards.shape[1])):
+                returns[:, step] = (
+                    rewards[:, step]
+                    + self.config.train.gamma 
+                    * returns[:, step + 1]
+                    * mask[:, step + 1]
+                )
+            raise NotImplementedError
 
-        logits = torch.cat(logits)
-        values = torch.cat(values).squeeze()  # get rid of critic 1 dim
-        logprobs = torch.cat(logprobs)
+
+    def batched_forward_pass(self, *args):
+        for arg in args:
+            arg = arg.to(self.device)
+
+        logits, values, logprobs = self.model(*args)
 
         return logits, values, logprobs
 
@@ -488,9 +485,13 @@ class PPOTrainer:
         pg_clipfrac = masked_mean(torch.gt(pg_losses2, pg_losses).float(), mask)
 
         loss = pg_loss + self.config.train.vf_coef * vf_loss
+        if torch.isnan(loss).any() or torch.isinf(loss).any():
+            import pdb; pdb.set_trace()
+            
 
         avg_ratio = masked_mean(ratio, mask).item()
         if avg_ratio > self.config.train.ratio_threshold:
+            import pdb; pdb.set_trace()
             print(
                 f"The average ratio of batch ({avg_ratio:.2f}) exceeds threshold {self.config.train.ratio_threshold:.2f}. Skipping batch."
             )
@@ -629,8 +630,7 @@ class PPOTrainer:
             )
 
             # TODO; add reference model kl penalty
-            rewards_t = rewards_t.to(self.device)
-            values, advantages, returns = self.compute_advantages(values, rewards_t)
+            values, advantages, returns = self.compute_advantages(rewards_t, values, mask_t)
 
         ls = local_size.item()
         batch_idxs = torch.cat([torch.randperm(ls), torch.randint(0, ls, (max_size - ls,))])

@@ -59,19 +59,19 @@ train:
       lr: 5e-6
       warmup_start: 0
       warmup_end: 0
-      warmup_steps: 100
+      warmup_steps: 10
       after_warmup:
         lr: 5e-6
         warmup_start: 0
         warmup_end: 5e-6
-        warmup_steps: 100
+        warmup_steps: 10
         after_warmup:
           lr: 5e-6
     critic:
       lr: 5e-6
       warmup_start: 2.5e-4
       warmup_end: 5e-6
-      warmup_steps: 200
+      warmup_steps: 10
       after_warmup:
         lr: 5e-6
     

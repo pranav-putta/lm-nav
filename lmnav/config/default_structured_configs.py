@@ -327,6 +327,7 @@ class PPOTrainRunnerConfig(TrainRunnerConfig):
     gamma: float = 0.99
     lam: float = 0.95
     ratio_threshold: float = 5.0
+    use_gae: bool = True
     sampler: BaseSamplerConfig = MISSING
 
 
