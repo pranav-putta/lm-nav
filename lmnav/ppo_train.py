@@ -362,7 +362,7 @@ class PPOTrainer:
             rollout_storage=self.rollouts,
             sampler=instantiate(self.config.train.sampler),
             use_cache=True,
-            # max_its=self.config.train.num_rollout_steps,
+            max_its=self.config.train.num_rollout_steps,
         )
 
         while True:
@@ -425,7 +425,7 @@ class PPOTrainer:
         advantages = advantages.detach()
         return values, advantages, returns
 
-    def batched_forward_pass(self, rgbs_t, goals_t, actions_t, mask_t):
+    def batched_forward_pass(self, rgbs_t, goals_t, actions_t, mask_t, past_kv_cache_t, attn_mask_t):
         E, T = rgbs_t.shape[:2]
         num_minibatches = math.ceil(E / self.config.train.minibatch_size)
         minibatch_size = self.config.train.minibatch_size
@@ -437,7 +437,7 @@ class PPOTrainer:
             minibatch = tuple(
                 map(
                     lambda t: t[g : g + minibatch_size],
-                    (rgbs_t, goals_t, actions_t, mask_t),
+                    (rgbs_t, goals_t, actions_t, mask_t, past_kv_cache_t, attn_mask_t),
                 )
             )
             minibatch_act_logits, minibatch_values, minibatch_logprobs = self.model(*minibatch)
@@ -555,7 +555,8 @@ class PPOTrainer:
             rewards,
             dones,
             successes,
-            dtgs
+            dtgs,
+            past_kv_cache
         ) = self.rollouts.generate_samples()
         time_rollouts_end = time.time()
 
@@ -593,25 +594,34 @@ class PPOTrainer:
         rewards_t = torch.stack(
             [F.pad(t, (0, T - t.shape[0]), "constant", 0) for t in rewards]
         )
+        max_past_kv_len = max([t.shape[-2] for t in past_kv_cache])
+        past_kv_cache_t = torch.stack(
+            [F.pad(t, (0, 0, max_past_kv_len - t.shape[-2], 0), "constant", 0) for t in past_kv_cache]
+        )
+
+        attn_mask = torch.ones(past_kv_cache_t.shape[0], max_past_kv_len, device=self.device)
+        for i, t in enumerate(past_kv_cache):
+            attn_mask[i, :max_past_kv_len - t.shape[-2]] = 0
 
         # gather all episodes from other gpus
-        rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(
+        rgbs_d, goals_d, actions_d, rewards_d, mask_d, past_kv_cache_d, attn_mask_d = map(
             lambda t: all_gather(t, self.device, self.world_size),
-            (rgbs_t, goals_t, actions_t, rewards_t, mask_t),
+            (rgbs_t, goals_t, actions_t, rewards_t, mask_t, past_kv_cache_t, attn_mask),
         )
         # slice up the gathered data into equal sized pieces
         E = rgbs_d.shape[0] // self.world_size
-        rgbs_d, goals_d, actions_d, rewards_d, mask_d = map(
-            lambda t: t.cpu(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d)
+        rgbs_d, goals_d, actions_d, rewards_d, mask_d, past_kv_cache_d, attn_mask_d = map(
+            lambda t: t.cpu(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d,  past_kv_cache_d, attn_mask_d)
         )
-        rgbs_t, goals_t, actions_t, rewards_t, mask_t = map(
+        rgbs_t, goals_t, actions_t, rewards_t, mask_t, past_kv_cache_t, attn_mask_t = map(
             lambda t: t[self.rank * E : self.rank * E + E].clone(),
-            (rgbs_d, goals_d, actions_d, rewards_d, mask_d),
+            (rgbs_d, goals_d, actions_d, rewards_d, mask_d, past_kv_cache_d, attn_mask_d),
         )
 
         with torch.no_grad(), self.model.no_sync():
             old_logits, values, old_logprobs = self.batched_forward_pass(
-                rgbs_t, goals_t, actions_t, mask_t
+                rgbs_t, goals_t, actions_t, mask_t, 
+                past_kv_cache_t, attn_mask_t
             )
 
             # TODO; add reference model kl penalty
@@ -641,6 +651,8 @@ class PPOTrainer:
                     "returns": returns[mb_idxs],
                     "logprobs": old_logprobs[mb_idxs],
                     "values": values[mb_idxs],
+                    "past_kv_cache": past_kv_cache_t[mb_idxs],
+                    "attn_mask": attn_mask_t[mb_idxs]
                 }
                 # move all to device
                 minibatch = {k: v.to(self.device) for k, v in minibatch.items()}
@@ -651,6 +663,8 @@ class PPOTrainer:
                         minibatch["goals"],
                         minibatch["actions"],
                         minibatch["masks"],
+                        minibatch["past_kv_cache"],
+                        minibatch["attn_mask"]
                     )
                     loss_p, loss_v, train_stats = self.compute_loss(
                         minibatch["logprobs"],

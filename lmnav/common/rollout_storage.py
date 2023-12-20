@@ -5,6 +5,7 @@ class RolloutStorage:
     def __init__(self, num_envs, max_steps, tokens_per_img, hidden_size, device):
         self.num_envs = num_envs
         self.max_steps = max_steps
+        self.device = device
 
         self.rgbs = torch.zeros(
             num_envs,
@@ -40,6 +41,9 @@ class RolloutStorage:
 
         self.current_step_idx = -1
 
+        self.last_hidden_state = None
+        self.current_hidden_state = None
+
     def insert(
         self,
         next_rgbs,
@@ -72,6 +76,8 @@ class RolloutStorage:
         self.goals[:, 0] = self.goals[:, -1]
 
         self.current_step_idx = 0
+        self.last_hidden_state = self.current_hidden_state
+        self.current_hidden_state = None
 
     def generate_samples(self):
         """
@@ -97,24 +103,20 @@ class RolloutStorage:
                 ends = ends + [self.max_steps - 1]
 
             slices = [slice(ends[i] + 1, ends[i + 1] + 1) for i in range(len(ends) - 1)]
-
-            samples += [
-                tuple(
-                    map(
-                        lambda t: t[b, s],
-                        (
-                            self.rgbs,
-                            self.goals,
-                            self.actions,
-                            self.rewards,
-                            self.dones,
-                            self.successes,
-                            self.dtgs
-                        ),
-                    )
-                )
-                for s in slices
-            ]
+            for s in slices:
+                val = (self.rgbs[b, s],
+                    self.goals[b, s],
+                    self.actions[b, s],
+                    self.rewards[b, s],
+                    self.dones[b, s],
+                    self.successes[b, s],
+                    self.dtgs[b, s])
+                if self.last_hidden_state is not None and s.start == 0:
+                    start_token_idx, cache = self.last_hidden_state
+                    val += (cache[:, :, b, :, start_token_idx[b]:],)
+                else:
+                    val += (torch.zeros(32, 2, 32, 0, 128, device=self.device),)
+                samples.append(val)
 
         return zip(*samples)
 
