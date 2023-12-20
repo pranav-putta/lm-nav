@@ -336,7 +336,7 @@ class NavLLAMA(Blip2Base):
     def tokens_per_img(self):
         return self.vis_encoder.num_tokens
 
-    def fast_action_generator(self, rollout_storage, sampler, use_cache=True, max_its=None):
+    def fast_action_generator(self, rollout_storage, sampler, use_cache=True, max_its=100):
         """
         action generator function, takes in the next rgb, goal, and action
         """
@@ -453,7 +453,8 @@ class NavLLAMA(Blip2Base):
             actions = [sampler(logits[i, act_tkn_ids]) for i in range(rollout_storage.num_envs)]
             seq_len = past_kv_cache.shape[4] 
 
-            rollout_storage.current_hidden_state = (start_token_idx, past_kv_cache)
+            if its == max_its - 1:
+                rollout_storage.current_hidden_state = (start_token_idx, past_kv_cache)
 
             yield actions
 

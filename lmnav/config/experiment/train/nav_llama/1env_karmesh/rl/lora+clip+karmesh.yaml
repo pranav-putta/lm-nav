@@ -36,7 +36,7 @@ exp:
 
 train:
   steps: 100_000
-  num_envs: 20
+  num_envs: 15
   minibatch_size: 2
   num_grad_accums: 6
   cliprange_value: 0.1

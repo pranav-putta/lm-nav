@@ -497,7 +497,7 @@ def sum_dict(d1, d2):
     return {k: d1[k] + d2[k] for k in d1.keys() | d2.keys()}
 
 
-def all_gather(q, device, world_size):
+def all_gather(q, device, world_size, max_gather_size=5e9, dest_device=None):
     """
     Gathers tensor arrays of different lengths across multiple gpus.
     Assumes that q.shape[1:] is identical across gpus, and only pads dim=0
@@ -507,25 +507,45 @@ def all_gather(q, device, world_size):
         q : tensor array
         ws : world size
         device : current gpu device
+        dest_device : device to move the gathered tensor array to
 
     Returns
     -------
         all_q : list of gathered tensor arrays from all the gpus
 
     """
+
+    if dest_device is None:
+        dest_device = device
+
     local_size = torch.tensor(q.shape[0], device=device)
     all_sizes = [torch.zeros_like(local_size) for _ in range(world_size)]
     torch.distributed.all_gather(all_sizes, local_size)
+    max_size = max(all_sizes).item()
 
     q = q.to(device)
-    size_diff = max(all_sizes).item() - local_size.item()
+    size_diff = max_size - local_size.item()
     if size_diff:
         padding = torch.zeros((size_diff, *q.shape[1:]), device=device, dtype=q.dtype)
         q = torch.cat((q, padding))
 
-    all_qs_padded = [torch.zeros_like(q) for _ in range(world_size)]
-    torch.distributed.all_gather(all_qs_padded, q)
-    all_qs = torch.cat([q[:size] for q, size in zip(all_qs_padded, all_sizes)])
+    # Check if the tensor is too large to be gathered at once
+    bytes_per_element = 2 if q.dtype == torch.bfloat16 or q.dtype == torch.float16 else 4
+    gather_bytes = q.numel() * bytes_per_element * world_size
+    num_gathers = max(1, int(np.ceil(gather_bytes / max_gather_size)))
+    gather_size = int(np.ceil(q.shape[0] / num_gathers))
+
+    all_qs = []
+    for i in range(num_gathers):
+        q_slice = q[i * gather_size : (i + 1) * gather_size]
+        all_q_slice_padded = [torch.zeros_like(q_slice) for _ in range(world_size)]
+        torch.distributed.all_gather(all_q_slice_padded, q_slice)
+        all_q_slice = torch.cat(
+            [q_slice[:size] for q_slice, size in zip(all_q_slice_padded, all_sizes)]
+        ).to(dest_device)
+        all_qs.append(all_q_slice)
+
+    all_qs = torch.cat(all_qs)
     return all_qs
 
 

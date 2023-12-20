@@ -597,7 +597,7 @@ class PPOTrainer:
         max_past_kv_len = max([t.shape[-2] for t in past_kv_cache])
         past_kv_cache_t = torch.stack(
             [F.pad(t, (0, 0, max_past_kv_len - t.shape[-2], 0), "constant", 0) for t in past_kv_cache]
-        )
+        ).to(torch.bfloat16)
 
         attn_mask = torch.ones(past_kv_cache_t.shape[0], max_past_kv_len, device=self.device)
         for i, t in enumerate(past_kv_cache):
@@ -605,10 +605,9 @@ class PPOTrainer:
 
         # gather all episodes from other gpus
         rgbs_d, goals_d, actions_d, rewards_d, mask_d, past_kv_cache_d, attn_mask_d = map(
-            lambda t: all_gather(t, self.device, self.world_size),
+            lambda t: all_gather(t, self.device, self.world_size, dest_device='cpu'),
             (rgbs_t, goals_t, actions_t, rewards_t, mask_t, past_kv_cache_t, attn_mask),
         )
-        # slice up the gathered data into equal sized pieces
         E = rgbs_d.shape[0] // self.world_size
         rgbs_d, goals_d, actions_d, rewards_d, mask_d, past_kv_cache_d, attn_mask_d = map(
             lambda t: t.cpu(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d,  past_kv_cache_d, attn_mask_d)
