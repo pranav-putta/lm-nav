@@ -5,7 +5,7 @@ defaults:
   - _self_
         
 environment:
-  max_episode_steps: 500
+  max_episode_steps: 200
 simulator:
   turn_angle: 30
   forward_step_size: 0.25

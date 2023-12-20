@@ -41,8 +41,8 @@ class RolloutStorage:
 
         self.current_step_idx = -1
 
-        self.last_hidden_state = None
-        self.current_hidden_state = None
+        self.last_hidden_state = (None, None)
+        self.current_hidden_state = (None, None)
 
     def insert(
         self,
@@ -77,7 +77,7 @@ class RolloutStorage:
 
         self.current_step_idx = 0
         self.last_hidden_state = self.current_hidden_state
-        self.current_hidden_state = None
+        self.current_hidden_state = (None, None)
 
     def generate_samples(self):
         """
@@ -95,8 +95,8 @@ class RolloutStorage:
         return rgbs, goals, actions, rewards, dones, successes
         """
         samples = []
-        if self.last_hidden_state is not None:
-            start_token_idx, cache = self.last_hidden_state
+        start_token_idx, cache = self.last_hidden_state
+        if cache is not None:
             cache = torch.stack([torch.stack([cache[i][0], cache[i][1]]) for i in range(len(cache))])
         for b in range(self.num_envs):
             ends = torch.where(self.dones[b])[0].tolist()
@@ -114,7 +114,7 @@ class RolloutStorage:
                     self.dones[b, s],
                     self.successes[b, s],
                     self.dtgs[b, s])
-                if self.last_hidden_state is not None and s.start == 0:
+                if (cache is not None) and (start_token_idx is not None) and s.start == 0:
                     val += (cache[:, :, b, :, start_token_idx[b]:],)
                 else:
                     val += (torch.zeros(32, 2, 32, 0, 128, device='cpu'),)

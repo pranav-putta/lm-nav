@@ -1,0 +1,103 @@
+# @package _global_
+
+defaults:
+  # set up habitat 
+  - /env@habitat_baselines: habitat_baselines
+  - /env@habitat: habitat_224 
+  - /dataset/imagenav/hm3d_1env
+    
+  # set up experiment misc.
+  - /exp: base
+  - /logger@exp.logger: wb
+    
+  # set up train
+  - /runner@train: ppo
+  - /lr@train.lr_schedule: actor_critic
+  - /lr@train.lr_schedule.actor: warmup_then
+  - /lr@train.lr_schedule.actor.after_warmup: warmup_then
+  - /lr@train.lr_schedule.actor.after_warmup.after_warmup: constant
+  - /lr@train.lr_schedule.critic: warmup_then
+  - /lr@train.lr_schedule.critic.after_warmup: constant
+  - /models/policy/nav_llama/clip@train.policy.actor: lora 
+  - /models@train.policy.critic: linear
+  - /sampler@train.sampler: nucleus
+    
+  # set up eval
+  - /runner@eval: eval
+  - /dataset@eval.dataset: offline_instruction
+    
+  - _self_
+
+
+exp:
+  group: "lmnav-1env"
+  job_type: "rl"
+  tags: ["lora"]
+
+train:
+  steps: 100_000
+  num_envs: 20
+  minibatch_size: 2
+  num_grad_accums: 6
+  cliprange_value: 0.1
+  cliprange: 0.1
+  vf_coef: 0.1
+  gamma: 0.99
+  lam: 0.95
+  ratio_threshold: 7.0
+  sampler:
+    p: 0.9
+    temp: 1.0
+    seed: 0
+
+  num_rollout_steps: 64
+  ppo_epochs: 2
+
+  lr_schedule:
+    actor:
+      lr: 2.5e-6
+      warmup_start: 0
+      warmup_end: 0
+      warmup_steps: 100
+      after_warmup:
+        lr: 2.5e-6
+        warmup_start: 0
+        warmup_end: 2.5e-6
+        warmup_steps: 100
+        after_warmup:
+          lr: 2.5e-6
+    critic:
+      lr: 2.5e-6
+      warmup_start: 2.5e-4
+      warmup_end: 2.5e-6
+      warmup_steps: 200
+      after_warmup:
+        lr: 2.5e-6
+    
+  policy:
+    actor:
+      use_artifact_config: True
+      load_artifact:
+        name: "lmnav-1env-bc-lora_clip_karmesh"
+        version: "latest"
+          
+    critic:
+      in_dim: 4096
+      p_dropout: 0.1
+
+    max_trajectory_length: 200
+      
+  store_artifact:
+    name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
+        
+eval:
+  num_episodes: 50
+  save_videos: True
+  deterministic: False
+  num_envs: 10
+  policy:
+    load_artifact: 
+      name: ${....train.store_artifact.name}
+      version: "latest"
+
+      

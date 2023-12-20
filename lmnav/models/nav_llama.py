@@ -341,19 +341,23 @@ class NavLLAMA(Blip2Base):
         action generator function, takes in the next rgb, goal, and action
         """
 
-        past_kv_cache = None
-        start_token_idx = [0] * rollout_storage.num_envs
-        seq_len = 0
+        start_token_idx, past_kv_cache = rollout_storage.last_hidden_state
+        if start_token_idx is None:
+            start_token_idx = [0] * rollout_storage.num_envs
+        if past_kv_cache is not None:
+            new_past_kv_cache = () 
+            for j in range(len(past_kv_cache)):
+                new_past_kv_cache += ((past_kv_cache[j][0].to(self.device), past_kv_cache[j][1].to(self.device)),)
+            past_kv_cache = new_past_kv_cache
+            seq_len = past_kv_cache[0][0].shape[2]
+        else:
+            seq_len = 0
 
         while True:
             dones = yield
             its = rollout_storage.current_step_idx
 
-            if its == 0 and past_kv_cache is not None:
-                new_past_kv_cache = () 
-                for j in range(len(past_kv_cache)):
-                    new_past_kv_cache += ((past_kv_cache[j][0].to(self.device), past_kv_cache[j][1].to(self.device)),)
-                past_kv_cache = new_past_kv_cache
+
 
             # construct embedding for the current step
             if use_cache:
@@ -447,10 +451,18 @@ class NavLLAMA(Blip2Base):
                 if earliest_start_idx > 0:
                     new_past_kv_cache = ()
                     for j in range(len(past_kv_cache)):
-                        new_past_kv_cache += ((past_kv_cache[j][0][:, :, earliest_start_idx:], past_kv_cache[j][1][:, :, earliest_start_idx:]),)
+                        k = past_kv_cache[j][0].narrow(2, earliest_start_idx, past_kv_cache[j][0].shape[2] - earliest_start_idx)
+                        v = past_kv_cache[j][1].narrow(2, earliest_start_idx, past_kv_cache[j][1].shape[2] - earliest_start_idx)
+                        new_past_kv_cache += ((k, v),)
+                    del past_kv_cache
+                    past_kv_cache = new_past_kv_cache
                     for env in range(len(start_token_idx)):
                         start_token_idx[env] -= earliest_start_idx
-                    past_kv_cache = new_past_kv_cache
+
+                del outputs
+                del rgb_embd
+                del goal_embd
+                del embd
 
             act_tkn_ids = self.llama_tokenizer(
                 "stop forward left right", add_special_tokens=False, return_tensors="pt"
@@ -462,18 +474,13 @@ class NavLLAMA(Blip2Base):
             seq_len = past_kv_cache[0][0].shape[2] 
 
             if its == max_its - 1:
-                del outputs
-                del rgb_embd
-                del goal_embd
-                del embd
+                # save cache into rollout storage
                 new_past_kv_cache = ()
                 for j in range(len(past_kv_cache)):
                     new_past_kv_cache += ((past_kv_cache[j][0].cpu(), past_kv_cache[j][1].cpu()),)
+                del past_kv_cache
                 past_kv_cache = new_past_kv_cache
                 rollout_storage.current_hidden_state = (start_token_idx, past_kv_cache)
-
-            import gc
-            gc.collect()
 
             yield actions
 

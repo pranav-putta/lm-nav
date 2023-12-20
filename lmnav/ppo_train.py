@@ -356,20 +356,21 @@ class PPOTrainer:
 
         self.model.eval()
 
-        g_cpu = torch.Generator(device=self.device)
-        g_cpu.manual_seed(0)
-        action_generator = self.model.module.actor.fast_action_generator(
-            rollout_storage=self.rollouts,
-            sampler=instantiate(self.config.train.sampler),
-            use_cache=True,
-            max_its=self.config.train.num_rollout_steps,
-        )
-
+        
         while True:
             with torch.no_grad(), self.model.no_sync():
+                g_cpu = torch.Generator(device=self.device)
+                g_cpu.manual_seed(0)
+                action_generator = self.model.module.actor.fast_action_generator(
+                    rollout_storage=self.rollouts,
+                    sampler=instantiate(self.config.train.sampler),
+                    use_cache=True,
+                    max_its=self.config.train.num_rollout_steps,
+                )
+
                 it = range(self.config.train.num_rollout_steps)
 
-                for i in tqdm(it):
+                for i in it:
                     next(action_generator)
                     actions = action_generator.send(dones)
 
@@ -404,6 +405,7 @@ class PPOTrainer:
                         dtgs=dtgs
                     )
 
+            del action_generator
             yield
             self.rollouts.reset()
 
