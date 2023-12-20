@@ -95,6 +95,9 @@ class RolloutStorage:
         return rgbs, goals, actions, rewards, dones, successes
         """
         samples = []
+        if self.last_hidden_state is not None:
+            start_token_idx, cache = self.last_hidden_state
+            cache = torch.stack([torch.stack([cache[i][0], cache[i][1]]) for i in range(len(cache))])
         for b in range(self.num_envs):
             ends = torch.where(self.dones[b])[0].tolist()
             # always make sure that ends includes the beginning/end of step list
@@ -112,10 +115,9 @@ class RolloutStorage:
                     self.successes[b, s],
                     self.dtgs[b, s])
                 if self.last_hidden_state is not None and s.start == 0:
-                    start_token_idx, cache = self.last_hidden_state
                     val += (cache[:, :, b, :, start_token_idx[b]:],)
                 else:
-                    val += (torch.zeros(32, 2, 32, 0, 128, device=self.device),)
+                    val += (torch.zeros(32, 2, 32, 0, 128, device='cpu'),)
                 samples.append(val)
 
         return zip(*samples)

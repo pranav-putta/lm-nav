@@ -583,7 +583,7 @@ class PPOTrainer:
                 for t in rgbs
             ]
         )
-        mask_t = mask_t.bool()
+        mask_t = mask_t.bool().to(self.device)
         rgbs_t = torch.stack(
             [F.pad(t, (0,) * 5 + (T - t.shape[0],), "constant", 0) for t in rgbs]
         )
@@ -599,23 +599,26 @@ class PPOTrainer:
             [F.pad(t, (0, 0, max_past_kv_len - t.shape[-2], 0), "constant", 0) for t in past_kv_cache]
         ).to(torch.bfloat16)
 
-        attn_mask = torch.ones(past_kv_cache_t.shape[0], max_past_kv_len, device=self.device)
+        attn_mask_t = torch.ones(past_kv_cache_t.shape[0], max_past_kv_len, device=self.device)
         for i, t in enumerate(past_kv_cache):
-            attn_mask[i, :max_past_kv_len - t.shape[-2]] = 0
+            attn_mask_t[i, :max_past_kv_len - t.shape[-2]] = 0
 
         # gather all episodes from other gpus
-        rgbs_d, goals_d, actions_d, rewards_d, mask_d, past_kv_cache_d, attn_mask_d = map(
-            lambda t: all_gather(t, self.device, self.world_size, dest_device='cpu'),
-            (rgbs_t, goals_t, actions_t, rewards_t, mask_t, past_kv_cache_t, attn_mask),
-        )
-        E = rgbs_d.shape[0] // self.world_size
-        rgbs_d, goals_d, actions_d, rewards_d, mask_d, past_kv_cache_d, attn_mask_d = map(
-            lambda t: t.cpu(), (rgbs_d, goals_d, actions_d, rewards_d, mask_d,  past_kv_cache_d, attn_mask_d)
-        )
+        local_size = torch.tensor(attn_mask_t.shape[0], device=self.device)
+        all_sizes = [torch.zeros_like(local_size) for _ in range(self.world_size)]
+        torch.distributed.all_gather(all_sizes, local_size)
+        max_size = max(all_sizes).item()
+
+        # pad all tensors to max size
+        def pad_to_max(t):
+            size_diff = max_size - t.shape[0]
+            padding = torch.zeros((size_diff, *t.shape[1:]), device=t.device, dtype=t.dtype)
+            return torch.cat([t, padding], dim=0)
+
         rgbs_t, goals_t, actions_t, rewards_t, mask_t, past_kv_cache_t, attn_mask_t = map(
-            lambda t: t[self.rank * E : self.rank * E + E].clone(),
-            (rgbs_d, goals_d, actions_d, rewards_d, mask_d, past_kv_cache_d, attn_mask_d),
+            pad_to_max, (rgbs_t,goals_t,actions_t,rewards_t,mask_t,past_kv_cache_t,attn_mask_t)
         )
+
 
         with torch.no_grad(), self.model.no_sync():
             old_logits, values, old_logprobs = self.batched_forward_pass(
@@ -627,8 +630,9 @@ class PPOTrainer:
             rewards_t = rewards_t.to(self.device)
             values, advantages, returns = self.compute_advantages(values, rewards_t)
 
+        ls = local_size.item()
+        batch_idxs = torch.cat([torch.randperm(ls), torch.randint(0, ls, (max_size - ls,))])
         E, T = rgbs_t.shape[:2]
-        batch_idxs = torch.randperm(E)
 
         cum_train_stats_l = []
         for _, mb in product(
@@ -695,7 +699,7 @@ class PPOTrainer:
             self.optim.step()
             self.optim.zero_grad()
 
-        map(lambda t: t.to("cpu"), (mask_t, rgbs_t, goals_t, actions_t, rewards_t))
+        map(lambda t: t.to("cpu"), (mask_t, rgbs_t, goals_t, actions_t, rewards_t, past_kv_cache_t, attn_mask_t))
         dict_cum_train_stats = reduce(sum_dict, cum_train_stats_l)
         dict_cum_train_stats = {
             k: v / len(cum_train_stats_l) for k, v in dict_cum_train_stats.items()

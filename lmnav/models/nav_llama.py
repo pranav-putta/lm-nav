@@ -14,7 +14,7 @@ from torch.cuda.amp import autocast as autocast
 import torch.nn as nn
 from lmnav.common.episode_processor import apply_transforms_actions
 
-from lmnav.common.utils import convert_weights_to_fp16
+from lmnav.common.utils import catchtime, convert_weights_to_fp16
 from lmnav.models.blip2 import Blip2Base, disabled_train
 from lmnav.models.modeling_llama import LlamaForCausalLM
 
@@ -349,6 +349,12 @@ class NavLLAMA(Blip2Base):
             dones = yield
             its = rollout_storage.current_step_idx
 
+            if its == 0 and past_kv_cache is not None:
+                new_past_kv_cache = () 
+                for j in range(len(past_kv_cache)):
+                    new_past_kv_cache += ((past_kv_cache[j][0].to(self.device), past_kv_cache[j][1].to(self.device)),)
+                past_kv_cache = new_past_kv_cache
+
             # construct embedding for the current step
             if use_cache:
                 # construct the embeddings for the next rgb and goal step
@@ -367,15 +373,12 @@ class NavLLAMA(Blip2Base):
                 # forward pass
                 outputs = self.llama_model(
                     inputs_embeds=embd,
-                    return_dict=True,
                     past_key_values=past_kv_cache,
                     attention_mask=attn_mask,
                     position_ids=pos_ids,
                 )
                 logits = outputs.logits[:, -1]
-
-                past_kv_cache = torch.stack([torch.stack(outputs.past_key_values[i]) for i in range(len(outputs.past_key_values))])
-
+                past_kv_cache = outputs.past_key_values
             else:
                 start_indices = torch.argmax(torch.cumsum(rollout_storage.dones[:, :its+1], dim=1), dim=1)
                 fn_pad_embd = lambda embd, start, dim: torch.nn.functional.pad(embd, (0,) * ((len(embd.shape) - dim - 1) * 2 + 1) + (start,), value=0)
@@ -395,54 +398,59 @@ class NavLLAMA(Blip2Base):
                 )
 
                 logits = outputs.logits[range(outputs.logits.shape[0]), start_indices - 1]
-
-                past_kv_cache = torch.stack([torch.stack(outputs.past_key_values[i]) for i in range(len(outputs.past_key_values))])
+                past_kv_cache = outputs.past_key_values
 
             # recompute indices that are done and re-populate the cache
             reset_idx = torch.tensor([i for i, done in enumerate(dones) if done]).long()
             if len(reset_idx) > 0 and use_cache:
-
                 # first compute the reset embeddings
-                reset_rgb_embds = rgb_embd[reset_idx][:, None]
-                reset_goal_embds = goal_embd[reset_idx][:, None]
-                actions_t = torch.zeros(reset_rgb_embds.shape[0], 1).long().to(self.device)
-                mask_t = torch.ones_like(actions_t, dtype=torch.bool).to(self.device)
+                rgb_embd = rgb_embd[reset_idx][:, None]
+                goal_embd = goal_embd[reset_idx][:, None]
+                act_embd = torch.zeros(rgb_embd.shape[0], 1).long().to(self.device)
+                mask_t = torch.ones_like(act_embd, dtype=torch.bool).to(self.device)
 
-                reset_embd, _ = self.prompt1_wrap(
-                    self.prompt1, reset_rgb_embds, reset_goal_embds, actions_t, mask_t
+                embd, _ = self.prompt1_wrap(
+                    self.prompt1, rgb_embd, goal_embd, act_embd, mask_t
                 )
-                reset_embd = reset_embd[:, :-1] # last token is dummy action
+                embd = embd[:, :-1] # last token is dummy action
 
                 # update the past key value cache
-                reset_outputs = self.llama_model(
-                    inputs_embeds=reset_embd,
-                    return_dict=True
-                )
-                reset_past_kv_cache = torch.stack([torch.stack(reset_outputs.past_key_values[i]) for i in range(len(reset_outputs.past_key_values))])
-                new_seq_len = max(past_kv_cache.shape[4], reset_embd.shape[1])
+                outputs = self.llama_model(inputs_embeds=embd)
+                reset_past_kv_cache = outputs.past_key_values
+                new_seq_len = max(past_kv_cache[0][0].shape[2], embd.shape[1])
 
                 # left pad kv cache to match the new seq len
-                pad_len = max(0, new_seq_len - past_kv_cache.shape[4])
-                past_kv_cache = F.pad(past_kv_cache, (0, 0, pad_len, 0))
+                pad_len = max(0, new_seq_len - past_kv_cache[0][0].shape[2])
+                new_past_kv_cache = ()
+                for j in range(len(past_kv_cache)):
+                    k = torch.nn.functional.pad(past_kv_cache[j][0], (0, 0, pad_len, 0)) 
+                    v = torch.nn.functional.pad(past_kv_cache[j][1], (0, 0, pad_len, 0))
+                    new_past_kv_cache += ((k, v),)
+                del past_kv_cache
+                past_kv_cache = new_past_kv_cache
 
                 # replace the kv cache with the reset kv cache
-                pad_len = max(0, new_seq_len - reset_past_kv_cache.shape[4])
-                for i, env in enumerate(reset_idx):
-                    past_kv_cache[:, :, env, :, pad_len:] = reset_past_kv_cache[:, :, i]
-                    past_kv_cache[:, :, env, :, :pad_len] = 0
+                pad_len = max(0, new_seq_len - reset_past_kv_cache[0][0].shape[2])
+                for (i, env), j in itertools.product(enumerate(reset_idx), range(len(past_kv_cache))):
+                    past_kv_cache[j][0][env] = torch.nn.functional.pad(reset_past_kv_cache[j][0][i], (0, 0, pad_len, 0)) 
+                    past_kv_cache[j][1][env] = torch.nn.functional.pad(reset_past_kv_cache[j][1][i], (0, 0, pad_len, 0))
+                del reset_past_kv_cache
 
                 # update start idxs
-                start_token_idx = [min(0, new_seq_len - reset_embd.shape[1]) + t for t in start_token_idx]
+                start_token_idx = [min(0, new_seq_len - embd.shape[1]) + t for t in start_token_idx]
                 for i, idx in enumerate(reset_idx):
-                    logits[idx] = reset_outputs.logits[i, -1]
-                    start_token_idx[idx] = max(0, new_seq_len - reset_embd.shape[1])
+                    logits[idx] = outputs.logits[i, -1]
+                    start_token_idx[idx] = max(0, new_seq_len - embd.shape[1])
 
                 # if there's empty history trim the past key value cache
                 earliest_start_idx = min(start_token_idx)
                 if earliest_start_idx > 0:
-                    past_kv_cache = past_kv_cache[:, :, :, :, earliest_start_idx:]
+                    new_past_kv_cache = ()
+                    for j in range(len(past_kv_cache)):
+                        new_past_kv_cache += ((past_kv_cache[j][0][:, :, earliest_start_idx:], past_kv_cache[j][1][:, :, earliest_start_idx:]),)
                     for env in range(len(start_token_idx)):
                         start_token_idx[env] -= earliest_start_idx
+                    past_kv_cache = new_past_kv_cache
 
             act_tkn_ids = self.llama_tokenizer(
                 "stop forward left right", add_special_tokens=False, return_tensors="pt"
@@ -451,10 +459,21 @@ class NavLLAMA(Blip2Base):
 
             # project onto the action space
             actions = [sampler(logits[i, act_tkn_ids]) for i in range(rollout_storage.num_envs)]
-            seq_len = past_kv_cache.shape[4] 
+            seq_len = past_kv_cache[0][0].shape[2] 
 
             if its == max_its - 1:
+                del outputs
+                del rgb_embd
+                del goal_embd
+                del embd
+                new_past_kv_cache = ()
+                for j in range(len(past_kv_cache)):
+                    new_past_kv_cache += ((past_kv_cache[j][0].cpu(), past_kv_cache[j][1].cpu()),)
+                past_kv_cache = new_past_kv_cache
                 rollout_storage.current_hidden_state = (start_token_idx, past_kv_cache)
+
+            import gc
+            gc.collect()
 
             yield actions
 
