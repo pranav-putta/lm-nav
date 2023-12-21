@@ -413,8 +413,8 @@ class PPOTrainer:
             self.rollouts.reset()
 
     def compute_advantages(self, rewards, values, mask):
-        rewards = rewards.to(self.device).squeeze()
-        values = values.to(self.device).squeeze()
+        rewards = rewards.to(self.device).squeeze() * mask.to(self.device).squeeze()
+        values = values.to(self.device).squeeze() * mask.to(self.device).squeeze()
         if self.config.train.use_gae:
             lastgaelam = 0
             advantages_reversed = []
@@ -435,16 +435,23 @@ class PPOTrainer:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             return values, advantages, returns
         else:
-            returns = torch.zeros(rewards.shape[0], rewards.shape[1] + 1)
-            advantages = torch.zeros_like(rewards)
+
+            returns = torch.zeros(rewards.shape[0], rewards.shape[1], device=self.device)
+            advantages = torch.zeros_like(rewards, device=self.device)
             for step in reversed(range(rewards.shape[1])):
+                next_value = returns[:, step + 1] if step < rewards.shape[1] - 1 else 0.0
+                mask_value = mask[:, step + 1] if step < rewards.shape[1] - 1 else 1.0
                 returns[:, step] = (
                     rewards[:, step]
                     + self.config.train.gamma 
-                    * returns[:, step + 1]
-                    * mask[:, step + 1]
+                    * next_value
+                    * mask_value
                 )
-            raise NotImplementedError
+
+
+            advantages = returns - values
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            return values, advantages, returns
 
 
     def batched_forward_pass(self, rgbs_t, goals_t, actions_t, mask_t, past_kv_cache_t, attn_mask_t, minibatch_size):
@@ -508,6 +515,7 @@ class PPOTrainer:
 
         loss = pg_loss + self.config.train.vf_coef * vf_loss
         if torch.isnan(loss).any() or torch.isinf(loss).any():
+            # import pdb; pdb.set_trace()
             print("Loss is nan or inf. Skipping batch.")
 
         avg_ratio = masked_mean(ratio, mask).item()
