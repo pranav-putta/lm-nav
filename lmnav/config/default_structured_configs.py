@@ -324,6 +324,7 @@ class PPOTrainRunnerConfig(TrainRunnerConfig):
     cliprange_value: float = 0.1
     cliprange: float = 0.1
     vf_coef: float = 0.1
+    entropy_coef: float = 0.01
     gamma: float = 0.99
     lam: float = 0.95
     ratio_threshold: float = 5.0

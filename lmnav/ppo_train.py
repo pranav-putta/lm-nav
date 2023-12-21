@@ -198,6 +198,7 @@ class PPOTrainer:
             "learner/total_episodes_successful": 0.0,
             "learner/total_success_rate": 0.0,
             "metrics/total_frames": 0,
+            "metrics/avg_episode_length": 0.0
         }
 
         actor_optim_params = list(
@@ -290,6 +291,9 @@ class PPOTrainer:
             if self.cumstats["learner/total_episodes_done"] > 0
             else 0.0
         )
+        self.cumstats["learner/step_success_rate"] = (
+            episode_stats["learner/num_episodes_successful"] / episode_stats["learner/num_episodes_done"]
+        )
         return {**self.cumstats, **episode_stats}
 
     def load_checkpoint(self, ckpt_path):
@@ -353,7 +357,6 @@ class PPOTrainer:
         with torch.no_grad(), self.model.no_sync():
             rgb_embds, goal_embds = self.embed_observations(observations)
         self.rollouts.insert(next_rgbs=rgb_embds[:, 0], next_goals=goal_embds[:, 0])
-
         self.model.eval()
 
         
@@ -505,12 +508,10 @@ class PPOTrainer:
 
         loss = pg_loss + self.config.train.vf_coef * vf_loss
         if torch.isnan(loss).any() or torch.isinf(loss).any():
-            import pdb; pdb.set_trace()
-            
+            print("Loss is nan or inf. Skipping batch.")
 
         avg_ratio = masked_mean(ratio, mask).item()
         if avg_ratio > self.config.train.ratio_threshold:
-            import pdb; pdb.set_trace()
             print(
                 f"The average ratio of batch ({avg_ratio:.2f}) exceeds threshold {self.config.train.ratio_threshold:.2f}. Skipping batch."
             )
@@ -551,7 +552,12 @@ class PPOTrainer:
                 var=value_var.detach().item(),
             ),
         }
-        return pg_loss, self.config.train.vf_coef * vf_loss, flatten_dict(stats)
+        return (
+            pg_loss,
+            self.config.train.vf_coef * vf_loss,
+            -self.config.train.entropy_coef * entropy,
+            flatten_dict(stats)
+        )
 
     def train_ppo_step(self):
         time_ppo_start = time.time()
@@ -560,6 +566,7 @@ class PPOTrainer:
             "metrics/frames": 0,
             "metrics/rollouts_wait_time": 0.0,
             "metrics/fps": 0.0,
+            "metrics/avg_episode_length": 0.0,
             "learner/num_episodes_done": 0,
             "learner/num_episodes_successful": 0,
             "learner/distance_to_goal": 0.0,
@@ -597,6 +604,7 @@ class PPOTrainer:
             [torch.sum(s) for s in successes]
         )
         stats["learner/distance_to_goal"] = sum([d[-1].item() for d in dtgs]) / len(dtgs)
+        stats["metrics/avg_episode_length"] = torch.tensor([rgbs[env].shape[0] + past_kv_cache[env].shape[-2] for env in range(len(rgbs))]).float().mean().item()
 
         # construct batch
         mask_t = torch.stack(
@@ -606,6 +614,7 @@ class PPOTrainer:
             ]
         )
         mask_t = mask_t.bool().to(self.device)
+
         rgbs_t = torch.stack(
             [F.pad(t, (0,) * 5 + (T - t.shape[0],), "constant", 0) for t in rgbs]
         )
@@ -620,7 +629,6 @@ class PPOTrainer:
         past_kv_cache_t = torch.stack(
             [F.pad(t, (0, 0, max_past_kv_len - t.shape[-2], 0), "constant", 0) for t in past_kv_cache]
         ).to(torch.bfloat16)
-
         attn_mask_t = torch.ones(past_kv_cache_t.shape[0], max_past_kv_len, device=self.device)
         for i, t in enumerate(past_kv_cache):
             attn_mask_t[i, :max_past_kv_len - t.shape[-2]] = 0
@@ -645,7 +653,7 @@ class PPOTrainer:
         with torch.no_grad(), self.model.no_sync():
             old_logits, values, old_logprobs = self.batched_forward_pass(
                 rgbs_t, goals_t, actions_t, mask_t, 
-                past_kv_cache_t, attn_mask_t, 8
+                past_kv_cache_t, attn_mask_t, 2
             )
 
             # TODO; add reference model kl penalty
@@ -691,7 +699,7 @@ class PPOTrainer:
                         minibatch["attn_mask"],
                         self.config.train.minibatch_size,
                     )
-                    loss_p, loss_v, train_stats = self.compute_loss(
+                    loss_p, loss_v, loss_e, train_stats = self.compute_loss(
                         minibatch["logprobs"],
                         minibatch["values"],
                         logprobs,
@@ -701,7 +709,7 @@ class PPOTrainer:
                         minibatch["advantages"],
                         minibatch["returns"],
                     )
-                    loss = loss_p + loss_v
+                    loss = loss_p + loss_v + loss_e
                     loss.backward()
                     return train_stats
 
@@ -736,25 +744,23 @@ class PPOTrainer:
     def train(self):
         self.initialize_train()
 
-        with tqdm(total=self.config.train.steps) as pbar:
-            while self.step < self.config.train.steps:
-                stats = self.train_ppo_step()
+        for step in tqdm(range(self.step, self.config.train.steps), initial=self.step):
+            stats = self.train_ppo_step()
 
-                self.lr_scheduler.step()
-                stats = self.update_stats(stats)
+            self.lr_scheduler.step()
+            stats = self.update_stats(stats)
 
-                torch.distributed.barrier()
+            torch.distributed.barrier()
 
-                if rank0_only():
-                    self.writer.write(stats)
-                    if self.step % self.config.train.ckpt_freq == 0:
-                        ckpt_num = self.step // self.config.train.ckpt_freq
-                        self.save_checkpoint(f"ckpt.{ckpt_num}.pth", archive_artifact=True)
-                    else:
-                        self.save_checkpoint("latest.pth", archive_artifact=False)
+            if rank0_only():
+                self.writer.write(stats)
+                if self.step % self.config.train.ckpt_freq == 0:
+                    ckpt_num = self.step // self.config.train.ckpt_freq
+                    self.save_checkpoint(f"ckpt.{ckpt_num}.pth", archive_artifact=True)
+                else:
+                    self.save_checkpoint("latest.pth", archive_artifact=False)
 
-                self.step += 1
-                pbar.update(1)
+            self.step = step
 
 
 @record
