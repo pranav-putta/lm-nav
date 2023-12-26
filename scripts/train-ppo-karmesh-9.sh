@@ -5,7 +5,7 @@
 #SBATCH --gpus a40:8
 #SBATCH --nodes 1
 #SBATCH --cpus-per-task 16
-#SBATCH --exclude "xaea-12,nestor,heistotron,gundam,baymax,chappie"
+#SBATCH --exclude "xaea-12,nestor,heistotron,gundam,baymax,chappie,tachikoma"
 #SBATCH --ntasks-per-node 4
 #SBATCH --partition cvmlp-lab
 #SBATCH --qos short

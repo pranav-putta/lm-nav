@@ -431,6 +431,7 @@ class NavLLAMA(Blip2Base):
 
 
             rollouts.embeddings.append(embd[:, :2])
+            assert output_idx.max() < outputs.logits.shape[1], f"output_idx.max()={output_idx.max()}, logits.shape[1]={outputs.logits.shape[1]}"
             logits = outputs.logits[torch.arange(num_envs), output_idx]
             past_kv_cache = outputs.past_key_values
             hidden_state = outputs.hidden_states[-1][torch.arange(num_envs), output_idx]

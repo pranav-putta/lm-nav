@@ -37,7 +37,7 @@ exp:
 train:
   use_gae: False
   steps: 100_000
-  num_envs: 5
+  num_envs: 10
   minibatch_size: 2
   num_grad_accums: 6
   cliprange_value: 0.2
