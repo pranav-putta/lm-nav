@@ -14,7 +14,7 @@ from torch.cuda.amp import autocast as autocast
 import torch.nn as nn
 from lmnav.common.episode_processor import apply_transforms_actions
 
-from lmnav.common.utils import catchtime, convert_weights_to_fp16
+from lmnav.common.utils import trim_tensor, convert_weights_to_fp16, create_mask, logprobs_from_logits
 from lmnav.models.blip2 import Blip2Base, disabled_train
 from lmnav.models.modeling_llama import LlamaForCausalLM
 
@@ -97,6 +97,7 @@ class NavLLAMA(Blip2Base):
                 llama_model,
                 torch_dtype=torch.bfloat16,
             )
+            # self.llama_model = torch.compile(self.llama_model)
 
         for name, param in self.llama_model.named_parameters():
             param.requires_grad = False
@@ -136,6 +137,15 @@ class NavLLAMA(Blip2Base):
             )
             self.llama_model = get_peft_model(self.llama_model, peft_config)
 
+        self.act2tkn = nn.Embedding.from_pretrained(
+            self.llama_tokenizer("stop forward left right", return_tensors='pt').input_ids[:, 1:].T
+        ).to(self.device)
+        self.act2embd = nn.Embedding.from_pretrained(
+            self.llama_model.get_input_embeddings()(self.act2tkn.weight.data).squeeze(),
+            freeze=True,
+        )
+        self.llama_cfg = self.llama_model.config
+
     @property
     def hidden_size(self):
         return self.llama_model.config.hidden_size
@@ -146,38 +156,35 @@ class NavLLAMA(Blip2Base):
         self.visual_encoder.to("cpu")
         self.visual_encoder.float()
 
-    def tokenize_actions(self, actions):
-        action_tkns = [
-            self.llama_tokenizer(
-                " ".join(act), return_tensors="pt", add_special_tokens=False
-            )
-            for act in actions
-        ]
-        action_tkns_t = torch.stack(
-            [tkn.input_ids.to(self.device) for tkn in action_tkns]
-        )
-        return action_tkns_t
-
     def embed_actions(self, actions):
-        action_idx2token = {0: "stop", 1: "forward", 2: "left", 3: "right"}
-
         # process actions into tokens
-        actions = actions.tolist()
-        actions = [[action_idx2token[act] for act in acts_t] for acts_t in actions]
-
-        action_tkns_t = self.tokenize_actions(actions)
-
-        action_embds = [
-            self.llama_model.get_input_embeddings()(tkns_t) for tkns_t in action_tkns_t
-        ]
-        action_embds = torch.cat(action_embds, dim=0)
+        actions = actions.long()
+        action_tkns_t = self.act2tkn(actions)
+        action_embds = self.act2embd(actions)
         return action_embds, action_tkns_t
 
     def embed_visual(self, rgbs, goals, precomputed_embeddings=False):
-        rgbs, goals = self.vis_encoder.embed_obs(rgbs, goals, precomputed_embeddings)
-        rgbs = self.llama_proj(rgbs)
-        goals = self.llama_proj(goals)
-        return rgbs, goals
+        return self.vis_encoder.embed_obs(rgbs, goals, precomputed_embeddings)
+
+    def create_prompt_embd(self, prompt, goals_embd):
+        B, *_ = goals_embd.shape
+        prompt_segs = prompt.split("{}")
+        prompt_tkns = [
+            self.llama_tokenizer(seg, return_tensors="pt", add_special_tokens=(i == 0))
+            for i, seg in enumerate(prompt_segs)
+            if len(seg)
+        ]
+        prompt_embd = [
+            self.llama_model.get_input_embeddings()(tkns.input_ids.to(self.device))
+            for tkns in prompt_tkns
+        ]
+        prompt_embd = [embd.repeat(B, 1, 1) for embd in prompt_embd]
+        goals_embd = goals_embd[:, 0] # goal embd token is the same, just take the first one
+        embds = [prompt_embd[0], goals_embd, prompt_embd[1]]
+        embds = torch.cat(embds, dim=1)
+
+        mask = torch.ones(B, embds.shape[1], dtype=torch.bool).to(self.device)
+        return embds, mask
 
     def prompt1_wrap(self, prompt, rgbs_embd, goals_embd, actions, masks):
         actions_embd, action_tkns_t = self.embed_actions(actions)
@@ -217,7 +224,8 @@ class NavLLAMA(Blip2Base):
         )
         rgb_tgts = torch.ones(B, T, Q).fill_(-100).to(self.device)
 
-        act_tgts = action_tkns_t.permute(0, 2, 1)
+        # act_tgts = action_tkns_t.permute(0, 2, 1)
+        act_tgts = action_tkns_t
         act_tgts = act_tgts.masked_fill_(~masks[..., None], -100)
 
         s_a_tgts = (
@@ -237,88 +245,102 @@ class NavLLAMA(Blip2Base):
         else:
             return contextlib.nullcontext()
 
+    def prepare_state_action_tensor(self, obs_embds, action_embds, mask):
+        # interleave the rgb and action embeddings together
+        b, t, q, h = obs_embds.shape
+        action_embds = einops.rearrange(action_embds, 'b t h -> b t 1 h')
+        obs_embds = F.pad(obs_embds, (0, 0, 0, 0, 0, 1))
+        embds = torch.cat([action_embds, obs_embds], dim=2)
+        embds = einops.rearrange(embds, 'b t q h -> b (t q) h')[:, :-q]
+
+        seq_lens = mask.sum(dim=1) * (q + 1) + 1 # (q + 1) for the action token, +1 for the prev action token
+        new_mask = create_mask(seq_lens, embds.shape[1]).to(self.device)
+        return embds, new_mask
+
     def forward_with_embds(self, rgb_embds, goal_embds, actions_t, mask_t, pvk_t, attnm_t):
         return self.forward(rgb_embds, goal_embds, actions_t, mask_t, pvk_t, attnm_t, True)
 
-    def forward(self, rgbs_t, goals_t, actions_t, mask_t, pvk_t=None, attnm_t=None, precomputed_embeddings=False):
+    def forward(self, rgbs_t, goals_t, prev_actions_t, mask_t, pvk_t=None, past_attnm_t=None, precomputed_embeddings=False):
         """
         rgbs_t = [B, C, T, H, W]
         goals_t = [B, C, 1, H, W]
-        actions_t = [B, T]
+        prev_actions_t = [B, T]
         """
         with self.maybe_autocast():
-            rgbs_t, goals_t, mask_t, actions_t = map(
-                lambda t: t.to(self.device), (rgbs_t, goals_t, mask_t, actions_t)
-            )
+            rgbs_embd, goals_embd = self.embed_visual(rgbs_t, goals_t, precomputed_embeddings)
+            rgbs_embd, goals_embd = map(lambda x: self.llama_proj(x), [rgbs_embd, goals_embd])
+            prev_action_embds = self.act2embd(prev_actions_t)
+            past_lengths = past_attnm_t.sum(dim=1)
 
-            actions_t = actions_t.long()
 
-            if not precomputed_embeddings:
-                rgbs_embd, goals_embd = self.embed_visual(rgbs_t, goals_t, precomputed_embeddings)
-            else:
-                rgbs_embd, goals_embd = rgbs_t, goals_t
+            B, T, *_ = rgbs_embd.shape
+            embds, mask = self.prepare_state_action_tensor(rgbs_embd, prev_action_embds, mask_t)
+            seq_lens = mask.sum(dim=1)
 
-            mask_t = mask_t.to(torch.bool)
-            
-            embd, tgts = self.prompt1_wrap(
-                self.prompt1, rgbs_embd, goals_embd, actions_t, mask_t
-            )
-            embd = embd.to(self.device)
-            tgts = tgts.to(self.device)
+            # construct prompt embeddings for the reset episodes
+            reset_episode_mask = past_lengths == 0
+            prompt_embds, prompt_mask = self.create_prompt_embd(self.prompt1, goals_embd[reset_episode_mask])
+            prompt_lens = prompt_mask.sum(dim=1)
+            max_seq_len = max(embds.shape[1], seq_lens.max() + prompt_embds.shape[1]) # -1 bc prev action not needed for reset episodes
+            embds = F.pad(embds, (0, 0, 0, max_seq_len - embds.shape[1]))
+            mask = F.pad(mask, (0, max_seq_len - mask.shape[1]))
+            for i, idx in enumerate(torch.where(reset_episode_mask)[0].tolist()):
+                pad_len = embds.shape[1] - prompt_embds[i].shape[0]
+                embds[idx, :] = torch.cat([prompt_embds[i], embds[idx, 1:pad_len + 1]], dim=0)
+                mask[idx, :] = torch.cat([prompt_mask[i], mask[idx, 1:pad_len + 1]], dim=0)
 
+            embds, mask = trim_tensor(embds, mask)
+            seq_lens = mask.sum(dim=1)
+
+            past_lengths = past_attnm_t.sum(dim=1)
             pos_ids = None
-            if pvk_t is not None and attnm_t is not None:
+            if pvk_t is not None and past_attnm_t is not None:
                 pvk_t = pvk_t.to(self.device)
-                pvk_t = einops.rearrange(pvk_t, "b k l ... -> k l b ...")
-                attnm_t = attnm_t.to(self.device).long()
-                pos_ids = torch.arange(embd.shape[1]).repeat((embd.shape[0], 1)).to(self.device) + attnm_t.sum(dim=1)[:, None]
-                attnm_t = torch.cat([attnm_t, torch.ones(attnm_t.shape[0], embd.shape[1]).to(self.device)], dim=1)
+                pvk_t = einops.rearrange(pvk_t, "b l k ... -> l k b ...")
+                past_attnm_t = past_attnm_t.to(self.device).long()
+                pos_ids = torch.arange(embds.shape[1]).repeat((embds.shape[0], 1)).to(self.device) + past_attnm_t.sum(dim=1)[:, None]
+                past_attnm_t = torch.cat([past_attnm_t, torch.ones(past_attnm_t.shape[0], embds.shape[1]).to(self.device)], dim=1)
+
+            max_episode_len = mask_t.sum(dim=1).max() 
+            # input embeddings are A S A S A ..., we want hidden states after S 
+            output_idx = torch.arange(0, max_episode_len, device=self.device).repeat(B, 1) * (self.tokens_per_img + 1) + 1
+            # for reset episodes, we want the hidden state after the prompt: prompt + *S* A S A ... these also don't have the prev action
+            output_idx[reset_episode_mask] += prompt_lens.unsqueeze(-1) - 1
+            output_idx.masked_fill_(~mask_t[:, :max_episode_len], 0)
+
+            masked_targets = prev_actions_t[:, 1:max_episode_len + 1].clone().masked_fill_(~mask_t[:, :max_episode_len], -100)
+            targets = torch.full((embds.shape[0], embds.shape[1]), -100).to(self.device)
+
+            targets.scatter_(1, output_idx, masked_targets)
 
             outputs = self.llama_model(
-                inputs_embeds=embd, labels=tgts,
+                inputs_embeds=embds, 
+                labels=targets,
                 return_dict=True,
                 output_hidden_states=True,
                 past_key_values=pvk_t,
-                attention_mask=attnm_t,
+                attention_mask=past_attnm_t,
                 position_ids=pos_ids,
             )
 
             # extract the action tokens
-            act_tkn_ids = self.llama_tokenizer(
-                "stop forward left right", add_special_tokens=False, return_tensors="pt"
-            )
-            act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
-            B, T, *_ = rgbs_embd.shape
+            act_tkn_ids = self.act2tkn.weight.data.squeeze()
+        
 
-            act_positions = torch.tensor(
-                [(self.tokens_per_img + 1) * (T - i - 1) + 2 for i in range(T)]
-            ).to(self.device)
-
-            act_hidden_states = outputs.hidden_states[-1][:, -act_positions]
-
-            # construct action logits
-            if self.action_head_mode == "act_linear":
-                act_logits = self.action_head(act_hidden_states)
-            elif self.action_head_mode == "lm" or self.action_head_mode == "lm_slice":
-                act_logits = outputs.logits[:, -act_positions][:, :, act_tkn_ids]
-            else:
-                print(f"{self.action_head_mode} head mode is not recognized")
-                exit()
-
-            probs = F.softmax(act_logits, dim=-1)
-
-            targets = actions_t.detach().clone().masked_fill_(~mask_t, -100)
+            output_idx_hx = output_idx[..., None].repeat(1, 1, outputs.hidden_states[-1].shape[-1])
+            act_hidden_states = outputs.hidden_states[-1].gather(1, output_idx_hx)
+            act_hidden_states.masked_fill_(~mask_t[:, :max_episode_len, None], 0)
+            output_idx_logits = output_idx[..., None].repeat(1, 1, outputs.logits.shape[-1])
+            act_logits = outputs.logits.gather(1, output_idx_logits)
+            act_logits = act_logits[:, :, act_tkn_ids]
+            act_logits.masked_fill_(~mask_t[:, :max_episode_len, None], 0)
 
             # compute loss
-            if self.action_head_mode == "act_linear" or self.action_head_mode == "lm_slice":
-                loss = F.cross_entropy(
-                    einops.rearrange(probs, "b t h -> (b t) h"),
-                    einops.rearrange(targets, "b t -> (b t)"),
-                    ignore_index=-100,
-                )
-            else:
-                loss = outputs.loss
-
+            loss = outputs.loss
+            # pad logits and hidden states to max episode length
+            original_len = mask_t.shape[1]
+            act_logits = F.pad(act_logits, (0,0,0, original_len - act_logits.shape[1]))
+            act_hidden_states = F.pad(act_hidden_states, (0, 0, 0, original_len - act_hidden_states.shape[1]))
             return NavLLAMAOutput(
                 logits=act_logits, loss=loss, last_hidden_state=act_hidden_states
             )
@@ -336,14 +358,106 @@ class NavLLAMA(Blip2Base):
     def tokens_per_img(self):
         return self.vis_encoder.num_tokens
 
+    def action_generator(self, rollouts, sampler):
+        """ action generator function, takes in the next rgb, goal, and action """
+        num_envs = rollouts.num_envs
+        its = 0
+
+        rollouts.embeddings = []
+
+        # set up initial hidden states and variables
+        if rollouts.last_cache is None:
+            past_lens = torch.tensor([0] * rollouts.num_envs, device=self.device)
+            past_kv_cache = ()
+            h = self.llama_cfg.num_attention_heads
+            d = self.llama_cfg.hidden_size // self.llama_cfg.num_attention_heads
+            for j in range(self.llama_cfg.num_hidden_layers):
+                past_kv_cache += ((torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.bfloat16),
+                                   torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.bfloat16)),)
+        else:
+            past_lens = rollouts.last_cache.past_lengths.clone()
+            past_kv_cache = rollouts.last_cache.past_kv_cache.clone().to(self.device)
+
+        # loop over the rollouts
+        while True:
+            dones = yield
+            it = rollouts.current_step_idx
+            dones = torch.tensor(dones, device=self.device, dtype=torch.bool)
+
+            # construct embedding for the current step
+            rgb_embd, goal_embd = map(lambda x: self.llama_proj(x.float()), (rollouts.rgbs[:, it], rollouts.goals[:, it]))
+            act_embd, _ = self.embed_actions(rollouts.prev_actions[:, it][..., None])
+            embd = torch.cat([act_embd, rgb_embd], dim=1)
+            next_n_tkns = embd.shape[1]
+            next_lens = past_lens + next_n_tkns
+
+            # check if we need to reset an episode and update embeddings
+            if dones.any():
+                # construct prompt embeddings for the reset episodes
+                reset_rgb_embd = rgb_embd[dones][:, None]
+                reset_goal_embd = goal_embd[dones][:, None]
+                reset_act_embd = torch.zeros(reset_rgb_embd.shape[0], 1).long().to(self.device)
+                reset_mask_t = torch.ones_like(reset_act_embd, dtype=torch.bool).to(self.device)
+                reset_embd, _ = self.prompt1_wrap(
+                    self.prompt1, reset_rgb_embd, reset_goal_embd, reset_act_embd, reset_mask_t
+                )
+                reset_embd = reset_embd[:, :-1] # last token is dummy action
+
+                # update the input embeddings 
+                # 1. expand the embedding to match the reset embedding length
+                embd = F.pad(embd, (0, 0, 0, reset_embd.shape[1] - embd.shape[1]))
+                # 2. replace the reset embeddings
+                embd[dones] = reset_embd
+                # 3. update episode lengths
+                past_lens[dones] = 0
+                next_lens[dones] = reset_embd.shape[1]
+
+            # compute the attention mask and position ids based on the token start indices
+            cache_len = past_kv_cache[0][0].shape[2]
+
+            attn_mask = F.pad(create_mask(past_lens, cache_len), (0, embd.shape[1]), mode='constant', value=1).to(self.device)
+            pos_ids = torch.arange(0, embd.shape[1], device=self.device).repeat(num_envs, 1) + past_lens.unsqueeze(-1)
+            output_idx = next_lens - past_lens - 1
+            
+            # run forward pass
+            outputs = self.llama_model(
+                inputs_embeds=embd,
+                past_key_values=past_kv_cache,
+                attention_mask=attn_mask,
+                position_ids=pos_ids,
+                return_dict=True,
+                output_hidden_states=True,
+            )
+
+
+            rollouts.embeddings.append(embd[:, :2])
+            logits = outputs.logits[torch.arange(num_envs), output_idx]
+            past_kv_cache = outputs.past_key_values
+            hidden_state = outputs.hidden_states[-1][torch.arange(num_envs), output_idx]
+
+            # sample actions
+            logits = logits[:, self.act2tkn.weight.data.squeeze()]
+            actions = list(map(lambda i: sampler(logits[i]), range(num_envs)))
+            logprobs = logprobs_from_logits(logits[:, None, :], torch.tensor(actions, device=self.device, dtype=torch.long)[:, None]).squeeze(1)
+            past_lens = next_lens
+
+            if its == rollouts.max_steps - 1:
+                rollouts.set_current_cache(past_lens, past_kv_cache)
+
+            its += 1
+            yield actions, logprobs, hidden_state
+
+
+
     def fast_action_generator(self, rollout_storage, sampler, use_cache=True, max_its=100):
         """
         action generator function, takes in the next rgb, goal, and action
         """
 
-        start_token_idx, past_kv_cache = rollout_storage.last_hidden_state
+        start_token_idx, past_kv_cache = rollout_storage.last_cache
+        num_envs = rollout_storage.num_envs
         if start_token_idx is None:
-            start_token_idx = [0] * rollout_storage.num_envs
+            start_token_idx = torch.tensor([0] * num_envs)
         if past_kv_cache is not None:
             new_past_kv_cache = () 
             for j in range(len(past_kv_cache)):
@@ -357,8 +471,6 @@ class NavLLAMA(Blip2Base):
             dones = yield
             its = rollout_storage.current_step_idx
 
-
-
             # construct embedding for the current step
             if use_cache:
                 # construct the embeddings for the next rgb and goal step
@@ -368,11 +480,9 @@ class NavLLAMA(Blip2Base):
                 embd = torch.cat([act_embd, rgb_embd], dim=1)
 
                 # compute the attention mask and position ids based on the token start indices
-                attn_mask = torch.ones(embd.shape[0], seq_len + embd.shape[1]).to(self.device)
-                for i, t in enumerate(start_token_idx):
-                    attn_mask[i, :t] = 0
-                pos_ids = [torch.tensor(list(range(seq_len - t, seq_len + embd.shape[1] - t))) for t in start_token_idx]
-                pos_ids = torch.stack(pos_ids).to(self.device)
+                attn_mask = ~create_mask(start_token_idx, seq_len + embd.shape[1]).to(self.device)
+                pos_ids = torch.arange(seq_len, seq_len + embd.shape[1]).repeat(num_envs, 1) - start_token_idx.unsqueeze(-1)
+                pos_ids = pos_ids.to(self.device)
 
                 # forward pass
                 outputs = self.llama_model(
@@ -395,7 +505,6 @@ class NavLLAMA(Blip2Base):
                     self.prompt1, rgb_embd, goal_embd, act_embd, mask_t
                 )
                 embd = embd[:, :-1] # last token is dummy action
-
                 outputs = self.llama_model(
                     inputs_embeds=embd,
                     return_dict=True,
@@ -441,7 +550,7 @@ class NavLLAMA(Blip2Base):
                 del reset_past_kv_cache
 
                 # update start idxs
-                start_token_idx = [min(0, new_seq_len - embd.shape[1]) + t for t in start_token_idx]
+                start_token_idx = torch.tensor([min(0, new_seq_len - embd.shape[1]) + t for t in start_token_idx])
                 for i, idx in enumerate(reset_idx):
                     logits[idx] = outputs.logits[i, -1]
                     start_token_idx[idx] = max(0, new_seq_len - embd.shape[1])
@@ -460,9 +569,7 @@ class NavLLAMA(Blip2Base):
                         start_token_idx[env] -= earliest_start_idx
 
                 del outputs
-                del rgb_embd
                 del goal_embd
-                del embd
 
             act_tkn_ids = self.llama_tokenizer(
                 "stop forward left right", add_special_tokens=False, return_tensors="pt"
@@ -482,6 +589,8 @@ class NavLLAMA(Blip2Base):
                 past_kv_cache = new_past_kv_cache
                 rollout_storage.current_hidden_state = (start_token_idx, past_kv_cache)
 
+            with open("acts2.txt", "a+") as f:
+                f.write(str(logits[0, act_tkn_ids]) + "\n")
             yield actions
 
     def configure_optimizers(self, weight_decay, learning_rate, betas):

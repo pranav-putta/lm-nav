@@ -648,3 +648,28 @@ def pad_along_dim(list_of_tensors, max_len):
         batched_tensor[i, :tensor.shape[0]] = tensor
     
     return batched_tensor
+
+def create_mask(seq_lengths, max_seq_length=None):
+    """
+    Creates a boolean mask from sequence lengths.
+    
+    Args:
+    seq_lengths (torch.Tensor): A 1D tensor containing the lengths of sequences.
+    max_seq_length (int): The maximum sequence length in the batch.
+
+    Returns:
+    torch.Tensor: A 2D boolean mask.
+    """
+    if max_seq_length is None:
+        max_seq_length = seq_lengths.max().item()
+    batch_size = seq_lengths.size(0)
+    seq_range = torch.arange(0, max_seq_length, dtype=torch.long, device=seq_lengths.device)
+    seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_seq_length)
+    seq_length_expand = seq_lengths.unsqueeze(1).expand_as(seq_range_expand)
+    return seq_range_expand < seq_length_expand
+
+def trim_tensor(tensor, mask):
+    seq_lengths = mask.sum(dim=-1)
+    max_seq_length = seq_lengths.max().item()
+    return tensor[:, :max_seq_length], mask[:, :max_seq_length]
+

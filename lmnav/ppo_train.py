@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+import tensordict
 import numpy as np
 from itertools import product
 from tqdm import tqdm
@@ -20,7 +21,7 @@ import time
 import numpy as np
 from habitat_baselines.utils.common import batch_obs
 
-from lmnav.common.utils import all_gather, all_reduce, catchtime, convert_weights_to_fp16, sum_dict
+from lmnav.common.utils import all_gather, all_reduce, catchtime, convert_weights_to_fp16, create_mask, sum_dict
 from lmnav.dataset.data_gen import _init_envs
 from lmnav.common.episode_processor import apply_transforms_images
 
@@ -95,6 +96,18 @@ def masked_mean(values, mask, axis=None):
     else:
         return (values * mask).sum() / mask.sum()
 
+def masked_var(values, mask, axis=None):
+    """Compute variance of tensor with masked values."""
+    mean = masked_mean(values, mask, axis=axis)
+    centered_values = values - mean.unsqueeze(-1)
+    squared_deviations = masked_mean(centered_values**2, mask)
+    return masked_mean(squared_deviations, mask, axis=axis)
+    
+def masked_normalize(values, mask, axis=None):
+    """Normalize tensor with masked values."""
+    mean = masked_mean(values, mask, axis=axis)
+    std = torch.sqrt(masked_var(values, mask, axis=axis))
+    return mask * (values - mean.unsqueeze(-1)) / (std.unsqueeze(-1) + 1e-8)
 
 class PPOTrainer:
     def __init__(self, config, eval=False, verbose=False):
@@ -149,22 +162,7 @@ class PPOTrainer:
                     torch.distributed.get_rank()
                     * self.config.habitat_baselines.num_environments
                 )
-                self.config.habitat.task.measurements.update(
-                    {
-                        "top_down_map": TopDownMapMeasurementConfig(
-                            map_padding=0,
-                            map_resolution=128,
-                            draw_source=False,
-                            draw_border=False,
-                            draw_shortest_path=False,
-                            draw_view_points=False,
-                            draw_goal_positions=False,
-                            draw_goal_aabbs=False,
-                        ),
-                        "collisions": CollisionsMeasurementConfig(),
-                    }
-                )
-
+                del self.config.habitat.task.measurements['top_down_map']
 
             random.seed(self.config.habitat.seed)
             np.random.seed(self.config.habitat.seed)
@@ -233,6 +231,9 @@ class PPOTrainer:
 
         torch.distributed.barrier()
 
+        # run torch compile
+        # self.model = torch.compile(self.model)
+
     def setup_actor_critic(self):
         """
         Sets up the actor and critic modules, wraps them in DDP if distributed is set
@@ -249,7 +250,7 @@ class PPOTrainer:
 
         if self.is_distributed:
             print(f"Setting up DDP on GPU {self.rank}")
-            model = DDP(model, device_ids=[self.rank], find_unused_parameters=True)
+            model = DDP(model, device_ids=[self.rank])
 
         if rank0_only():
             num_params = sum([param.numel() for param in model.parameters()])
@@ -292,7 +293,10 @@ class PPOTrainer:
             else 0.0
         )
         self.cumstats["learner/step_success_rate"] = (
-            episode_stats["learner/num_episodes_successful"] / episode_stats["learner/num_episodes_done"]
+            (episode_stats["learner/num_episodes_successful"] 
+                / episode_stats["learner/num_episodes_done"])
+            if episode_stats["learner/num_episodes_done"] > 0
+            else 0.0
         )
         return {**self.cumstats, **episode_stats}
 
@@ -354,31 +358,23 @@ class PPOTrainer:
 
         # initialize rollouts
         observations = self.envs.reset()
-        with torch.no_grad(), self.model.no_sync():
+        with torch.inference_mode(), self.model.no_sync():
             rgb_embds, goal_embds = self.embed_observations(observations)
         self.rollouts.insert(next_rgbs=rgb_embds[:, 0], next_goals=goal_embds[:, 0])
-        self.model.eval()
-
+        sampler = instantiate(self.config.train.sampler)
         
         while True:
-            with torch.no_grad(), self.model.no_sync():
-                g_cpu = torch.Generator(device=self.device)
-                g_cpu.manual_seed(0)
-                action_generator = self.model.module.actor.fast_action_generator(
-                    rollout_storage=self.rollouts,
-                    sampler=instantiate(self.config.train.sampler),
-                    use_cache=True,
-                    max_its=self.config.train.num_rollout_steps,
+            with torch.inference_mode(), self.model.no_sync():
+                self.model.eval()
+                action_generator = self.model.module.actor.action_generator(
+                    rollouts=self.rollouts,
+                    sampler=sampler,
                 )
-
-                it = range(self.config.train.num_rollout_steps)
-
-                for i in it:
+                for i in range(self.config.train.num_rollout_steps):
                     next(action_generator)
-                    actions = action_generator.send(dones)
+                    actions, logprobs, hx = action_generator.send(dones)
 
                     outputs = self.envs.step(actions)
-
                     next_observations, rewards, dones, infos = [
                         list(x) for x in zip(*outputs)
                     ]
@@ -391,7 +387,6 @@ class PPOTrainer:
                     dones, rewards, actions = map(
                         lambda l: torch.tensor(l), (dones, rewards, actions)
                     )
-
                     successes = torch.tensor(
                         [info["success"] for info in infos], dtype=torch.bool
                     )
@@ -405,16 +400,19 @@ class PPOTrainer:
                         rewards=rewards,
                         actions=actions,
                         successes=successes,
-                        dtgs=dtgs
+                        dtgs=dtgs,
+                        hx=hx,
+                        logprobs=logprobs
                     )
 
             del action_generator
             yield
             self.rollouts.reset()
 
+
     def compute_advantages(self, rewards, values, mask):
-        rewards = rewards.to(self.device).squeeze() * mask.to(self.device).squeeze()
-        values = values.to(self.device).squeeze() * mask.to(self.device).squeeze()
+        rewards = rewards.to(self.device)
+        values = values.to(self.device)
         if self.config.train.use_gae:
             lastgaelam = 0
             advantages_reversed = []
@@ -430,12 +428,8 @@ class PPOTrainer:
             advantages = torch.stack(advantages_reversed[::-1]).transpose(0, 1)
 
             returns = advantages + values
-            advantages = advantages.detach()
-            # normalize advantages
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             return values, advantages, returns
         else:
-
             returns = torch.zeros(rewards.shape[0], rewards.shape[1], device=self.device)
             advantages = torch.zeros_like(rewards, device=self.device)
             for step in reversed(range(rewards.shape[1])):
@@ -448,35 +442,32 @@ class PPOTrainer:
                     * mask_value
                 )
 
-
+            values = values * mask
             advantages = returns - values
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             return values, advantages, returns
 
 
-    def batched_forward_pass(self, rgbs_t, goals_t, actions_t, mask_t, past_kv_cache_t, attn_mask_t, minibatch_size):
+    def batched_forward_pass(self, rgbs_t, goals_t, prev_actions_t, mask_t, past_kv_cache_t, cache_mask_t, minibatch_size):
         E, T = rgbs_t.shape[:2]
-
-        actions_t = actions_t.to(self.device)
 
         logits, values, logprobs = [], [], []
         for g in range(0, E, minibatch_size):
             minibatch = tuple(
                 map(
                     lambda t: t[g : g + minibatch_size],
-                    (rgbs_t, goals_t, actions_t, mask_t, past_kv_cache_t, attn_mask_t),
+                    (rgbs_t, goals_t, prev_actions_t, mask_t, past_kv_cache_t, cache_mask_t),
                 )
             )
             minibatch_act_logits, minibatch_values, minibatch_logprobs = self.model(*minibatch)
-            map(lambda t: t.to("cpu"), minibatch)
+
 
             logits.append(minibatch_act_logits)
             values.append(minibatch_values)
             logprobs.append(minibatch_logprobs)
 
-        logits = torch.cat(logits)
-        values = torch.cat(values).squeeze()  # get rid of critic 1 dim
-        logprobs = torch.cat(logprobs)
+        logits = torch.cat(logits) * mask_t.unsqueeze(-1)
+        values = torch.cat(values) * mask_t  # get rid of critic 1 dim
+        logprobs = torch.cat(logprobs) * mask_t
 
         return logits, values, logprobs
 
@@ -515,7 +506,6 @@ class PPOTrainer:
 
         loss = pg_loss + self.config.train.vf_coef * vf_loss
         if torch.isnan(loss).any() or torch.isinf(loss).any():
-            # import pdb; pdb.set_trace()
             print("Loss is nan or inf. Skipping batch.")
 
         avg_ratio = masked_mean(ratio, mask).item()
@@ -585,137 +575,78 @@ class PPOTrainer:
         # first collect environment samples
         next(self.sample_generator)
 
-        (
-            rgbs,
-            goals,
-            actions,
-            rewards,
-            dones,
-            successes,
-            dtgs,
-            past_kv_cache
-        ) = self.rollouts.generate_samples()
+        batch, caches = self.rollouts.generate_samples()
+        lengths = torch.tensor([episode['rgb'].shape[0] for episode in batch], device=self.device)
+        cache_lengths = torch.tensor([c.shape[-2] for c in caches], device=self.device)
+
+        batch = self.rollouts.pad_samples(batch)
+        caches = [einops.rearrange(c, 'l k h t d -> t l k h d') for c in caches]
+        caches = torch.nn.utils.rnn.pad_sequence(caches, batch_first=True)
+        caches = caches.to(self.device)
+        caches = einops.rearrange(caches, 'b t l k h d -> b l k h t d')
+
+        batch['mask'] = create_mask(lengths)
+        batch['cache_mask'] = create_mask(cache_lengths)
+        batch['cache'] = caches
+
         time_rollouts_end = time.time()
 
         T = self.config.train.num_rollout_steps
+        B = len(lengths)
         minibatch_size = self.config.train.minibatch_size
         num_grad_accums = self.config.train.num_grad_accums
-
-        collected_frames = sum([len(t) for t in rgbs])
+        collected_frames = sum(lengths)
         assert collected_frames == T * self.envs.num_envs
 
-        stats["metrics/frames"] = collected_frames
-        stats["metrics/rollouts_wait_time"] = time_rollouts_end - time_ppo_start
-
-        stats["learner/num_episodes_done"] = sum([torch.sum(d) for d in dones])
-        stats["learner/num_episodes_successful"] = sum(
-            [torch.sum(s) for s in successes]
-        )
-        stats["learner/distance_to_goal"] = sum([d[-1].item() for d in dtgs]) / len(dtgs)
-        stats["metrics/avg_episode_length"] = torch.tensor([rgbs[env].shape[0] + past_kv_cache[env].shape[-2] for env in range(len(rgbs))]).float().mean().item()
-
         # construct batch
-        mask_t = torch.stack(
-            [
-                torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])])
-                for t in rgbs
-            ]
-        )
-        mask_t = mask_t.bool().to(self.device)
-
-        rgbs_t = torch.stack(
-            [F.pad(t, (0,) * 5 + (T - t.shape[0],), "constant", 0) for t in rgbs]
-        )
-        goals_t = torch.stack([g[0:1] for g in goals])
-        actions_t = torch.stack(
-            [F.pad(t, (0, T - t.shape[0]), "constant", 0) for t in actions]
-        )
-        rewards_t = torch.stack(
-            [F.pad(t, (0, T - t.shape[0]), "constant", 0) for t in rewards]
-        )
-        max_past_kv_len = max([t.shape[-2] for t in past_kv_cache])
-        past_kv_cache_t = torch.stack(
-            [F.pad(t, (0, 0, max_past_kv_len - t.shape[-2], 0), "constant", 0) for t in past_kv_cache]
-        ).to(torch.bfloat16)
-        attn_mask_t = torch.ones(past_kv_cache_t.shape[0], max_past_kv_len, device=self.device)
-        for i, t in enumerate(past_kv_cache):
-            attn_mask_t[i, :max_past_kv_len - t.shape[-2]] = 0
-
-        # gather all episodes from other gpus
-        local_size = torch.tensor(attn_mask_t.shape[0], device=self.device)
+        # all gather to find max size; needed to make sure all gpus perform the same number of iters
+        local_size = torch.tensor([B], device=self.device)
         all_sizes = [torch.zeros_like(local_size) for _ in range(self.world_size)]
         torch.distributed.all_gather(all_sizes, local_size)
-        max_size = max(all_sizes).item()
+        max_batch_size = torch.tensor(all_sizes).max()
 
-        # pad all tensors to max size
-        def pad_to_max(t):
-            size_diff = max_size - t.shape[0]
-            padding = torch.zeros((size_diff, *t.shape[1:]), device=t.device, dtype=t.dtype)
-            return torch.cat([t, padding], dim=0)
-
-        rgbs_t, goals_t, actions_t, rewards_t, mask_t, past_kv_cache_t, attn_mask_t = map(
-            pad_to_max, (rgbs_t,goals_t,actions_t,rewards_t,mask_t,past_kv_cache_t,attn_mask_t)
-        )
+        with torch.inference_mode(), self.model.no_sync():
+            self.model.eval()
+            batch['value'] = self.model.module.get_values(batch['hx'])
+            batch['value'], batch['advantage'], batch['return'] = self.compute_advantages(batch['reward'], batch['value'], batch['mask'])
+            # normalize advantage estimate
+            batch['advantage'] = (batch['advantage'] - batch['advantage'].mean()) / (batch['advantage'].std() + 1e-8)
 
 
-        with torch.no_grad(), self.model.no_sync():
-            old_logits, values, old_logprobs = self.batched_forward_pass(
-                rgbs_t, goals_t, actions_t, mask_t, 
-                past_kv_cache_t, attn_mask_t, 2
-            )
-
-            # TODO; add reference model kl penalty
-            values, advantages, returns = self.compute_advantages(rewards_t, values, mask_t)
-
-        ls = local_size.item()
-        batch_idxs = torch.cat([torch.randperm(ls), torch.randint(0, ls, (max_size - ls,))])
-        E, T = rgbs_t.shape[:2]
-
+        self.model.train()
         cum_train_stats_l = []
-        for _, mb in product(
+        for epoch, mb in product(
             range(self.config.train.ppo_epochs),
-            range(0, E, num_grad_accums * minibatch_size),
+            range(0, max_batch_size, num_grad_accums * minibatch_size),
         ):
-            minibatches_left = math.ceil((E - mb) / minibatch_size)
+            batch_idxs = torch.cat([torch.randperm(B), torch.randint(0, B, (max_batch_size - B,))])
+            minibatches_left = math.ceil((max_batch_size - mb) / minibatch_size)
             num_grad_steps = min(minibatches_left, num_grad_accums)
 
             for g in range(num_grad_steps):
                 start_idx = mb + g * minibatch_size
                 mb_idxs = batch_idxs[start_idx : start_idx + minibatch_size]
-                minibatch = {
-                    "rgbs": rgbs_t[mb_idxs],
-                    "goals": goals_t[mb_idxs],
-                    "actions": actions_t[mb_idxs],
-                    "masks": mask_t[mb_idxs],
-                    "advantages": advantages[mb_idxs],
-                    "returns": returns[mb_idxs],
-                    "logprobs": old_logprobs[mb_idxs],
-                    "values": values[mb_idxs],
-                    "past_kv_cache": past_kv_cache_t[mb_idxs],
-                    "attn_mask": attn_mask_t[mb_idxs]
-                }
-                # move all to device
-                minibatch = {k: v.to(self.device) for k, v in minibatch.items()}
+                minibatch = batch[mb_idxs]
 
                 def backwards_loss():
                     logits, vpreds, logprobs = self.batched_forward_pass(
-                        minibatch["rgbs"],
-                        minibatch["goals"],
-                        minibatch["actions"],
-                        minibatch["masks"],
-                        minibatch["past_kv_cache"],
-                        minibatch["attn_mask"],
+                        minibatch["rgb"],
+                        minibatch["goal"],
+                        minibatch["prev_action"],
+                        minibatch["mask"],
+                        minibatch["cache"],
+                        minibatch["cache_mask"],
                         self.config.train.minibatch_size,
                     )
                     loss_p, loss_v, loss_e, train_stats = self.compute_loss(
                         minibatch["logprobs"],
-                        minibatch["values"],
+                        minibatch["value"],
                         logprobs,
                         logits,
                         vpreds,
-                        minibatch["masks"],
-                        minibatch["advantages"],
-                        minibatch["returns"],
+                        minibatch["mask"],
+                        minibatch["advantage"],
+                        minibatch["return"],
                     )
                     loss = loss_p + loss_v + loss_e
                     loss.backward()
@@ -727,7 +658,6 @@ class PPOTrainer:
                 else:
                     train_stats = backwards_loss()
 
-                map(lambda k: minibatch[k].to("cpu"), minibatch.keys())
                 cum_train_stats_l.append(train_stats)
 
             if self.config.train.max_grad_norm is not None:
@@ -737,16 +667,24 @@ class PPOTrainer:
             self.optim.step()
             self.optim.zero_grad()
 
-        map(lambda t: t.to("cpu"), (mask_t, rgbs_t, goals_t, actions_t, rewards_t, past_kv_cache_t, attn_mask_t))
         dict_cum_train_stats = reduce(sum_dict, cum_train_stats_l)
         dict_cum_train_stats = {
             k: v / len(cum_train_stats_l) for k, v in dict_cum_train_stats.items()
         }
 
         time_ppo_end = time.time()
-        stats["metrics/fps"] = stats["metrics/frames"] / (time_ppo_end - time_ppo_start)
+
         stats["learner/actor_lr"] = self.lr_scheduler.get_last_lr()[0]
         stats["learner/critic_lr"] = self.lr_scheduler.get_last_lr()[1]
+        stats["metrics/frames"] = collected_frames
+        stats["metrics/fps"] = stats["metrics/frames"] / (time_ppo_end - time_ppo_start)
+        stats["metrics/rollouts_wait_time"] = time_rollouts_end - time_ppo_start
+
+        stats["learner/num_episodes_done"] = (batch['done'] * batch['mask']).sum()
+        stats["learner/num_episodes_successful"] = (batch['success'] * batch['mask']).sum()
+        stats["learner/distance_to_goal"] = batch['dtg'][:, lengths - 1].mean().item()
+        stats["metrics/avg_episode_length"] = (lengths + cache_lengths).float().mean().item()
+
         return {**dict_cum_train_stats, **stats}
 
     def train(self):

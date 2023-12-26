@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import einops
 from torch import nn
-from transformers import CLIPProcessor, CLIPVisionModel
+from lmnav.models.modeling_clip import CLIPVisionModel
 from torchvision import transforms
 
 from lmnav.models.base_model import BaseModel
@@ -144,24 +144,23 @@ class QformerObservationEncoder(ObservationEncoder):
     def embed_obs(self, image):
         """expects tensor of shape [(b t) c h w]"""
         device = image.device
-        with self.maybe_autocast():
-            image_embeds = self.ln_vision(self.visual_encoder(image)).to(device)
-            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(
-                device
-            )
-            query_tokens = self.query_tokens.expand(image_embeds.shape[0], -1, -1)
-            query_output = self.Qformer.bert(
-                query_embeds=query_tokens,
-                encoder_hidden_states=image_embeds,
-                encoder_attention_mask=image_atts,
-                return_dict=True,
-            )
+        image_embeds = self.ln_vision(self.visual_encoder(image)).to(device)
+        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(
+            device
+        )
+        query_tokens = self.query_tokens.expand(image_embeds.shape[0], -1, -1)
+        query_output = self.Qformer.bert(
+            query_embeds=query_tokens,
+            encoder_hidden_states=image_embeds,
+            encoder_attention_mask=image_atts,
+            return_dict=True,
+        )
 
-            q_hidden_state = query_output.last_hidden_state
+        q_hidden_state = query_output.last_hidden_state
 
-            # check if compressor exists
-            if self.qformer_compressor_cfg is not None:
-                q_hidden_state = self.qformer_compressor(q_hidden_state)
+        # check if compressor exists
+        if self.qformer_compressor_cfg is not None:
+            q_hidden_state = self.qformer_compressor(q_hidden_state)
 
         return q_hidden_state, image_atts
 
@@ -326,13 +325,10 @@ class CLIPObservationEncoder(ObservationEncoder):
             ]
         )
 
-        # self.preprocess_transform = CLIPProcessor.from_pretrained(vit_model)
-        self.backbone = CLIPVisionModel.from_pretrained(vit_model)
+        self.backbone = CLIPVisionModel.from_pretrained(vit_model, torch_dtype=(torch.bfloat16 if vit_precision == "f16" else torch.float32))
         if freeze_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad = False
-        if vit_precision == "fp16":
-            convert_weights_to_fp16(self.backbone)
 
         # compile doesn't seem to work with bfloat16 for some reason
         # self.backbone = torch.compile(self.backbone)

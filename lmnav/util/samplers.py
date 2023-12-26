@@ -17,14 +17,6 @@ class NucleusSampler:
 
     def __call__(self, logits):
         probs = torch.softmax(logits / self.temp, dim=-1)
-        sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-        indices_to_remove = cumulative_probs > self.p
-        indices_to_remove[..., 1:] = indices_to_remove[..., :-1].clone()
-        indices_to_remove[..., 0] = 0
-        sorted_probs[indices_to_remove] = 0
-        sorted_probs = sorted_probs / sorted_probs.sum()
-        selected_idx = torch.multinomial(sorted_probs, num_samples=1, generator=self.generator).item()
-        act = sorted_indices[selected_idx].item()
+        act = torch.multinomial(probs, num_samples=1, generator=self.generator).item()
         return act
 

@@ -102,8 +102,10 @@ class BasePolicyConfig(BaseModelConfig):
 @dataclass
 class LinearHeadPolicyConfig(BasePolicyConfig):
     _target_: str = "lmnav.models.linear_head.LinearHead"
+    num_layers: int = 1
+    hidden_dim: Optional[int] = None
     in_dim: Optional[int] = None
-    p_dropout: float = 0.2
+    p_dropout: float = 0.1
 
 
 @dataclass
@@ -329,6 +331,7 @@ class PPOTrainRunnerConfig(TrainRunnerConfig):
     lam: float = 0.95
     ratio_threshold: float = 5.0
     use_gae: bool = True
+    normalize_rewards: bool = True
     sampler: BaseSamplerConfig = MISSING
 
 
