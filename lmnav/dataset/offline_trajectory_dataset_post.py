@@ -78,7 +78,6 @@ def construct_dataset(config):
 
         # file_paths = file_paths[:1000]
         print(f"Loading {len(file_paths)} trajectories from {artifact_dir}")
-
                
         # Process files in parallel with a progress bar
         for actions, scene_id, episode_id, trajectory_id in tqdm(pool.imap_unordered(_extract_episode_data_from_trajectory, file_paths), total=len(file_paths)):
