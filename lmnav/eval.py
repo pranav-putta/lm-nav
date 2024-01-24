@@ -17,6 +17,7 @@ import torch
 import os
 import torch.distributed
 from torch.nn.parallel import DistributedDataParallel as DDP
+from lmnav.common.rollout_storage import RolloutStorage
 
 from lmnav.config.default import get_config
 
@@ -176,6 +177,7 @@ class EvalRunner:
             versions = self.writer.load_model_versions(
                 self.config.eval.policy.load_artifact
             )
+            # eval versions from latest to earliest
             versions = reversed(sorted(versions, key=lambda t: int(t[1:])))
         else:
             versions = [self.config.eval.policy.load_artifact.version]
@@ -207,10 +209,18 @@ class EvalRunner:
 
     def eval_checkpoint(self, ckpt_path):
         print(f"Starting evaluation for {ckpt_path}")
-
+        import pdb; pdb.set_trace()
         N_episodes = self.config.eval.num_episodes
+        # TODO; some parameters are constant, pull from config in the future
+        self.rollouts = RolloutStorage(
+                self.envs.num_envs,
+                500,
+                1,
+                4096,
+                device=self.device,
+        )
 
-        # construct directory to save stats
+        # some bookkeeping
         ckpt_name = os.path.basename(ckpt_path)
         eval_dir = os.path.join(self.eval_dir, ckpt_name)
         video_dir = os.path.join(eval_dir, "videos")
@@ -226,92 +236,64 @@ class EvalRunner:
         for param in self.agent.parameters():
             param.requires_grad = False
 
+        # we use an abstract action generator fn so that different models
+        # can preserve their state in the way that makes sense for them
+        dones = [True for _ in range(self.envs.num_envs)]
+
+        # initialize rollouts
         observations = self.envs.reset()
-        episodes = [[] for _ in range(self.envs.num_envs)]
-        dones = [False for _ in range(self.envs.num_envs)]
-        episode_infos = self.current_episodes()
-
-        num_episodes_done = len(
-            list(filter(lambda r: r[0] == ckpt_name, self.table_data))
-        )
-        num_success = 0
-
-        # if precomputed_embeddings is set, force option off
-        self.agent.vis_encoder.precomputed_embeddings = False
-
-        actor = self.agent.action_generator(
-            self.envs.num_envs, deterministic=self.config.eval.deterministic
-        )
-
-        self.agent = self.agent.eval()
-
-        while num_episodes_done < N_episodes:
-            next(actor)
-            actions = actor.send((observations, dones))
-
-            outputs = self.envs.step(actions)
-            next_observations, rewards_l, dones, infos = [
-                list(x) for x in zip(*outputs)
-            ]
-
-            # add environment observation to episodes list
-            for i in range(len(episodes)):
-                episodes[i].append(
-                    {
-                        "observation": observations[i],
-                        "reward": rewards_l[i],
-                        "info": infos[i],
-                        "action": actions[i],
-                    }
+        with torch.inference_mode(): 
+            rgb_embds, goal_embds = self.embed_observations(observations)
+        self.rollouts.insert(next_rgbs=rgb_embds[:, 0], next_goals=goal_embds[:, 0])
+        sampler = instantiate(self.config.train.sampler)
+        
+        while True:
+            with torch.inference_mode():
+                action_generator = self.agent.action_generator(
+                    rollouts=self.rollouts,
+                    sampler=sampler,
                 )
+                for i in range(self.config.train.num_rollout_steps):
+                    next(action_generator)
+                    actions, logprobs, hx = action_generator.send(dones)
 
-            for i, done in enumerate(dones):
-                if not done:
-                    continue
+                    outputs = self.envs.step(actions)
+                    next_observations, rewards, dones, infos = [
+                        list(x) for x in zip(*outputs)
+                    ]
 
-                num_episodes_done += 1
-                success = (
-                    episodes[i][-1]["info"]["distance_to_goal"]
-                    < self.config.eval.dtg_threshold
-                )
-                num_success += int(success)
+                    # only embed goals if new episode has started
+                    goal_idxs_to_embed = torch.tensor([i for i in range(len(dones)) if dones[i]], dtype=torch.long)
+                    rgb_embds, new_goal_embds = self.embed_observations(next_observations, goal_idxs_to_embed=goal_idxs_to_embed)
+                    goal_embds[goal_idxs_to_embed] = new_goal_embds
 
-                stats = {
-                    "ckpt": ckpt_name,
-                    "episode_id": episode_infos[i].episode_id,
-                    "difficulty": episode_infos[i].info["difficulty"],
-                    "geodesic_distance": episode_infos[i].info["geodesic_distance"],
-                    "success": success,
-                }
+                    dones, rewards, actions = map(
+                        lambda l: torch.tensor(l), (dones, rewards, actions)
+                    )
+                    successes = torch.tensor(
+                        [info["success"] for info in infos], dtype=torch.bool
+                    )
+                    dtgs = torch.tensor(
+                        [info["distance_to_goal"] for info in infos], dtype=torch.float
+                    )
+                    self.rollouts.insert(
+                        next_rgbs=rgb_embds[:, 0],
+                        next_goals=goal_embds[:, 0],
+                        dones=dones,
+                        rewards=rewards,
+                        actions=actions,
+                        successes=successes,
+                        dtgs=dtgs,
+                        hx=hx,
+                        logprobs=logprobs
+                    )
 
-                self.table_data.append([stats[k] for k in self.tablecols])
+            del action_generator
+            yield
+            self.rollouts.reset()
 
-                self.writer.write(
-                    {
-                        "table": wandb.Table(
-                            columns=self.tablecols, data=self.table_data
-                        ),
-                        "ckpt": ckpt_name,
-                        "success_rate": (num_success / num_episodes_done),
-                        f"{ckpt_name}/successful_episodes": num_success,
-                    }
-                )
-                with open(self.stats_path, "wb+") as f:
-                    pickle.dump(self.table_data, f)
-                if self.config.eval.save_videos:
-                    try:
-                        ckpt_idx = ckpt_name.split(".")[1]
-                        self.save_episode_video(
-                            episodes[i], num_episodes_done, video_dir, ckpt_idx
-                        )
-                    except:
-                        print("There was an error while saving video!")
 
-                # this is to tell actor generator to clear this episode from history
-                episodes[i] = []
 
-            episode_infos = self.current_episodes()
-            observations = next_observations
 
 
 def main():
