@@ -9,7 +9,7 @@ low_resource: False
   
 lora_config:
   rank: 16
-  alpha: 32
+  alpha: 64
   dropout: 0.1
 
 vis_encoder:
