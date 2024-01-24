@@ -67,7 +67,7 @@ def construct_dataset(config):
         total_files = len(file_paths)
 
         # get new file location
-        new_path = os.path.join(config.generator.store_artifact.dirpath, f"{config.generator.store_artifact.name}+clip")
+        new_path = os.path.join(config.generator.store_artifact.dirpath, f"{config.generator.store_artifact.name}+clip_new")
         os.makedirs(new_path, exist_ok=True)
 
         # remove files in file_paths that already exist in new_path
@@ -211,14 +211,13 @@ def resample_dataset(config, dataset):
     # processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
     processor = transforms.Compose(
             [
-                transforms.ConvertImageDtype(torch.float),
                 transforms.Resize(
                     224,
                     interpolation=transforms.InterpolationMode.BICUBIC,
                     antialias=True,
                 ),
                 transforms.CenterCrop(224),
-                transforms.Normalize(mean=(0, 0, 0), std=(255, 255, 255), inplace=True),
+                transforms.ConvertImageDtype(torch.float),
                 transforms.Normalize(
                     mean=[0.48145466, 0.4578275, 0.40821073],
                     std=[0.26862954, 0.26130258, 0.27577711],
@@ -229,7 +228,7 @@ def resample_dataset(config, dataset):
 
 
     buffer = []
-    new_path = os.path.join(config.generator.store_artifact.dirpath, f"{config.generator.store_artifact.name}+clip")
+    new_path = os.path.join(config.generator.store_artifact.dirpath, f"{config.generator.store_artifact.name}+clip_new")
     os.makedirs(new_path, exist_ok=True)
     print(f"Saving new dataset to {new_path}")
 
