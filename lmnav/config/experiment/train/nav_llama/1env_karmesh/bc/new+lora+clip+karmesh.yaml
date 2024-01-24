@@ -34,7 +34,7 @@ exp:
 train:
   batch_size: 3
   minibatch_size: 1
-  num_grad_accums: 1
+  num_grad_accums: 3
 
   steps: 100_000
   episodes_per_batch: 3
@@ -67,7 +67,7 @@ habitat_baselines:
   num_environments: 10
   rl:
     ddppo:
-      distrib_backend: "nccl"
+      distrib_backend: "gloo"
     policy:
       obs_transforms:
         resize_shortest_edge:

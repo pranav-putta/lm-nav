@@ -88,14 +88,14 @@ class NavLLAMA(Blip2Base):
         if self.low_resource:
             self.llama_model = LlamaForCausalLM.from_pretrained(
                 llama_model,
-                torch_dtype=torch.bfloat16,
+                torch_dtype=torch.float16,
                 load_in_8bit=True,
                 device_map={"": 0},
             )
         else:
             self.llama_model = LlamaForCausalLM.from_pretrained(
                 llama_model,
-                torch_dtype=torch.bfloat16,
+                torch_dtype=torch.float16,
             )
             # self.llama_model = torch.compile(self.llama_model)
 
@@ -282,7 +282,7 @@ class NavLLAMA(Blip2Base):
         goals_t = [B, C, 1, H, W]
         actions_t = [B, T]
         """
-        with self.maybe_autocast(dtype=torch.bfloat16):
+        with self.maybe_autocast(dtype=torch.float16):
             rgbs_embd, goals_embd = self.embed_visual(rgbs_t, goals_t, precomputed_embeddings)
             rgbs_embd, goals_embd = map(lambda x: self.llama_proj(x), [rgbs_embd, goals_embd])
             action_embds = self.act2embd(actions_t)
