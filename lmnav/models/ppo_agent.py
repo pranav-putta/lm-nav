@@ -23,6 +23,8 @@ class PPOAgent(nn.Module):
 
     def forward(self, rgbs_t, goals_t, prev_actions_t, mask_t, pvk_t, attnm_t):
         # interleaves rgb and action embeddings
+
+        # TODO: Set the input_format to sa at this point
         output = self.actor.forward_with_embds(rgbs_t, goals_t, prev_actions_t, mask_t, pvk_t, attnm_t)
 
         logits = output.logits

@@ -243,6 +243,7 @@ class BCTrainRunner:
         return {**self.cumstats, **episode_stats}
 
     def train_bc_step(self, episodes):
+        # import pdb; pdb.set_trace()
         T = self.config.train.policy.max_trajectory_length
         batch_size = self.config.train.batch_size
         minibatch_size = self.config.train.minibatch_size
@@ -259,15 +260,15 @@ class BCTrainRunner:
 
         start_time = time.time()
 
-        def forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t):
-            outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t, precomputed_embeddings=self.config.train.precomputed_embeddings)
+        def forward_backwards_model(prompts_t, rgbs_t, goals_t, actions_t, mask_t):
+            outputs = self.agent(prompts_t, rgbs_t, goals_t, actions_t, mask_t, precomputed_embeddings=self.config.train.precomputed_embeddings, input_format='sa')
             stats["learner/loss"] += outputs.loss.item()
             outputs.loss.backward()
 
         # pull episode data into tensors
-        actions, goals, rgbs = map(
+        actions, goals, rgbs, prompts = map(
             lambda k: [episode[k] for episode in episodes],
-            ("action", "imagegoal", "rgb"),
+            ("action", "imagegoal", "rgb", "prompt"),
         )
 
         # construct subsequences
@@ -322,11 +323,12 @@ class BCTrainRunner:
                 rgbs_t, goals_t, actions_t, mask_t = map(
                     lambda t: t[mb_idxs], (rgbs, goals, actions, mask)
                 )
+                prompts_t = [prompts[i] for i in mb_idxs]
                 if g < num_grad_accums - 1:
                     with self.agent.no_sync():
-                        forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
+                        forward_backwards_model(prompts_t, rgbs_t, goals_t, actions_t, mask_t)
                 else:
-                    forward_backwards_model(rgbs_t, goals_t, actions_t, mask_t)
+                    forward_backwards_model(prompts_t, rgbs_t, goals_t, actions_t, mask_t)
                 rgbs_t.to("cpu")
                 goals_t.to("cpu")
 

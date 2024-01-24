@@ -13,7 +13,7 @@ class BaseDataset(Dataset):
 
 
 class OfflineEpisodeDataset(BaseDataset):
-    def __init__(self, transforms: BaseDataTransform, data_path=None, files=None):
+    def __init__(self, transforms: BaseDataTransform, data_path=None, files=None, **kwargs):
         super().__init__(transforms)
         assert (data_path is None) ^ (
             files is None
@@ -28,6 +28,11 @@ class OfflineEpisodeDataset(BaseDataset):
             self.files = list(sorted(files))
         self.buffer = []
         self.file_queue = OrderedDict()
+        self.default_prompt = "You are a navigational agent tasked with exploring an indoor environment to find a goal image. \
+                       You can choose to move { left, right, forward, stop } at every step. The goal image is {}. \
+                       After every image, choose the best action. {}"
+
+
 
     def __len__(self):
         return len(self.files)
@@ -45,9 +50,10 @@ class OfflineEpisodeDataset(BaseDataset):
         episode = self.transforms(episode)
 
         return {
-            'rgb': episode['rgb'],
+            'rgb': episode['rgbs'],
             'imagegoal': episode['imagegoal'],
-            'action': episode['action'].cpu(),
+            'action': torch.tensor(episode['actions']),
+            'prompt': self.default_prompt,
         }
 
 class OfflineInstructionEpisodeDataset(BaseDataset):

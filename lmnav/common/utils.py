@@ -472,14 +472,14 @@ def all_reduce(is_distributed, device, t):
     return t
 
 
-def convert_weights_to_fp16(model: nn.Module):
+def convert_weights_to_fp16(model: nn.Module, dtype=torch.bfloat16):
     """Convert applicable model parameters to fp16"""
 
     def _convert_weights_to_fp16(l):
         if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Linear)):
-            l.weight.data = l.weight.data.to(torch.bfloat16)
+            l.weight.data = l.weight.data.to(dtype)
             if l.bias is not None:
-                l.bias.data = l.bias.data.to(torch.bfloat16)
+                l.bias.data = l.bias.data.to(dtype)
 
     model.apply(_convert_weights_to_fp16)
 
@@ -637,7 +637,7 @@ def apply_fn_in_batches(tensor, fn, max_batch_size, args):
     return out
 
 
-def pad_along_dim(list_of_tensors, max_len):
+def pad_along_dim(list_of_tensors, max_len, padding_side='right'):
     B = len(list_of_tensors)
     # Create a zero tensor of the desired shape
     t0 = list_of_tensors[0]
@@ -645,9 +645,26 @@ def pad_along_dim(list_of_tensors, max_len):
     
     # Place each tensor in the appropriate position in the zero tensor
     for i, tensor in enumerate(list_of_tensors):
-        batched_tensor[i, :tensor.shape[0]] = tensor
+        if padding_side == 'right':
+            batched_tensor[i, :tensor.shape[0]] = tensor
+        else:
+            batched_tensor[i, -tensor.shape[0]:] = tensor
     
     return batched_tensor
+
+def right_pad_tensor(tensor, seq_lengths):
+    """
+    Convert a left-padded tensor to a right-padded tensor using torch.gather.
+
+    :param left_padded_tensor: A tensor that is padded on the left.
+    :param mask: A mask indicating the actual (non-padding) elements of the tensor.
+    :return: The right-padded tensor.
+    """
+    # Generate a range tensor
+    tensors = [torch.cat([tensor[i, :-seq_lengths[i]], tensor[i, -seq_lengths[i]:]]) for i in range(tensor.shape[0])]
+    right_padded_tensor = torch.stack(tensors, dim=0)
+
+    return right_padded_tensor
 
 def create_mask(seq_lengths, max_seq_length=None):
     """

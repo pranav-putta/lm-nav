@@ -52,7 +52,6 @@ train:
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
 
- 
 eval:
   policy: 
     use_artifact_config: True
@@ -67,6 +66,8 @@ eval:
 habitat_baselines:
   num_environments: 10
   rl:
+    ddppo:
+      distrib_backend: "nccl"
     policy:
       obs_transforms:
         resize_shortest_edge:

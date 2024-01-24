@@ -14,7 +14,7 @@ from torch.cuda.amp import autocast as autocast
 import torch.nn as nn
 from lmnav.common.episode_processor import apply_transforms_actions
 
-from lmnav.common.utils import trim_tensor, convert_weights_to_fp16, create_mask, logprobs_from_logits
+from lmnav.common.utils import pad_along_dim, right_pad_tensor, trim_tensor, convert_weights_to_fp16, create_mask, logprobs_from_logits
 from lmnav.models.blip2 import Blip2Base, disabled_train
 from lmnav.models.modeling_llama import LlamaForCausalLM
 
@@ -166,25 +166,32 @@ class NavLLAMA(Blip2Base):
     def embed_visual(self, rgbs, goals, precomputed_embeddings=False):
         return self.vis_encoder.embed_obs(rgbs, goals, precomputed_embeddings)
 
-    def create_prompt_embd(self, prompt, goals_embd):
+    def create_prompt_embd(self, prompts, goals_embd):
         B, *_ = goals_embd.shape
-        prompt_segs = prompt.split("{}")
-        prompt_tkns = [
-            self.llama_tokenizer(seg, return_tensors="pt", add_special_tokens=(i == 0))
-            for i, seg in enumerate(prompt_segs)
-            if len(seg)
-        ]
-        prompt_embd = [
-            self.llama_model.get_input_embeddings()(tkns.input_ids.to(self.device))
-            for tkns in prompt_tkns
-        ]
-        prompt_embd = [embd.repeat(B, 1, 1) for embd in prompt_embd]
-        goals_embd = goals_embd[:, 0] # goal embd token is the same, just take the first one
-        embds = [prompt_embd[0], goals_embd, prompt_embd[1]]
-        embds = torch.cat(embds, dim=1)
+        prompt_embds = []
+        masks = []
+        for idx, prompt in enumerate(prompts):
+            prompt_segs = prompt.split("{}")
+            prompt_tkns = [
+                self.llama_tokenizer(seg, return_tensors="pt", add_special_tokens=(i == 0))
+                for i, seg in enumerate(prompt_segs)
+                if len(seg)
+            ]
+            prompt_embd = [
+                self.llama_model.get_input_embeddings()(tkns.input_ids.to(self.device))
+                for tkns in prompt_tkns
+            ]
+            goals_embd = goals_embd[idx, 0] # goal embd token is the same, just take the first one
+            embd = [prompt_embd[0][0], goals_embd, prompt_embd[1][0]]
+            embd = torch.cat(embd, dim=0)
+            mask = torch.ones(embd.shape[0], dtype=torch.bool).to(self.device)
 
-        mask = torch.ones(B, embds.shape[1], dtype=torch.bool).to(self.device)
-        return embds, mask
+            prompt_embds.append(embd)
+            masks.append(mask)
+        max_len = max([embd.shape[0] for embd in prompt_embds])
+        prompt_embds = pad_along_dim(prompt_embds, max_len, padding_side='left').to(self.device)
+        masks = pad_along_dim(masks, max_len, padding_side='left').to(self.device)
+        return prompt_embds, masks
 
     def prompt1_wrap(self, prompt, rgbs_embd, goals_embd, actions, masks):
         actions_embd, action_tkns_t = self.embed_actions(actions)
@@ -245,54 +252,70 @@ class NavLLAMA(Blip2Base):
         else:
             return contextlib.nullcontext()
 
-    def prepare_state_action_tensor(self, obs_embds, action_embds, mask):
+    def prepare_state_action_tensor(self, obs_embds, action_embds, mask, input_format='as'):
         # interleave the rgb and action embeddings together
         b, t, q, h = obs_embds.shape
         action_embds = einops.rearrange(action_embds, 'b t h -> b t 1 h')
-        obs_embds = F.pad(obs_embds, (0, 0, 0, 0, 0, 1))
-        embds = torch.cat([action_embds, obs_embds], dim=2)
-        embds = einops.rearrange(embds, 'b t q h -> b (t q) h')[:, :-q]
+        if input_format == 'as':
+            obs_embds = F.pad(obs_embds, (0, 0, 0, 0, 0, 1))
+            embds = torch.cat([action_embds, obs_embds], dim=2)
+            embds = einops.rearrange(embds, 'b t q h -> b (t q) h')[:, :-q]
+            seq_lens = mask.sum(dim=1) * (q + 1) + 1 # (q + 1) for the action token, +1 for the prev action token
+        elif input_format == 'sa':
+            embds = torch.cat([obs_embds, action_embds], dim=2)
+            embds = einops.rearrange(embds, 'b t q h -> b (t q) h')
+            seq_lens = mask.sum(dim=1) * (q + 1) # (q + 1) for the action token
+        else:
+            raise ValueError(f"input_format={input_format} not supported")
 
-        seq_lens = mask.sum(dim=1) * (q + 1) + 1 # (q + 1) for the action token, +1 for the prev action token
         new_mask = create_mask(seq_lens, embds.shape[1]).to(self.device)
         return embds, new_mask
 
-    def forward_with_embds(self, rgb_embds, goal_embds, actions_t, mask_t, pvk_t, attnm_t):
-        return self.forward(rgb_embds, goal_embds, actions_t, mask_t, pvk_t, attnm_t, True)
+    def forward_with_embds(self, prompt, rgb_embds, goal_embds, actions_t, mask_t, pvk_t, attnm_t):
+        return self.forward(prompt, rgb_embds, goal_embds, actions_t, mask_t, pvk_t, attnm_t, True)
 
-    def forward(self, rgbs_t, goals_t, prev_actions_t, mask_t, pvk_t=None, past_attnm_t=None, precomputed_embeddings=False):
+    def forward(self, prompts, rgbs_t, goals_t, actions_t, mask_t,
+                pvk_t=None, past_attnm_t=None, precomputed_embeddings=False,
+                input_format='as'):
         """
         rgbs_t = [B, C, T, H, W]
         goals_t = [B, C, 1, H, W]
-        prev_actions_t = [B, T]
+        actions_t = [B, T]
         """
-        with self.maybe_autocast():
+        with self.maybe_autocast(dtype=torch.bfloat16):
             rgbs_embd, goals_embd = self.embed_visual(rgbs_t, goals_t, precomputed_embeddings)
             rgbs_embd, goals_embd = map(lambda x: self.llama_proj(x), [rgbs_embd, goals_embd])
-            prev_action_embds = self.act2embd(prev_actions_t)
-            past_lengths = past_attnm_t.sum(dim=1)
+            action_embds = self.act2embd(actions_t)
 
+            if past_attnm_t is not None:
+                past_lengths = past_attnm_t.sum(dim=1)
+            else:
+                past_lengths = torch.zeros(rgbs_embd.shape[0], device=self.device)
 
             B, T, *_ = rgbs_embd.shape
-            embds, mask = self.prepare_state_action_tensor(rgbs_embd, prev_action_embds, mask_t)
+            embds, mask = self.prepare_state_action_tensor(rgbs_embd, action_embds, mask_t, input_format=input_format)
             seq_lens = mask.sum(dim=1)
 
             # construct prompt embeddings for the reset episodes
             reset_episode_mask = past_lengths == 0
-            prompt_embds, prompt_mask = self.create_prompt_embd(self.prompt1, goals_embd[reset_episode_mask])
+            prompt_embds, prompt_mask = self.create_prompt_embd(prompts, goals_embd[reset_episode_mask])
             prompt_lens = prompt_mask.sum(dim=1)
             max_seq_len = max(embds.shape[1], seq_lens.max() + prompt_embds.shape[1]) # -1 bc prev action not needed for reset episodes
             embds = F.pad(embds, (0, 0, 0, max_seq_len - embds.shape[1]))
             mask = F.pad(mask, (0, max_seq_len - mask.shape[1]))
             for i, idx in enumerate(torch.where(reset_episode_mask)[0].tolist()):
+                # if input_format is 'as', then we need to offset by 1 to account for the prev action token which is not needed for reset episodes
+                offset = 1 if input_format == 'as' else 0 
                 pad_len = embds.shape[1] - prompt_embds[i].shape[0]
-                embds[idx, :] = torch.cat([prompt_embds[i], embds[idx, 1:pad_len + 1]], dim=0)
-                mask[idx, :] = torch.cat([prompt_mask[i], mask[idx, 1:pad_len + 1]], dim=0)
+                embds[idx, :] = torch.cat([prompt_embds[i], embds[idx, offset:pad_len + offset]], dim=0)
+                mask[idx, :] = torch.cat([prompt_mask[i], mask[idx, offset:pad_len + offset]], dim=0)
 
             embds, mask = trim_tensor(embds, mask)
             seq_lens = mask.sum(dim=1)
 
-            past_lengths = past_attnm_t.sum(dim=1)
+            embds = right_pad_tensor(embds, seq_lens)
+            mask = right_pad_tensor(mask, seq_lens)
+
             pos_ids = None
             if pvk_t is not None and past_attnm_t is not None:
                 pvk_t = pvk_t.to(self.device)
@@ -308,9 +331,12 @@ class NavLLAMA(Blip2Base):
             output_idx[reset_episode_mask] += prompt_lens.unsqueeze(-1) - 1
             output_idx.masked_fill_(~mask_t[:, :max_episode_len], 0)
 
-            masked_targets = prev_actions_t[:, 1:max_episode_len + 1].clone().masked_fill_(~mask_t[:, :max_episode_len], -100)
-            targets = torch.full((embds.shape[0], embds.shape[1]), -100).to(self.device)
+            # if input_format is 'as', then we need to offset by 1 to account for the prev action token which is not needed for reset episodes
+            offset = 1 if input_format == 'as' else 0 
+            action_tkns = self.act2tkn(actions_t).squeeze(-1)
+            masked_targets = action_tkns[:, offset:max_episode_len + offset].clone().masked_fill_(~mask_t[:, :max_episode_len], -100)
 
+            targets = torch.full((embds.shape[0], embds.shape[1]), -100).to(self.device)
             targets.scatter_(1, output_idx, masked_targets)
 
             outputs = self.llama_model(
@@ -323,9 +349,9 @@ class NavLLAMA(Blip2Base):
                 position_ids=pos_ids,
             )
 
+
             # extract the action tokens
             act_tkn_ids = self.act2tkn.weight.data.squeeze()
-        
 
             output_idx_hx = output_idx[..., None].repeat(1, 1, outputs.hidden_states[-1].shape[-1])
             act_hidden_states = outputs.hidden_states[-1].gather(1, output_idx_hx)
