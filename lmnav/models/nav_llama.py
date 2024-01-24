@@ -398,8 +398,8 @@ class NavLLAMA(Blip2Base):
             h = self.llama_cfg.num_attention_heads
             d = self.llama_cfg.hidden_size // self.llama_cfg.num_attention_heads
             for j in range(self.llama_cfg.num_hidden_layers):
-                past_kv_cache += ((torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.bfloat16),
-                                   torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.bfloat16)),)
+                past_kv_cache += ((torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.float16),
+                                   torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.float16)),)
         else:
             past_lens = rollouts.last_cache.past_lengths.clone()
             past_kv_cache = rollouts.last_cache.past_kv_cache.clone().to(self.device)

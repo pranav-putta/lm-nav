@@ -18,4 +18,4 @@ zsh
 source ~/.zshrc
 mamba activate lmnav
 
-torchrun --standalone --nnodes=1 --nproc_per_node=4 lmnav/bc_train.py train/nav_llama/1env_karmesh/bc/new+lora+clip+karmesh
+torchrun --standalone --nnodes=1 --nproc_per_node=4 lmnav/bc_train.py train/nav_llama/1env_karmesh/bc/new+lora+clip+karmesh --resume 8gexiogt

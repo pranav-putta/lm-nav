@@ -188,28 +188,20 @@ class EvalRunner:
             ckpt_path = self.writer.load_model(self.config.eval.policy.load_artifact)
             self.eval_checkpoint(ckpt_path)
 
-    def embed_observations(self, observations):
+    def embed_observations(self, observations, goal_idxs_to_embed=None):
         observations = batch_obs(observations, self.device)
         rgbs, goals = map(
             lambda t: einops.rearrange(t, "b h w c -> b 1 c h w"),
             (observations["rgb"], observations["imagegoal"]),
         )
-        rgbs_t, goals_t = apply_transforms_images(self.vis_processor, rgbs, goals)
-        img_embds_t, img_atts_t = self.agent.embed_visual(
-            torch.cat([rgbs_t, goals_t], dim=2).to(self.device)
-        )
-        rgb_embds, goal_embds = img_embds_t[:, 0], img_embds_t[:, 1]
+        if goal_idxs_to_embed is not None:
+            goals = goals[goal_idxs_to_embed]
+            
+        return self.agent.embed_visual(rgbs, goals)
 
-        map(
-            lambda t: t.to("cpu"),
-            (observations["rgb"], observations["imagegoal"], observations["depth"]),
-        )
-        del observations
-        return rgb_embds, goal_embds
-
+    @torch.inference_mode()
     def eval_checkpoint(self, ckpt_path):
         print(f"Starting evaluation for {ckpt_path}")
-        import pdb; pdb.set_trace()
         N_episodes = self.config.eval.num_episodes
         # TODO; some parameters are constant, pull from config in the future
         self.rollouts = RolloutStorage(
@@ -233,67 +225,66 @@ class EvalRunner:
         self.load_checkpoint(ckpt_path)
 
         # turn of all gradients
+        self.agent.eval()
         for param in self.agent.parameters():
             param.requires_grad = False
 
+
+        import pdb; pdb.set_trace()
         # we use an abstract action generator fn so that different models
         # can preserve their state in the way that makes sense for them
         dones = [True for _ in range(self.envs.num_envs)]
 
         # initialize rollouts
         observations = self.envs.reset()
-        with torch.inference_mode(): 
-            rgb_embds, goal_embds = self.embed_observations(observations)
+        rgb_embds, goal_embds = self.embed_observations(observations)
         self.rollouts.insert(next_rgbs=rgb_embds[:, 0], next_goals=goal_embds[:, 0])
-        sampler = instantiate(self.config.train.sampler)
+        sampler = instantiate(self.config.eval.sampler)
+
+        num_episodes_done = 0
         
-        while True:
-            with torch.inference_mode():
-                action_generator = self.agent.action_generator(
-                    rollouts=self.rollouts,
-                    sampler=sampler,
+        while num_episodes_done < self.config.eval.num_episodes:
+            action_generator = self.agent.action_generator(
+                rollouts=self.rollouts,
+                sampler=sampler,
+            )
+            for i in range(self.config.train.policy.max_trajectory_length):
+                next(action_generator)
+                actions, logprobs, hx = action_generator.send(dones)
+
+                outputs = self.envs.step(actions)
+                next_observations, rewards, dones, infos = [
+                    list(x) for x in zip(*outputs)
+                ]
+
+                # only embed goals if new episode has started
+                goal_idxs_to_embed = torch.tensor([i for i in range(len(dones)) if dones[i]], dtype=torch.long)
+                rgb_embds, new_goal_embds = self.embed_observations(next_observations, goal_idxs_to_embed=goal_idxs_to_embed)
+                goal_embds[goal_idxs_to_embed] = new_goal_embds
+
+                dones, rewards, actions = map(
+                    lambda l: torch.tensor(l), (dones, rewards, actions)
                 )
-                for i in range(self.config.train.num_rollout_steps):
-                    next(action_generator)
-                    actions, logprobs, hx = action_generator.send(dones)
+                successes = torch.tensor(
+                    [info["success"] for info in infos], dtype=torch.bool
+                )
+                dtgs = torch.tensor(
+                    [info["distance_to_goal"] for info in infos], dtype=torch.float
+                )
+                self.rollouts.insert(
+                    next_rgbs=rgb_embds[:, 0],
+                    next_goals=goal_embds[:, 0],
+                    dones=dones,
+                    rewards=rewards,
+                    actions=actions,
+                    successes=successes,
+                    dtgs=dtgs,
+                    hx=hx,
+                    logprobs=logprobs
+                )
 
-                    outputs = self.envs.step(actions)
-                    next_observations, rewards, dones, infos = [
-                        list(x) for x in zip(*outputs)
-                    ]
-
-                    # only embed goals if new episode has started
-                    goal_idxs_to_embed = torch.tensor([i for i in range(len(dones)) if dones[i]], dtype=torch.long)
-                    rgb_embds, new_goal_embds = self.embed_observations(next_observations, goal_idxs_to_embed=goal_idxs_to_embed)
-                    goal_embds[goal_idxs_to_embed] = new_goal_embds
-
-                    dones, rewards, actions = map(
-                        lambda l: torch.tensor(l), (dones, rewards, actions)
-                    )
-                    successes = torch.tensor(
-                        [info["success"] for info in infos], dtype=torch.bool
-                    )
-                    dtgs = torch.tensor(
-                        [info["distance_to_goal"] for info in infos], dtype=torch.float
-                    )
-                    self.rollouts.insert(
-                        next_rgbs=rgb_embds[:, 0],
-                        next_goals=goal_embds[:, 0],
-                        dones=dones,
-                        rewards=rewards,
-                        actions=actions,
-                        successes=successes,
-                        dtgs=dtgs,
-                        hx=hx,
-                        logprobs=logprobs
-                    )
-
-            del action_generator
-            yield
-            self.rollouts.reset()
-
-
-
+        del action_generator
+        self.rollouts.reset()
 
 
 def main():

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name train-1ek 
-#SBATCH --output logs/train-1ek+new.out
-#SBATCH --error logs/train-1ek+new.err
+#SBATCH --output logs/train-1ek+lora16.out
+#SBATCH --error logs/train-1ek+lora16.err
 #SBATCH --gpus a40:4
 #SBATCH --nodes 1
 #SBATCH --cpus-per-task 7

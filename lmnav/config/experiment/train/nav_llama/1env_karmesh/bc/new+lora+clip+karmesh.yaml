@@ -16,6 +16,7 @@ defaults:
   # set up eval
   - /runner@eval: eval
   - /dataset@eval.dataset: offline_episode
+  - /sampler@eval.sampler: nucleus
 
   # set up train
   - /runner@train: bc

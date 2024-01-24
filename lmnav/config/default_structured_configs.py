@@ -343,6 +343,7 @@ class EvalRunnerConfig(BaseRunnerConfig):
     deterministic: bool = MISSING
     dtg_threshold: float = 1.0
     num_envs: int = MISSING
+    sampler: BaseSamplerConfig = MISSING
 
 
 cs = ConfigStore.instance()
