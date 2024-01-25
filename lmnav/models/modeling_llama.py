@@ -313,7 +313,7 @@ class LlamaAttention(nn.Module):
             reshape = lambda t: einops.rearrange(t, 'b h t d -> b t h d')
             k_cache, v_cache = map(reshape, past_key_value)
             q, k, v = map(reshape, (query_states, key_states, value_states))
-            q, k, v = map(lambda t: t.to(torch.bfloat16), (q, k, v))
+            q, k, v = map(lambda t: t.to(torch.float16), (q, k, v))
             cache_seq_lens = torch.exp(attention_mask[:, 0, -1, :past_key_value[0].shape[2]]).sum(dim=1).to(torch.int32).to(q.device)
             attn_output = flash_attn_with_kvcache(q=q, k_cache=k_cache, v_cache=v_cache,
                                                   k=k, v=v, causal=True, cache_seqlens=cache_seq_lens)

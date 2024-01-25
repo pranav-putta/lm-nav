@@ -18,6 +18,7 @@ import os
 import torch.distributed
 from torch.nn.parallel import DistributedDataParallel as DDP
 from lmnav.common.rollout_storage import RolloutStorage
+from lmnav.common.utils import create_mask
 
 from lmnav.config.default import get_config
 
@@ -152,10 +153,9 @@ class EvalRunner:
         self.agent.eval()
 
     def save_episode_video(self, episode, num_episodes, video_dir, ckpt_idx):
-        obs_infos = [(step["observation"], step["info"]) for step in episode]
-        _, infos = zip(*obs_infos)
+        _, infos = zip(*episode)
 
-        frames = [observations_to_image(obs, info) for obs, info in obs_infos]
+        frames = [observations_to_image(obs, info) for obs, info in episode]
         disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
 
         generate_video(
@@ -202,11 +202,11 @@ class EvalRunner:
     @torch.inference_mode()
     def eval_checkpoint(self, ckpt_path):
         print(f"Starting evaluation for {ckpt_path}")
-        N_episodes = self.config.eval.num_episodes
         # TODO; some parameters are constant, pull from config in the future
+        buffer_length = self.config.habitat.environment.max_episode_steps
         self.rollouts = RolloutStorage(
                 self.envs.num_envs,
-                500,
+                buffer_length,
                 1,
                 4096,
                 device=self.device,
@@ -217,6 +217,8 @@ class EvalRunner:
         eval_dir = os.path.join(self.eval_dir, ckpt_name)
         video_dir = os.path.join(eval_dir, "videos")
         os.makedirs(eval_dir, exist_ok=True)
+
+        episode_data = [[] for _ in range(self.envs.num_envs)]
 
         if self.config.eval.save_videos:
             os.makedirs(video_dir, exist_ok=True)
@@ -230,10 +232,10 @@ class EvalRunner:
             param.requires_grad = False
 
 
-        import pdb; pdb.set_trace()
         # we use an abstract action generator fn so that different models
         # can preserve their state in the way that makes sense for them
         dones = [True for _ in range(self.envs.num_envs)]
+        stats = {}
 
         # initialize rollouts
         observations = self.envs.reset()
@@ -243,12 +245,14 @@ class EvalRunner:
 
         num_episodes_done = 0
         
+        pbar = tqdm(total=self.config.eval.num_episodes)
+        action_generator = self.agent.action_generator(
+            rollouts=self.rollouts,
+            sampler=sampler,
+        )
+
         while num_episodes_done < self.config.eval.num_episodes:
-            action_generator = self.agent.action_generator(
-                rollouts=self.rollouts,
-                sampler=sampler,
-            )
-            for i in range(self.config.train.policy.max_trajectory_length):
+            for _ in tqdm(range(buffer_length), leave=False, desc="doing rollout..."):
                 next(action_generator)
                 actions, logprobs, hx = action_generator.send(dones)
 
@@ -283,9 +287,25 @@ class EvalRunner:
                     logprobs=logprobs
                 )
 
-        del action_generator
-        self.rollouts.reset()
+                for env in range(self.envs.num_envs):
+                    episode_data[env].append((observations[env], infos[env]))
+                    if dones[env]:
+                        num_episodes_done += 1
+                        self.save_episode_video(episode_data[env], num_episodes_done, video_dir, ckpt_name)
+                        episode_data[env] = []
 
+                observations = next_observations
+
+            # compute stats
+            batch, _ = self.rollouts.generate_samples()
+            lengths = torch.tensor([episode['rgb'].shape[0] for episode in batch], device=self.device)
+            batch = self.rollouts.pad_samples(batch)
+            batch['mask'] = create_mask(lengths)
+            stats["learner/num_episodes_done"] = (batch['done'] * batch['mask']).sum().item()
+            stats["learner/num_episodes_successful"] = (batch['success'] * batch['mask']).sum().item()
+            
+            pbar.update(stats["learner/num_episodes_done"])
+            self.rollouts.reset()
 
 def main():
     parser = argparse.ArgumentParser(description="Example argparse for cfg_path")

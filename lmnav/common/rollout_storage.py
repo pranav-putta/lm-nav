@@ -98,6 +98,23 @@ class RolloutStorage:
         self.last_cache.past_lengths.masked_fill_(self.dones[:, self.max_steps - 1], 0)
         self.current_cache = None
 
+    def generate_sample_idxs(self):
+        """generate sample indices from the rollout storage"""
+        sample_idxs = []
+        for b in range(self.num_envs):
+            ends = torch.where(self.dones[b])[0].tolist()
+            # always make sure that ends includes the beginning/end of step list
+            ends = [-1] + ends
+            if ends[-1] != self.max_steps - 1:
+                ends = ends + [self.max_steps - 1]
+
+            slices = [(ends[i] + 1, ends[i + 1] + 1) for i in range(len(ends) - 1)]
+            for i, j in slices:
+                sample_idxs.append((b, i, j))
+            
+        return sample_idxs
+
+        
     def generate_samples(self):
         """generate samples from the rollout storage"""
         samples = []

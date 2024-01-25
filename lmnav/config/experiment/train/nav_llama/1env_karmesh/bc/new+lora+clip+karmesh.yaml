@@ -3,7 +3,7 @@
 defaults:
   # set up habitat 
   - /env@habitat_baselines: habitat_baselines
-  - /env@habitat: habitat_karmesh 
+  - /env@habitat: habitat_224
   - /dataset/imagenav/hm3d_1env
   - /habitat_baselines/rl/policy/obs_transforms:
     - resize_shortest_edge_base 
@@ -59,10 +59,10 @@ eval:
     load_artifact:
       name: ${....train.store_artifact.name}
       version: "latest"
-  num_episodes: 25
+  num_episodes: 500
   save_videos: True
   deterministic: False
-  num_envs: 1
+  num_envs: 10
 
 habitat_baselines:
   num_environments: 10
