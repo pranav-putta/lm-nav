@@ -12,6 +12,7 @@ from habitat_baselines.utils.info_dict import extract_scalars_from_info
 from lmnav.common.utils import (
     apply_fn_in_batches,
     catchtime,
+    create_mask,
     forward_minibatches,
     levenshtein_distance,
     pad_along_dim,
@@ -243,7 +244,7 @@ class BCTrainRunner:
         return {**self.cumstats, **episode_stats}
 
     def train_bc_step(self, episodes):
-        # import pdb; pdb.set_trace()
+        import pdb; pdb.set_trace()
         T = self.config.train.policy.max_trajectory_length
         batch_size = self.config.train.batch_size
         minibatch_size = self.config.train.minibatch_size
@@ -277,12 +278,8 @@ class BCTrainRunner:
         )
 
         # pad sequences
-        mask = torch.stack(
-            [
-                torch.cat([torch.ones(t.shape[0]), torch.zeros(T - t.shape[0])])
-                for t in rgbs
-            ]
-        ).bool()
+        lengths = torch.tensor([t.shape[0] for t in rgbs])
+        mask = create_mask(lengths, T)
         rgbs = pad_along_dim(rgbs, T)
         goals = torch.stack(goals)
         actions = pad_along_dim(actions, T)
@@ -295,7 +292,7 @@ class BCTrainRunner:
         size_diff = max(all_sizes).item() - local_size.item()
 
         if size_diff != 0:
-            print(all_sizes)
+            print("This shouldn't happen", all_sizes)
             return stats
             # to ensure equal batch sizes across gpus, gather them all
             rgbs, goals, actions, mask = map(

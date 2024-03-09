@@ -11,7 +11,7 @@ defaults:
     
   # set up experiment misc.
   - /exp: base
-  - /logger@exp.logger: wb
+  - /logger@exp.logger: console
    
   # set up eval
   - /runner@eval: eval

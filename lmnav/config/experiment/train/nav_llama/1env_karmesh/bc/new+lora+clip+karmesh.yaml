@@ -44,6 +44,10 @@ train:
     gamma: 0.9995
   betas: [0.9, 0.999]
   precomputed_embeddings: True
+  sampler:
+    p: 0.9
+    temp: 1.0
+    seed: 0
   policy:
     max_trajectory_length: 200    
   dataset:

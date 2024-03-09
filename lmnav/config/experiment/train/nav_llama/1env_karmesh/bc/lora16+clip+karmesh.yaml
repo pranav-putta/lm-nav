@@ -16,11 +16,12 @@ defaults:
   # set up eval
   - /runner@eval: eval
   - /dataset@eval.dataset: offline_episode
+  - /sampler@eval.sampler: nucleus
 
   # set up train
   - /runner@train: bc
   - /lr@train.lr_schedule: exponential
-  - /dataset@train.dataset: offline_episode
+  - /dataset@train.dataset: offline_instruction
   - /models/policy/nav_llama/clip@train.policy: lora 
  
   - _self_
@@ -52,22 +53,21 @@ train:
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
 
+ 
 eval:
   policy: 
     use_artifact_config: True
     load_artifact:
       name: ${....train.store_artifact.name}
       version: "latest"
-  num_episodes: 25
+  num_episodes: 500
   save_videos: True
   deterministic: False
-  num_envs: 1
+  num_envs: 10
 
 habitat_baselines:
   num_environments: 10
   rl:
-    ddppo:
-      distrib_backend: "gloo"
     policy:
       obs_transforms:
         resize_shortest_edge:
