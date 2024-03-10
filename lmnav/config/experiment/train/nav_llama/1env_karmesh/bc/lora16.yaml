@@ -33,12 +33,12 @@ exp:
   tags: ["lora", "clip"]
 
 train:
-  batch_size: 12
-  minibatch_size: 12
+  batch_size: 3
+  minibatch_size: 3
   num_grad_accums: 1
 
   steps: 100_000
-  episodes_per_batch: 12
+  episodes_per_batch: 3
   lr_schedule:
     lr: 2.5e-4
     gamma: 0.9995

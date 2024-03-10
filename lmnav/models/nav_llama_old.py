@@ -222,7 +222,7 @@ class NavLLAMA(Blip2Base):
 
         return embds, tgts
 
-    def maybe_autocast(self, dtype=torch.float16):
+    def maybe_autocast(self, dtype=torch.bfloat16):
         # if on cpu, don't use autocast
         # if on gpu, use autocast with dtype if provided, otherwise use torch.float16
         enable_autocast = self.device != torch.device("cpu")
@@ -242,7 +242,6 @@ class NavLLAMA(Blip2Base):
         actions_t = [B, T]
         """
         with self.maybe_autocast():
-            import pdb; pdb.set_trace()
             rgbs_t, goals_t, mask_t, actions_t = map(
                 lambda t: t.to(self.device), (rgbs_t, goals_t, mask_t, actions_t)
             )
@@ -263,16 +262,22 @@ class NavLLAMA(Blip2Base):
             )
             embd = embd.to(self.device)
             tgts = tgts.to(self.device)
+
+            # trim them mfs
+            max_seq_len = mask_t.sum(dim=1).max().item()
+            embd = embd[:, :max_seq_len * 2 + 60]
+            tgts = tgts[:, :max_seq_len * 2 + 60]
+
             outputs = self.llama_model(
                 inputs_embeds=embd, labels=tgts, return_dict=True, output_hidden_states=True
             )
-
             # extract the action tokens
             act_tkn_ids = self.llama_tokenizer(
                 "stop forward left right", add_special_tokens=False, return_tensors="pt"
             )
             act_tkn_ids = act_tkn_ids.input_ids.to(self.device).squeeze()
-            B, T, *_ = rgbs_embd.shape
+            B, T, *_ = embd.shape
+            T = max_seq_len
 
             act_positions = torch.tensor(
                 [(self.tokens_per_img + 1) * (T - i - 1) + 2 for i in range(T)]

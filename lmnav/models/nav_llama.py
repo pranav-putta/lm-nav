@@ -347,7 +347,6 @@ class NavLLAMA(Blip2Base):
                 position_ids=pos_ids,
             )
 
-
             # extract the action tokens
             act_tkn_ids = self.act2tkn.weight.data.squeeze()
 
