@@ -366,7 +366,6 @@ class CLIPObservationEncoder(ObservationEncoder):
             return rebatch_fn(out)
 
         B, T, *_ = rgbs.shape
-
         if not precomputed_embeddings:
             # compute embeddings for goals
             rgbs, goals = map(

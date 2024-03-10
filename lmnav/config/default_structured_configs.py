@@ -124,7 +124,7 @@ class PPOAgentModelConfig(BaseModelConfig):
 
 @dataclass
 class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
-    _target_: str = "lmnav.models.nav_llama.NavLLAMA"
+    _target_: str = "lmnav.models.nav_llama_old.NavLLAMA"
 
     vis_encoder: BaseObservationEncoderConfig = MISSING
 

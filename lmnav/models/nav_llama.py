@@ -58,10 +58,6 @@ class NavLLAMA(Blip2Base):
     ):
         super().__init__()
 
-        self.prompt1 = "You are a navigational agent tasked with exploring an indoor environment to find a goal image. \
-                       You can choose to move { left, right, forward, stop } at every step. The goal image is {}. \
-                       After every image, choose the best action. {}"
-
         self.vis_encoder = vis_encoder
         self.vis_processor = self.vis_encoder.vis_processor
         self.tokenizer = self.init_tokenizer()
@@ -329,11 +325,12 @@ class NavLLAMA(Blip2Base):
             # input embeddings are A S A S A ..., we want hidden states after S 
             output_idx = torch.arange(0, max_episode_len, device=self.device).repeat(B, 1) * (self.tokens_per_img + 1) + 1
             # for reset episodes, we want the hidden state after the prompt: prompt + *S* A S A ... these also don't have the prev action
-            output_idx[reset_episode_mask] += prompt_lens.unsqueeze(-1) - 1
+            offset = 1 if input_format == 'as' else 0
+            output_idx[reset_episode_mask] += prompt_lens.unsqueeze(-1) - offset
             output_idx.masked_fill_(~mask_t[:, :max_episode_len], 0)
 
-            # if input_format is 'as', then we need to offset by 1 to account for the prev action token which is not needed for reset episodes
-            offset = 1 if input_format == 'as' else 0 
+            # if input_format is 'as', then we need to offset by 1 to account for the prev action token which is not needed for reset episodes, else 2 for 'sa' since token logits only needed after first state
+            offset = 1 if input_format == 'as' else 0
             action_tkns = self.act2tkn(actions_t).squeeze(-1)
             masked_targets = action_tkns[:, offset:max_episode_len + offset].clone().masked_fill_(~mask_t[:, :max_episode_len], -100)
 

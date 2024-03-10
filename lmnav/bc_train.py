@@ -262,6 +262,7 @@ class BCTrainRunner:
 
         def forward_backwards_model(prompts_t, rgbs_t, goals_t, actions_t, mask_t):
             outputs = self.agent(prompts_t, rgbs_t, goals_t, actions_t, mask_t, precomputed_embeddings=self.config.train.precomputed_embeddings, input_format='sa')
+            # outputs = self.agent(rgbs_t, goals_t, actions_t, mask_t, vis_embedded=True)
             stats["learner/loss"] += outputs.loss.item()
             outputs.loss.backward()
 
