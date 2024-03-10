@@ -37,9 +37,9 @@ exp:
 train:
   use_gae: False
   steps: 100_000
-  num_envs: 10
-  minibatch_size: 2
-  num_grad_accums: 6
+  num_envs: 20
+  minibatch_size: 20
+  num_grad_accums: 1
   cliprange_value: 0.2
   cliprange: 0.2
   vf_coef: 0.1
@@ -52,7 +52,7 @@ train:
     seed: 0
 
   num_rollout_steps: 64
-  ppo_epochs: 3
+  ppo_epochs: 2
 
   lr_schedule:
     actor:
@@ -79,7 +79,7 @@ train:
     actor:
       use_artifact_config: True
       load_artifact:
-        name: "lmnav-1env-bc-lora_clip_karmesh"
+        name: "lmnav-1env-bc-lora32"
         version: "latest"
           
     critic:

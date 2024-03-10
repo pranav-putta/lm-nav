@@ -158,17 +158,20 @@ class EvalRunner:
         frames = [observations_to_image(obs, info) for obs, info in episode]
         disp_info = {k: [info[k] for info in infos] for k in infos[0].keys()}
 
-        generate_video(
-            video_option=["disk"],
-            video_dir=video_dir,
-            images=frames,
-            episode_id=num_episodes,
-            checkpoint_idx=ckpt_idx,
-            metrics=extract_scalars_from_info(disp_info),
-            fps=self.config.habitat_baselines.video_fps,
-            tb_writer=None,
-            keys_to_include_in_name=self.config.habitat_baselines.eval_keys_to_include_in_name,
-        )
+        try:
+            generate_video(
+                video_option=["disk"],
+                video_dir=video_dir,
+                images=frames,
+                episode_id=num_episodes,
+                checkpoint_idx=ckpt_idx,
+                metrics=extract_scalars_from_info(disp_info),
+                fps=self.config.habitat_baselines.video_fps,
+                tb_writer=None,
+                keys_to_include_in_name=self.config.habitat_baselines.eval_keys_to_include_in_name,
+            )
+        except Exception as e:
+            print(f"Error generating video: {e}")
 
     def eval(self):
         self.initialize_eval()
@@ -239,7 +242,8 @@ class EvalRunner:
 
         # initialize rollouts
         observations = self.envs.reset()
-        rgb_embds, goal_embds = self.embed_observations(observations)
+        with torch.inference_mode():
+            rgb_embds, goal_embds = self.embed_observations(observations)
         self.rollouts.insert(next_rgbs=rgb_embds[:, 0], next_goals=goal_embds[:, 0])
         sampler = instantiate(self.config.eval.sampler)
 

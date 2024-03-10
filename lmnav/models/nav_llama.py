@@ -58,6 +58,11 @@ class NavLLAMA(Blip2Base):
     ):
         super().__init__()
 
+        # temp, todo: remove this
+        self.prompt1 = "<s>You are a navigational agent tasked with exploring an indoor environment to find a goal image. \
+                       You can choose to move { left, right, forward, stop } at every step. The goal image is <goal>. \
+                       After every image, choose the best action."
+
         self.vis_encoder = vis_encoder
         self.vis_processor = self.vis_encoder.vis_processor
         self.tokenizer = self.init_tokenizer()
@@ -194,9 +199,9 @@ class NavLLAMA(Blip2Base):
 
         B, T, Q, H = rgbs_embd.shape
 
-        prompt_segs = prompt.split("{}")
+        prompt_segs = prompt.split("<goal>")
         prompt_tkns = [
-            self.llama_tokenizer(seg, return_tensors="pt", add_special_tokens=(i == 0))
+            self.llama_tokenizer(seg, return_tensors="pt", add_special_tokens=False)
             for i, seg in enumerate(prompt_segs)
             if len(seg)
         ]
@@ -267,8 +272,8 @@ class NavLLAMA(Blip2Base):
         new_mask = create_mask(seq_lens, embds.shape[1]).to(self.device)
         return embds, new_mask
 
-    def forward_with_embds(self, prompt, rgb_embds, goal_embds, actions_t, mask_t, pvk_t, attnm_t):
-        return self.forward(prompt, rgb_embds, goal_embds, actions_t, mask_t, pvk_t, attnm_t, True)
+    def forward_with_embds(self, prompts, rgb_embds, goal_embds, actions_t, mask_t, pvk_t, attnm_t, input_format):
+        return self.forward(prompts, rgb_embds, goal_embds, actions_t, mask_t, pvk_t, attnm_t, True, input_format=input_format)
 
     def forward(self, prompts, rgbs_t, goals_t, actions_t, mask_t,
                 pvk_t=None, past_attnm_t=None, precomputed_embeddings=False,
@@ -278,7 +283,6 @@ class NavLLAMA(Blip2Base):
         goals_t = [B, C, 1, H, W]
         actions_t = [B, T]
         """
-
         with self.maybe_autocast(dtype=torch.bfloat16):
             rgbs_embd, goals_embd = self.embed_visual(rgbs_t, goals_t, precomputed_embeddings)
             rgbs_embd, goals_embd = map(lambda x: self.llama_proj(x), [rgbs_embd, goals_embd])
@@ -295,7 +299,9 @@ class NavLLAMA(Blip2Base):
 
             # construct prompt embeddings for the reset episodes
             reset_episode_mask = past_lengths == 0
-            prompt_embds, prompt_mask = self.create_prompt_embd(prompts, goals_embd[reset_episode_mask])
+            prompt_embds, prompt_mask = self.create_prompt_embd(prompts, goals_embd)
+            prompt_embds = prompt_embds[reset_episode_mask]
+            prompt_mask = prompt_mask[reset_episode_mask]
             prompt_lens = prompt_mask.sum(dim=1)
             max_seq_len = max(embds.shape[1], seq_lens.max() + prompt_embds.shape[1]) # -1 bc prev action not needed for reset episodes
             embds = F.pad(embds, (0, 0, 0, max_seq_len - embds.shape[1]))
@@ -394,8 +400,8 @@ class NavLLAMA(Blip2Base):
             d = self.llama_cfg.hidden_size // self.llama_cfg.num_attention_heads
             for j in range(self.llama_cfg.num_hidden_layers):
                 # TODO; 462 is the temp max set, should be constructed from config
-                past_kv_cache += ((torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.bfloat16),
-                                   torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.bfloat16)),)
+                past_kv_cache += ((torch.zeros(num_envs, h, 600, d, device=self.device, dtype=torch.bfloat16),
+                                   torch.zeros(num_envs, h, 600, d, device=self.device, dtype=torch.bfloat16)),)
         else:
             past_lens = rollouts.last_cache.past_lengths.clone()
             past_kv_cache = rollouts.last_cache.past_kv_cache.clone().to(self.device)
@@ -455,7 +461,11 @@ class NavLLAMA(Blip2Base):
 
 
             rollouts.embeddings.append(embd[:, :2])
-            assert output_idx.max() < outputs.logits.shape[1], f"output_idx.max()={output_idx.max()}, logits.shape[1]={outputs.logits.shape[1]}"
+            try:
+                if not output_idx.max() < outputs.logits.shape[1]: #, f"output_idx.max()={output_idx.max()}, logits.shape[1]={outputs.logits.shape[1]}":
+                    import pdb; pdb.set_trace()
+            except:
+                import pdb; pdb.set_trace()
             logits = outputs.logits[torch.arange(num_envs), output_idx]
             past_kv_cache = outputs.past_key_values
             hidden_state = outputs.hidden_states[-1][torch.arange(num_envs), output_idx]
