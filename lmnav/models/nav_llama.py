@@ -14,7 +14,7 @@ from torch.cuda.amp import autocast as autocast
 import torch.nn as nn
 from lmnav.common.episode_processor import apply_transforms_actions
 
-from lmnav.common.utils import pad_along_dim, right_pad_tensor, trim_tensor, convert_weights_to_fp16, create_mask, logprobs_from_logits
+from lmnav.common.utils import catchtime, pad_along_dim, right_pad_tensor, trim_tensor, convert_weights_to_fp16, create_mask, logprobs_from_logits
 from lmnav.models.blip2 import Blip2Base, disabled_train
 from lmnav.models.modeling_llama import LlamaForCausalLM
 
@@ -79,6 +79,9 @@ class NavLLAMA(Blip2Base):
         self.llama_tokenizer.add_tokens(
             [DEFAULT_IMAGE_PATCH_TOKEN], special_tokens=True
         )
+        self.llama_tokenizer.add_tokens(
+            "<goal>", special_tokens=True
+        )
 
         self.IMAGE_PATCH_TOKEN_ID = self.llama_tokenizer.get_vocab()[
             DEFAULT_IMAGE_PATCH_TOKEN
@@ -88,14 +91,14 @@ class NavLLAMA(Blip2Base):
         if self.low_resource:
             self.llama_model = LlamaForCausalLM.from_pretrained(
                 llama_model,
-                torch_dtype=torch.float16,
+                torch_dtype=torch.bfloat16,
                 load_in_8bit=True,
                 device_map={"": 0},
             )
         else:
             self.llama_model = LlamaForCausalLM.from_pretrained(
                 llama_model,
-                torch_dtype=torch.float16,
+                torch_dtype=torch.bfloat16,
             )
             # self.llama_model = torch.compile(self.llama_model)
 
@@ -168,29 +171,26 @@ class NavLLAMA(Blip2Base):
 
     def create_prompt_embd(self, prompts, goals_embd):
         B, *_ = goals_embd.shape
-        prompt_embds = []
-        masks = []
-        for idx, prompt in enumerate(prompts):
-            prompt_segs = prompt.split("{}")
-            prompt_tkns = [
-                self.llama_tokenizer(seg, return_tensors="pt", add_special_tokens=(i == 0))
-                for i, seg in enumerate(prompt_segs)
-                if len(seg)
-            ]
-            prompt_embd = [
-                self.llama_model.get_input_embeddings()(tkns.input_ids.to(self.device))
-                for tkns in prompt_tkns
-            ]
-            goals_embd = goals_embd[idx, 0] # goal embd token is the same, just take the first one
-            embd = [prompt_embd[0][0], goals_embd, prompt_embd[1][0]]
-            embd = torch.cat(embd, dim=0)
-            mask = torch.ones(embd.shape[0], dtype=torch.bool).to(self.device)
+        self.llama_tokenizer.padding_side = "left"
+        prompt_tkns = self.llama_tokenizer(prompts, 
+                                           return_tensors="pt", 
+                                           padding=True,
+                                           return_length=True,
+                                           add_special_tokens=False)
+        self.llama_tokenizer.padding_side = "right"
 
-            prompt_embds.append(embd)
-            masks.append(mask)
-        max_len = max([embd.shape[0] for embd in prompt_embds])
-        prompt_embds = pad_along_dim(prompt_embds, max_len, padding_side='left').to(self.device)
-        masks = pad_along_dim(masks, max_len, padding_side='left').to(self.device)
+
+        goal_token = self.llama_tokenizer.get_vocab()["<goal>"]
+        goal_mask = prompt_tkns['input_ids'] == goal_token
+        assert goal_mask.sum() == B, f"goal_mask.sum()={goal_mask.sum()}, B={B}"
+        prompt_tkns['input_ids'] = prompt_tkns['input_ids'].masked_fill(goal_mask, 0)
+        prompt_lengths = prompt_tkns['length']
+
+        prompt_embds = self.llama_model.get_input_embeddings()(prompt_tkns['input_ids'].to(self.device))
+
+        prompt_embds[goal_mask] = goals_embd[:, 0, 0, :]
+        max_len = max(prompt_lengths)
+        masks = create_mask(prompt_lengths, max_len, padding_side='left').to(self.device)
         return prompt_embds, masks
 
     def prompt1_wrap(self, prompt, rgbs_embd, goals_embd, actions, masks):
@@ -242,7 +242,7 @@ class NavLLAMA(Blip2Base):
 
         return embds, tgts
 
-    def maybe_autocast(self, dtype=torch.float16):
+    def maybe_autocast(self, dtype=torch.bfloat16):
         # if on cpu, don't use autocast
         # if on gpu, use autocast with dtype if provided, otherwise use torch.float16
         enable_autocast = self.device != torch.device("cpu")
@@ -282,7 +282,8 @@ class NavLLAMA(Blip2Base):
         goals_t = [B, C, 1, H, W]
         actions_t = [B, T]
         """
-        with self.maybe_autocast(dtype=torch.float16):
+
+        with self.maybe_autocast(dtype=torch.bfloat16):
             rgbs_embd, goals_embd = self.embed_visual(rgbs_t, goals_t, precomputed_embeddings)
             rgbs_embd, goals_embd = map(lambda x: self.llama_proj(x), [rgbs_embd, goals_embd])
             action_embds = self.act2embd(actions_t)
@@ -397,8 +398,8 @@ class NavLLAMA(Blip2Base):
             d = self.llama_cfg.hidden_size // self.llama_cfg.num_attention_heads
             for j in range(self.llama_cfg.num_hidden_layers):
                 # TODO; 462 is the temp max set, should be constructed from config
-                past_kv_cache += ((torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.float16),
-                                   torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.float16)),)
+                past_kv_cache += ((torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.bfloat16),
+                                   torch.zeros(num_envs, h, 462, d, device=self.device, dtype=torch.bfloat16)),)
         else:
             past_lens = rollouts.last_cache.past_lengths.clone()
             past_kv_cache = rollouts.last_cache.past_kv_cache.clone().to(self.device)
@@ -444,7 +445,7 @@ class NavLLAMA(Blip2Base):
             pos_ids = torch.arange(0, embd.shape[1], device=self.device).repeat(num_envs, 1) + past_lens.unsqueeze(-1)
             output_idx = next_lens - past_lens - 1
 
-            embd = embd.to(torch.float16)
+            embd = embd.to(torch.bfloat16)
             
             # run forward pass
             outputs = self.llama_model(
@@ -466,7 +467,6 @@ class NavLLAMA(Blip2Base):
             # sample actions
             logits = logits[:, self.act2tkn.weight.data.squeeze()]
 
-            import pdb; pdb.set_trace()
             actions = list(map(lambda i: sampler(logits[i]), range(num_envs)))
             logprobs = logprobs_from_logits(logits[:, None, :], torch.tensor(actions, device=self.device, dtype=torch.long)[:, None]).squeeze(1)
             past_lens = next_lens

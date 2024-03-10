@@ -244,7 +244,6 @@ class BCTrainRunner:
         return {**self.cumstats, **episode_stats}
 
     def train_bc_step(self, episodes):
-        import pdb; pdb.set_trace()
         T = self.config.train.policy.max_trajectory_length
         batch_size = self.config.train.batch_size
         minibatch_size = self.config.train.minibatch_size

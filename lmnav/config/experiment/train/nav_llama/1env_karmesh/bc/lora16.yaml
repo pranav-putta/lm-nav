@@ -3,7 +3,7 @@
 defaults:
   # set up habitat 
   - /env@habitat_baselines: habitat_baselines
-  - /env@habitat: habitat_karmesh 
+  - /env@habitat: habitat_224
   - /dataset/imagenav/hm3d_1env
   - /habitat_baselines/rl/policy/obs_transforms:
     - resize_shortest_edge_base 
@@ -16,6 +16,7 @@ defaults:
   # set up eval
   - /runner@eval: eval
   - /dataset@eval.dataset: offline_episode
+  - /sampler@eval.sampler: nucleus
 
   # set up train
   - /runner@train: bc
@@ -32,12 +33,12 @@ exp:
   tags: ["lora", "clip"]
 
 train:
-  batch_size: 3
-  minibatch_size: 1
+  batch_size: 12
+  minibatch_size: 12
   num_grad_accums: 1
 
   steps: 100_000
-  episodes_per_batch: 3
+  episodes_per_batch: 12
   lr_schedule:
     lr: 2.5e-4
     gamma: 0.9995
@@ -52,21 +53,22 @@ train:
   store_artifact:
     name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
 
- 
 eval:
   policy: 
     use_artifact_config: True
     load_artifact:
       name: ${....train.store_artifact.name}
       version: "latest"
-  num_episodes: 25
+  num_episodes: 500
   save_videos: True
   deterministic: False
-  num_envs: 1
+  num_envs: 10
 
 habitat_baselines:
   num_environments: 10
   rl:
+    ddppo:
+      distrib_backend: "nccl"
     policy:
       obs_transforms:
         resize_shortest_edge:

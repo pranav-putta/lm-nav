@@ -1,0 +1,8 @@
+einops
+timm
+pandas
+iopath
+transformers
+flash-attn
+peft
+decord

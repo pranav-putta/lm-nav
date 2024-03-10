@@ -666,24 +666,36 @@ def right_pad_tensor(tensor, seq_lengths):
 
     return right_padded_tensor
 
-def create_mask(seq_lengths, max_seq_length=None):
+def create_mask(seq_lengths, max_seq_length=None, padding_side='right'):
     """
-    Creates a boolean mask from sequence lengths.
-    
+    Creates a boolean mask from sequence lengths with an option to add padding on the left or right.
+
     Args:
     seq_lengths (torch.Tensor): A 1D tensor containing the lengths of sequences.
     max_seq_length (int): The maximum sequence length in the batch.
+    padding_side (str): Side on which padding should be added, either 'left' or 'right'.
 
     Returns:
     torch.Tensor: A 2D boolean mask.
     """
     if max_seq_length is None:
         max_seq_length = seq_lengths.max().item()
+    
     batch_size = seq_lengths.size(0)
     seq_range = torch.arange(0, max_seq_length, dtype=torch.long, device=seq_lengths.device)
+    
+    # Create the basic mask based on the right padding
     seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_seq_length)
     seq_length_expand = seq_lengths.unsqueeze(1).expand_as(seq_range_expand)
-    return seq_range_expand < seq_length_expand
+    mask = seq_range_expand < seq_length_expand
+    
+    if padding_side == 'left':
+        # Invert the mask for left padding
+        max_seq_length_tensor = torch.full_like(seq_lengths, fill_value=max_seq_length)
+        inverted_seq_length_expand = max_seq_length_tensor.unsqueeze(1) - seq_lengths.unsqueeze(1)
+        mask = seq_range_expand >= inverted_seq_length_expand
+
+    return mask
 
 def trim_tensor(tensor, mask):
     seq_lengths = mask.sum(dim=-1)
