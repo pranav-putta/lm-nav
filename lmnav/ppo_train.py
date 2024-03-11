@@ -162,7 +162,8 @@ class PPOTrainer:
                     torch.distributed.get_rank()
                     * self.config.habitat_baselines.num_environments
                 )
-                del self.config.habitat.task.measurements['top_down_map']
+                if 'top_down_map' in self.config.habitat.task.measurements:
+                    del self.config.habitat.task.measurements['top_down_map']
 
             random.seed(self.config.habitat.seed)
             np.random.seed(self.config.habitat.seed)
@@ -244,9 +245,6 @@ class PPOTrainer:
             self.config.train.policy, writer=self.writer, store=self.artifact_store
         )
         model = model.to(self.device)
-
-
-        self.vis_processor = model.vis_processor
 
         if self.is_distributed:
             print(f"Setting up DDP on GPU {self.rank}")
