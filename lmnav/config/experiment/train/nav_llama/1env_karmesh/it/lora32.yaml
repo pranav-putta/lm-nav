@@ -1,0 +1,83 @@
+# @package _global_
+
+defaults:
+  # set up habitat 
+  - /env@habitat_baselines: habitat_baselines
+  - /env@habitat: habitat_karmesh
+  - /dataset/imagenav/hm3d_1env
+  - /habitat_baselines/rl/policy/obs_transforms:
+    - resize_shortest_edge_base 
+
+    
+  # set up experiment misc.
+  - /exp: base
+  - /logger@exp.logger: wb
+   
+  # set up eval
+  - /runner@eval: eval
+  - /dataset@eval.dataset: offline_instruction
+  - /sampler@eval.sampler: nucleus
+
+  # set up train
+  - /runner@train: bc
+  - /lr@train.lr_schedule: exponential
+  - /dataset@train.dataset: offline_instruction
+  - /models/policy/nav_llama/clip@train.policy: lora 
+ 
+  - _self_
+
+
+exp:
+  group: "lmnav-1env"
+  job_type: "it"
+  tags: ["lora", "clip", "rooms"]
+
+train:
+  batch_size: 2
+  minibatch_size: 2
+  num_grad_accums: 1
+
+  steps: 100_000
+  episodes_per_batch: 2
+  lr_schedule:
+    lr: 2.5e-4
+    gamma: 0.9995
+  betas: [0.9, 0.999]
+  precomputed_embeddings: True
+  policy:
+    max_trajectory_length: 200    
+    lora_config:
+      rank: 32
+      alpha: 128
+      dropout: 0.1
+
+  dataset:
+    artifact: 
+      name: "offline_1env_karmesh"
+      version: "precomputed-clip"
+  store_artifact:
+    name: "${quote:${...exp.group}-${...exp.job_type}-${...exp.name}}"
+
+eval:
+  policy: 
+    use_artifact_config: True
+    load_artifact:
+      name: ${....train.store_artifact.name}
+      version: "latest"
+  num_episodes: 50
+  save_videos: True
+  deterministic: False
+  num_envs: 1
+
+habitat_baselines:
+  num_environments: 1
+  rl:
+    ddppo:
+      distrib_backend: "nccl"
+    policy:
+      obs_transforms:
+        resize_shortest_edge:
+          size: 128
+          trans_keys: [rgb, imagegoal]
+
+

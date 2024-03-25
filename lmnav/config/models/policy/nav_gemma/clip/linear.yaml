@@ -1,0 +1,11 @@
+defaults:
+  - base_nav_llama@
+  - /models/vis_encoder@vis_encoder: clip
+    
+_target_: "lmnav.models.nav_llama.NavLLAMA"
+
+freeze_llama_proj: False
+low_resource: False
+
+vis_encoder:
+  freeze_backbone: True

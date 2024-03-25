@@ -72,8 +72,14 @@ class OfflineInstructionEpisodeDataset(BaseDataset):
             ]
         else:
             self.files = list(sorted(files))
+
+        self.files = [os.path.join("data/", f.split("data/")[1]) for f in files]
         self.buffer = []
         self.file_queue = OrderedDict()
+        self.default_prompt = "<s>You are a navigational agent tasked with exploring an indoor environment to find a goal image. \
+                       You can choose to move { left, right, forward, stop } at every step. The goal image is <goal>. \
+                       After every image, choose the best action."
+
 
     def __len__(self):
         return len(self.files)
@@ -89,11 +95,14 @@ class OfflineInstructionEpisodeDataset(BaseDataset):
             raise NotImplementedError(f"File format {file} not recognized.")
 
         episode = self.transforms(episode)
+        room_labels = " - ".join(episode['room_labels'])
+        prompt = f"{self.default_prompt} The user has instructed you prefer the following path: {room_labels}."
 
         return {
             'rgb': episode['rgbs'],
             'imagegoal': episode['imagegoal'],
-            'action': torch.tensor(episode['actions'])
+            'action': torch.tensor(episode['actions']),
+            'prompt': prompt
         }
 
 

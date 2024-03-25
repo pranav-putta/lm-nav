@@ -1,0 +1,16 @@
+defaults:
+  - /models/policy/nav_gemma/base_nav_gemma@
+  - /models/vis_encoder@vis_encoder: clip
+ 
+_target_: "lmnav.models.nav_gemma.NavGemma"
+
+freeze_proj: False
+low_resource: False
+  
+lora_config:
+  rank: 16
+  alpha: 64
+  dropout: 0.1
+
+vis_encoder:
+  freeze_backbone: True

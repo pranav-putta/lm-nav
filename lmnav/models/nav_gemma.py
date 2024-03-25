@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from habitat_baselines.utils.common import batch_obs
+from transformers import GemmaForCausalLM, GemmaTokenizer
 from lmnav.common.episode_processor import apply_transforms_images
 import logging
 
@@ -16,10 +17,8 @@ from lmnav.common.episode_processor import apply_transforms_actions
 
 from lmnav.common.utils import catchtime, pad_along_dim, right_pad_tensor, trim_tensor, convert_weights_to_fp16, create_mask, logprobs_from_logits
 from lmnav.models.blip2 import Blip2Base, disabled_train
-from lmnav.models.modeling_llama import LlamaForCausalLM
 
 # from lmnav.models.Qformer import BertEncoder
-from transformers import LlamaTokenizer, BertConfig
 
 # from transformers.models.bert.modeling_bert import BertEncoder
 import einops
@@ -27,30 +26,25 @@ from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 
 
 @dataclass
-class NavLLAMAOutput:
+class NavGemmaOuput:
     loss: torch.Tensor
     logits: torch.Tensor
     last_hidden_state: torch.Tensor
 
 
-class NavLLAMA(Blip2Base):
+class NavGemma(Blip2Base):
     """
     Extension from BLIP2 GPT-LLAMA model to operate over navigation space.
     Adds a linear transformation to the BLIP projections.
     """
 
-    PRETRAINED_MODEL_CONFIG_DICT = {
-        "pretrain_vicuna": "configs/models/video_llama.yaml",
-        "pretrain_llama_v2": "configs/models/video_llama.yaml",
-    }
-
     def __init__(
         self,
         vis_encoder,
-        freeze_llama_proj,
+        freeze_proj,
         low_resource,
         lora_config,
-        llama_model,
+        pretrained_model,
         max_trajectory_length,
         action_head_mode="lm",
         *args,
@@ -70,46 +64,46 @@ class NavLLAMA(Blip2Base):
         self.max_trajectory_length = max_trajectory_length
         self.action_head_mode = action_head_mode
 
-        logging.info("Loading LLAMA Tokenizer")
-        self.llama_tokenizer = LlamaTokenizer.from_pretrained(
-            llama_model, use_fast=False
+        logging.info("Loading Gemma Tokenizer")
+        self.tokenizer = GemmaTokenizer.from_pretrained(
+            pretrained_model, use_fast=False
         )
-        if self.llama_tokenizer.pad_token is None:
-            self.llama_tokenizer.pad_token = self.llama_tokenizer.unk_token
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.unk_token
         DEFAULT_IMAGE_PATCH_TOKEN = "<ImageHere>"
-        self.llama_tokenizer.add_tokens(
+        self.tokenizer.add_tokens(
             [DEFAULT_IMAGE_PATCH_TOKEN], special_tokens=True
         )
-        self.llama_tokenizer.add_tokens(
+        self.tokenizer.add_tokens(
             "<goal>", special_tokens=True
         )
 
-        self.IMAGE_PATCH_TOKEN_ID = self.llama_tokenizer.get_vocab()[
+        self.IMAGE_PATCH_TOKEN_ID = self.tokenizer.get_vocab()[
             DEFAULT_IMAGE_PATCH_TOKEN
         ]
 
         logging.info("Loading LLAMA Model")
         if self.low_resource:
-            self.llama_model = LlamaForCausalLM.from_pretrained(
-                llama_model,
+            self.llm = GemmaForCausalLM.from_pretrained(
+                pretrained_model,
                 torch_dtype=torch.bfloat16,
                 load_in_8bit=True,
                 device_map={"": 0},
             )
         else:
-            self.llama_model = LlamaForCausalLM.from_pretrained(
-                llama_model,
+            self.llm = GemmaForCausalLM.from_pretrained(
+                pretrained_model,
                 torch_dtype=torch.bfloat16,
             )
-            # self.llama_model = torch.compile(self.llama_model)
+            # self.llm = torch.compile(self.llm)
 
-        for name, param in self.llama_model.named_parameters():
+        for name, param in self.llm.named_parameters():
             param.requires_grad = False
-        logging.info("Loading LLAMA Done")
+        logging.info("Loading Gemma Done")
 
-        logging.info("Loading LLAMA proj")
+        logging.info("Loading Gemma proj")
         self.llama_proj = nn.Linear(
-            self.vis_encoder.hidden_size, self.llama_model.config.hidden_size
+            self.vis_encoder.hidden_size, self.llm.config.hidden_size
         )
 
         if self.action_head_mode == "act_linear":
@@ -118,41 +112,42 @@ class NavLLAMA(Blip2Base):
         elif self.action_head_mode == "lm" and self.action_head_mode == "lm_slice":
             pass
 
-        if freeze_llama_proj:
+        if freeze_proj:
             for name, param in self.llama_proj.named_parameters():
                 param.requires_grad = False
-            logging.info("LLAMA proj is frozen")
+            logging.info("Gemma proj is frozen")
         else:
             for name, param in self.llama_proj.named_parameters():
                 param.requires_grad = True
-            logging.info("LLAMA proj is not frozen")
+            logging.info("Gemma proj is not frozen")
 
         logging.info("Loading llama_proj Done")
 
         if lora_config is not None:
             # wrap llama model in peft model and run fine-tuning
-            print("Wrapping LLaMA in LoRA params")
+            print("Wrapping Gemma in LoRA params")
             peft_config = LoraConfig(
+                target_modules=["q_proj", "o_proj", "k_proj", "v_proj", "gate_proj", "up_proj", "down_proj"],
                 task_type=TaskType.CAUSAL_LM,
                 inference_mode=False,
                 r=lora_config.rank,
                 lora_alpha=lora_config.alpha,
                 lora_dropout=lora_config.dropout,
             )
-            self.llama_model = get_peft_model(self.llama_model, peft_config)
+            self.llm = get_peft_model(self.llm, peft_config)
 
         self.act2tkn = nn.Embedding.from_pretrained(
-            self.llama_tokenizer("stop forward left right", return_tensors='pt').input_ids[:, 1:].T
+            self.tokenizer("stop forward left right", return_tensors='pt').input_ids[:, 1:].T
         ).to(self.device)
         self.act2embd = nn.Embedding.from_pretrained(
-            self.llama_model.get_input_embeddings()(self.act2tkn.weight.data).squeeze(),
+            self.llm.get_input_embeddings()(self.act2tkn.weight.data).squeeze(),
             freeze=True,
         )
-        self.llama_cfg = self.llama_model.config
+        self.llama_cfg = self.llm.config
 
     @property
     def hidden_size(self):
-        return self.llama_model.config.hidden_size
+        return self.llm.config.hidden_size
 
     def vit_to_cpu(self):
         self.ln_vision.to("cpu")
@@ -172,24 +167,26 @@ class NavLLAMA(Blip2Base):
 
     def create_prompt_embd(self, prompts, goals_embd):
         B, *_ = goals_embd.shape
-        prompt_tkns = self.llama_tokenizer(prompts, 
+        self.tokenizer.padding_side = "left"
+        prompt_tkns = self.tokenizer(prompts, 
                                            return_tensors="pt", 
                                            padding=True,
                                            return_length=True,
                                            add_special_tokens=False)
+        self.tokenizer.padding_side = "right"
 
 
-        goal_token = self.llama_tokenizer.get_vocab()["<goal>"]
+        goal_token = self.tokenizer.get_vocab()["<goal>"]
         goal_mask = prompt_tkns['input_ids'] == goal_token
         assert goal_mask.sum() == B, f"goal_mask.sum()={goal_mask.sum()}, B={B}"
         prompt_tkns['input_ids'] = prompt_tkns['input_ids'].masked_fill(goal_mask, 0)
         prompt_lengths = prompt_tkns['length']
 
-        prompt_embds = self.llama_model.get_input_embeddings()(prompt_tkns['input_ids'].to(self.device))
+        prompt_embds = self.llm.get_input_embeddings()(prompt_tkns['input_ids'].to(self.device))
 
         prompt_embds[goal_mask] = goals_embd[:, 0, 0, :]
         max_len = max(prompt_lengths)
-        masks = create_mask(prompt_lengths, max_len).to(self.device)
+        masks = create_mask(prompt_lengths, max_len, padding_side='left').to(self.device)
         return prompt_embds, masks
 
     def prompt1_wrap(self, prompt, rgbs_embd, goals_embd, actions, masks):
@@ -199,12 +196,12 @@ class NavLLAMA(Blip2Base):
 
         prompt_segs = prompt.split("<goal>")
         prompt_tkns = [
-            self.llama_tokenizer(seg, return_tensors="pt", add_special_tokens=False)
+            self.tokenizer(seg, return_tensors="pt", add_special_tokens=False)
             for i, seg in enumerate(prompt_segs)
             if len(seg)
         ]
         prompt_embd = [
-            self.llama_model.get_input_embeddings()(tkns.input_ids.to(self.device))
+            self.llm.get_input_embeddings()(tkns.input_ids.to(self.device))
             for tkns in prompt_tkns
         ]
         prompt_embd = [embd.repeat(B, 1, 1) for embd in prompt_embd]
@@ -306,12 +303,10 @@ class NavLLAMA(Blip2Base):
             mask = F.pad(mask, (0, max_seq_len - mask.shape[1]))
             for i, idx in enumerate(torch.where(reset_episode_mask)[0].tolist()):
                 # if input_format is 'as', then we need to offset by 1 to account for the prev action token which is not needed for reset episodes
-                # prompts are padded, only extract what's needed
                 offset = 1 if input_format == 'as' else 0 
-                prompt_end = prompt_lens[i]
-                pad_len = embds.shape[1] - prompt_lens[i]
-                embds[idx, :] = torch.cat([prompt_embds[i,:prompt_end], embds[idx, offset:pad_len + offset]], dim=0)
-                mask[idx, :] = torch.cat([prompt_mask[i, :prompt_end], mask[idx, offset:pad_len + offset]], dim=0)
+                pad_len = embds.shape[1] - prompt_embds[i].shape[0]
+                embds[idx, :] = torch.cat([prompt_embds[i], embds[idx, offset:pad_len + offset]], dim=0)
+                mask[idx, :] = torch.cat([prompt_mask[i], mask[idx, offset:pad_len + offset]], dim=0)
 
             embds, mask = trim_tensor(embds, mask)
             seq_lens = mask.sum(dim=1)
@@ -343,7 +338,7 @@ class NavLLAMA(Blip2Base):
             targets = torch.full((embds.shape[0], embds.shape[1]), -100).to(self.device)
             targets.scatter_(1, output_idx, masked_targets)
 
-            outputs = self.llama_model(
+            outputs = self.llm(
                 inputs_embeds=embds, 
                 labels=targets,
                 return_dict=True,
@@ -370,7 +365,7 @@ class NavLLAMA(Blip2Base):
             original_len = mask_t.shape[1]
             act_logits = F.pad(act_logits, (0,0,0, original_len - act_logits.shape[1]))
             act_hidden_states = F.pad(act_hidden_states, (0, 0, 0, original_len - act_hidden_states.shape[1]))
-            return NavLLAMAOutput(
+            return NavGemmaOuput(
                 logits=act_logits, loss=loss, last_hidden_state=act_hidden_states
             )
 
@@ -447,11 +442,10 @@ class NavLLAMA(Blip2Base):
             pos_ids = torch.arange(0, embd.shape[1], device=self.device).repeat(num_envs, 1) + past_lens.unsqueeze(-1)
             output_idx = next_lens - past_lens - 1
 
-
             embd = embd.to(torch.bfloat16)
             
             # run forward pass
-            outputs = self.llama_model(
+            outputs = self.llm(
                 inputs_embeds=embd,
                 past_key_values=past_kv_cache,
                 attention_mask=attn_mask,

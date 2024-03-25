@@ -124,7 +124,7 @@ class PPOAgentModelConfig(BaseModelConfig):
 
 @dataclass
 class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
-    _target_: str = "lmnav.models.nav_llama_old.NavLLAMA"
+    _target_: str = "lmnav.models.nav_llama.NavLLAMA"
 
     vis_encoder: BaseObservationEncoderConfig = MISSING
 
@@ -134,6 +134,21 @@ class BaseNavLLaMAPolicyConfig(BasePolicyConfig):
     lora_config: Optional[dict] = None
 
     llama_model: str = "daryl149/llama-2-7b-hf"
+    max_trajectory_length: int = MISSING
+    action_head_mode: str = "lm"
+
+@dataclass
+class BaseNavGemmaPolicyConfig(BasePolicyConfig):
+    _target_: str = "lmnav.models.nav_gemma.NavGemma"
+
+    vis_encoder: BaseObservationEncoderConfig = MISSING
+
+    freeze_proj: bool = False
+
+    low_resource: bool = False
+    lora_config: Optional[dict] = None
+
+    pretrained_model: str = "google/gemma-2b"
     max_trajectory_length: int = MISSING
     action_head_mode: str = "lm"
 
@@ -366,6 +381,12 @@ cs.store(
     name="base_nav_llama",
     node=BaseNavLLaMAPolicyConfig,
 )
+cs.store(
+    group="models/policy/nav_gemma",
+    name="base_nav_gemma",
+    node=BaseNavGemmaPolicyConfig,
+)
+
 cs.store(
     group="models/policy/nav_vanilla",
     name="base_nav_vanilla",
